@@ -92,9 +92,42 @@ export function mapVideoDetail(value: unknown): VideoDetail {
   const src = obj(value);
   const stats = obj(src.stats);
   const actions = obj(src.viewer_actions);
+  const playback = obj(src.playback);
+  const variants = arr(playback.variants).map((item) => {
+    const raw = obj(item);
+    return {
+      name: str(raw.name),
+      width: num(raw.width),
+      height: num(raw.height),
+      bandwidth: num(raw.bandwidth),
+      url: str(raw.url),
+    };
+  });
+  const statusRaw = str(src.status);
+  const status: VideoDetail["status"] =
+    statusRaw === "processing" || statusRaw === "failed" || statusRaw === "published"
+      ? statusRaw
+      : "published";
+  const playbackStatusRaw = str(playback.status);
+  const playbackStatus: VideoDetail["playback"]["status"] =
+    playbackStatusRaw === "processing" || playbackStatusRaw === "failed" || playbackStatusRaw === "ready"
+      ? playbackStatusRaw
+      : "ready";
+  const playbackTypeRaw = str(playback.type);
+  const playbackType: VideoDetail["playback"]["type"] =
+    playbackTypeRaw === "hls" || playbackTypeRaw === "mp4" ? playbackTypeRaw : "";
+
   return {
+    status,
     video: mapVideoCard(src.video),
     source_url: str(src.source_url),
+    playback: {
+      status: playbackStatus,
+      type: playbackType,
+      hls_master_url: str(playback.hls_master_url) || undefined,
+      mp4_url: str(playback.mp4_url) || undefined,
+      variants,
+    },
     description: str(src.description),
     tags: arr(src.tags).map((item) => str(item)).filter(Boolean),
     stats: {

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
@@ -50,35 +51,39 @@ func (h *Handler) GetVideoDetail(c *fiber.Ctx) error {
 	}
 
 	query := `
-SELECT v.id, v.title, v.description, v.duration_sec, v.views_count, v.likes_count, v.favorites_count, v.comments_count, v.shares_count,
+SELECT v.id, v.title, v.description, v.status, v.duration_sec, v.views_count, v.likes_count, v.favorites_count, v.comments_count, v.shares_count,
        COALESCE(v.published_at, v.created_at), COALESCE(v.visibility,'public'),
        COALESCE(cat.name, ''),
        u.id, u.username, COALESCE(u.followers_count, 0),
        COALESCE(am.provider, ''), COALESCE(am.bucket, ''), COALESCE(am.object_key, ''),
        COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, ''),
-       COALESCE(sm.provider, ''), COALESCE(sm.bucket, ''), COALESCE(sm.object_key, '')
+       COALESCE(sm.provider, ''), COALESCE(sm.bucket, ''), COALESCE(sm.object_key, ''),
+       COALESCE(hls.provider, ''), COALESCE(hls.bucket, ''), COALESCE(hls.master_object_key, ''), COALESCE(hls.variants_json, '')
 FROM videos v
 JOIN users u ON u.id = v.uploader_id
 LEFT JOIN categories cat ON cat.id = v.category_id
 LEFT JOIN media_objects am ON am.id = u.avatar_media_id
 LEFT JOIN media_objects cm ON cm.id = v.cover_media_id
 LEFT JOIN media_objects sm ON sm.id = v.source_media_id
-WHERE v.id = ? AND v.status = 'published' AND v.visibility = 'public'
+LEFT JOIN video_hls_assets hls ON hls.video_id = v.id
+WHERE v.id = ?
 LIMIT 1`
 
 	var (
-		id, title, description, publishedAt, visibility, category         string
-		durationSec, views, likes, favorites, comments, shares, followers int64
-		uploaderID, uploaderName                                          string
-		avatarProvider, avatarBucket, avatarKey                           string
-		coverProvider, coverBucket, coverKey                              string
-		sourceProvider, sourceBucket, sourceKey                           string
+		id, title, description, videoStatus, publishedAt, visibility, category string
+		durationSec, views, likes, favorites, comments, shares, followers      int64
+		uploaderID, uploaderName                                               string
+		avatarProvider, avatarBucket, avatarKey                                string
+		coverProvider, coverBucket, coverKey                                   string
+		sourceProvider, sourceBucket, sourceKey                                string
+		hlsProvider, hlsBucket, hlsMasterKey, hlsVariantsJSON                  string
 	)
 
 	err := h.app.DB.QueryRowContext(c.UserContext(), query, videoID).Scan(
 		&id,
 		&title,
 		&description,
+		&videoStatus,
 		&durationSec,
 		&views,
 		&likes,
@@ -100,6 +105,10 @@ LIMIT 1`
 		&sourceProvider,
 		&sourceBucket,
 		&sourceKey,
+		&hlsProvider,
+		&hlsBucket,
+		&hlsMasterKey,
+		&hlsVariantsJSON,
 	)
 	if err != nil {
 		if isNotFound(err) {
@@ -107,8 +116,16 @@ LIMIT 1`
 		}
 		return response.Error(c, fiber.StatusInternalServerError, "failed to get video")
 	}
-	if visibility != "public" {
+
+	viewerID := currentUserID(c)
+	isOwner := viewerID != "" && viewerID == uploaderID
+	if videoStatus == "deleted" {
 		return response.Error(c, fiber.StatusNotFound, "video not found")
+	}
+	if !isOwner {
+		if videoStatus != "published" || visibility != "public" {
+			return response.Error(c, fiber.StatusNotFound, "video not found")
+		}
 	}
 
 	tagRows, err := h.app.DB.QueryContext(c.UserContext(), `
@@ -130,7 +147,6 @@ ORDER BY t.name ASC`, videoID)
 		tags = append(tags, tag)
 	}
 
-	viewerID := currentUserID(c)
 	liked, favorited, followingUploader := false, false, false
 	if viewerID != "" {
 		_ = h.app.DB.QueryRowContext(c.UserContext(), `SELECT EXISTS(SELECT 1 FROM video_actions WHERE user_id = ? AND video_id = ? AND action_type = 'like')`, viewerID, videoID).Scan(&liked)
@@ -140,7 +156,59 @@ ORDER BY t.name ASC`, videoID)
 		}
 	}
 
+	mp4URL := mediaURL(h.app.Storage, sourceProvider, sourceBucket, sourceKey)
+	playbackStatus := "ready"
+	if videoStatus == "processing" {
+		playbackStatus = "processing"
+	} else if videoStatus == "failed" {
+		playbackStatus = "failed"
+	}
+
+	playbackType := ""
+	hlsMasterURL := ""
+	variants := make([]map[string]interface{}, 0)
+	if playbackStatus == "ready" && hlsMasterKey != "" {
+		playbackType = "hls"
+		hlsMasterURL = mediaURL(h.app.Storage, hlsProvider, hlsBucket, hlsMasterKey)
+
+		var parsed []struct {
+			Name              string `json:"name"`
+			Width             int64  `json:"width"`
+			Height            int64  `json:"height"`
+			Bandwidth         int64  `json:"bandwidth"`
+			PlaylistObjectKey string `json:"playlist_object_key"`
+		}
+		if err := json.Unmarshal([]byte(hlsVariantsJSON), &parsed); err == nil {
+			for _, item := range parsed {
+				variants = append(variants, map[string]interface{}{
+					"name":      item.Name,
+					"width":     item.Width,
+					"height":    item.Height,
+					"bandwidth": item.Bandwidth,
+					"url":       mediaURL(h.app.Storage, hlsProvider, hlsBucket, item.PlaylistObjectKey),
+				})
+			}
+		}
+	} else if playbackStatus == "ready" && mp4URL != "" {
+		playbackType = "mp4"
+	}
+
+	playback := fiber.Map{
+		"status": playbackStatus,
+		"type":   playbackType,
+	}
+	if hlsMasterURL != "" {
+		playback["hls_master_url"] = hlsMasterURL
+	}
+	if mp4URL != "" {
+		playback["mp4_url"] = mp4URL
+	}
+	if len(variants) > 0 {
+		playback["variants"] = variants
+	}
+
 	data := fiber.Map{
+		"status": videoStatus,
 		"video": fiber.Map{
 			"id":             id,
 			"title":          title,
@@ -158,7 +226,8 @@ ORDER BY t.name ASC`, videoID)
 				"followed":        followingUploader,
 			},
 		},
-		"source_url":  mediaURL(h.app.Storage, sourceProvider, sourceBucket, sourceKey),
+		"source_url":  mp4URL,
+		"playback":    playback,
 		"description": description,
 		"tags":        tags,
 		"stats":       fiber.Map{"views_count": views, "likes_count": likes, "favorites_count": favorites, "comments_count": comments, "shares_count": shares},
@@ -412,7 +481,7 @@ func (h *Handler) CreateVideo(c *fiber.Ctx) error {
 	now := nowString()
 	_, err = tx.ExecContext(c.UserContext(),
 		`INSERT INTO videos (id, uploader_id, title, description, category_id, cover_media_id, source_media_id, status, visibility, duration_sec, published_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, NULL, ?, ?)`,
 		videoID,
 		uid,
 		req.Title,
@@ -422,7 +491,6 @@ func (h *Handler) CreateVideo(c *fiber.Ctx) error {
 		req.SourceMediaID,
 		req.Visibility,
 		sourceDuration,
-		now,
 		now,
 		now,
 	)
@@ -463,6 +531,24 @@ func (h *Handler) CreateVideo(c *fiber.Ctx) error {
 		}
 	}
 
+	maxAttempts := h.app.Config.TranscodeMaxTry
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	_, err = tx.ExecContext(c.UserContext(),
+		`INSERT INTO video_transcode_jobs (id, video_id, status, attempts, max_attempts, available_at, created_at, updated_at)
+		 VALUES (?, ?, 'queued', 0, ?, ?, ?, ?)`,
+		newID(),
+		videoID,
+		maxAttempts,
+		now,
+		now,
+		now,
+	)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to queue transcode job")
+	}
+
 	if err := h.recomputeHotScoreTx(c.UserContext(), tx, videoID); err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to compute hot score")
 	}
@@ -471,7 +557,7 @@ func (h *Handler) CreateVideo(c *fiber.Ctx) error {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to commit video")
 	}
 
-	return response.Created(c, fiber.Map{"id": videoID})
+	return response.Created(c, fiber.Map{"id": videoID, "status": "processing"})
 }
 
 func (h *Handler) DeleteVideo(c *fiber.Ctx) error {

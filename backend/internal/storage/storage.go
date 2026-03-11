@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -108,4 +110,93 @@ func (s *Service) Driver() string {
 
 func (s *Service) Bucket() string {
 	return s.cfg.S3Bucket
+}
+
+func (s *Service) DownloadObjectToPath(ctx context.Context, provider, bucket, objectKey, dstPath string) error {
+	switch provider {
+	case "local":
+		srcPath := s.LocalObjectPath(objectKey)
+		return copyFile(srcPath, dstPath)
+	case "s3":
+		if s.s3Client == nil {
+			return fmt.Errorf("s3 storage is not configured")
+		}
+		realBucket := bucket
+		if realBucket == "" {
+			realBucket = s.cfg.S3Bucket
+		}
+		resp, err := s.s3Client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(realBucket),
+			Key:    aws.String(objectKey),
+		})
+		if err != nil {
+			return fmt.Errorf("get s3 object: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+			return fmt.Errorf("prepare dst path: %w", err)
+		}
+		out, err := os.Create(dstPath)
+		if err != nil {
+			return fmt.Errorf("create dst file: %w", err)
+		}
+		defer out.Close()
+		if _, err := io.Copy(out, resp.Body); err != nil {
+			return fmt.Errorf("write dst file: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported provider: %s", provider)
+	}
+}
+
+func (s *Service) UploadFile(ctx context.Context, objectKey, contentType, srcPath string) error {
+	switch s.cfg.StorageDriver {
+	case "local":
+		dstPath := s.LocalObjectPath(objectKey)
+		return copyFile(srcPath, dstPath)
+	case "s3":
+		if s.s3Client == nil {
+			return fmt.Errorf("s3 storage is not configured")
+		}
+		file, err := os.Open(srcPath)
+		if err != nil {
+			return fmt.Errorf("open src file: %w", err)
+		}
+		defer file.Close()
+
+		_, err = s.s3Client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket:      aws.String(s.cfg.S3Bucket),
+			Key:         aws.String(objectKey),
+			Body:        file,
+			ContentType: aws.String(contentType),
+		})
+		if err != nil {
+			return fmt.Errorf("put s3 object: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported storage driver: %s", s.cfg.StorageDriver)
+	}
+}
+
+func copyFile(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("open source file: %w", err)
+	}
+	defer src.Close()
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+		return fmt.Errorf("prepare destination directory: %w", err)
+	}
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return fmt.Errorf("create destination file: %w", err)
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		return fmt.Errorf("copy file: %w", err)
+	}
+	return nil
 }

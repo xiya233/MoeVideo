@@ -20,6 +20,10 @@ type Config struct {
 	PublicBaseURL    string
 	MaxUploadBytes   int64
 	UploadURLExpires time.Duration
+	FFmpegBin        string
+	FFprobeBin       string
+	TranscodePoll    time.Duration
+	TranscodeMaxTry  int
 
 	S3Bucket          string
 	S3Region          string
@@ -47,6 +51,8 @@ func Load() (Config, error) {
 		S3SecretAccessKey: getEnv("S3_SECRET_ACCESS_KEY", ""),
 		S3SessionToken:    getEnv("S3_SESSION_TOKEN", ""),
 		S3PublicBaseURL:   strings.TrimRight(getEnv("S3_PUBLIC_BASE_URL", ""), "/"),
+		FFmpegBin:         getEnv("FFMPEG_BIN", "ffmpeg"),
+		FFprobeBin:        getEnv("FFPROBE_BIN", "ffprobe"),
 	}
 
 	accessTTL, err := time.ParseDuration(getEnv("ACCESS_TOKEN_TTL", "15m"))
@@ -66,6 +72,21 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("invalid UPLOAD_URL_EXPIRES: %w", err)
 	}
 	cfg.UploadURLExpires = uploadURLExpires
+
+	transcodePoll, err := time.ParseDuration(getEnv("TRANSCODE_POLL_INTERVAL", "1s"))
+	if err != nil {
+		return cfg, fmt.Errorf("invalid TRANSCODE_POLL_INTERVAL: %w", err)
+	}
+	cfg.TranscodePoll = transcodePoll
+
+	transcodeMaxTry, err := strconv.Atoi(getEnv("TRANSCODE_MAX_RETRIES", "3"))
+	if err != nil {
+		return cfg, fmt.Errorf("invalid TRANSCODE_MAX_RETRIES: %w", err)
+	}
+	if transcodeMaxTry <= 0 {
+		return cfg, fmt.Errorf("TRANSCODE_MAX_RETRIES must be positive")
+	}
+	cfg.TranscodeMaxTry = transcodeMaxTry
 
 	maxUploadMB, err := strconv.ParseInt(getEnv("MAX_UPLOAD_MB", "2048"), 10, 64)
 	if err != nil {

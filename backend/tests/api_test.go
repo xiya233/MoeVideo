@@ -48,6 +48,10 @@ func newTestServer(t *testing.T) (*fiber.App, *app.App) {
 		PublicBaseURL:    "http://localhost:8080",
 		MaxUploadBytes:   2 * 1024 * 1024 * 1024,
 		UploadURLExpires: 15 * time.Minute,
+		FFmpegBin:        "ffmpeg",
+		FFprobeBin:       "ffprobe",
+		TranscodePoll:    time.Second,
+		TranscodeMaxTry:  3,
 	}
 
 	database, err := db.Open(cfg.DBPath)
@@ -373,5 +377,176 @@ func TestLocalUploadOverDefaultBodyLimit(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("upload should succeed with 200, got %d, body=%s", resp.StatusCode, string(respBody))
+	}
+}
+
+func TestCreateVideoEnqueueProcessingAndDetailVisibility(t *testing.T) {
+	srv, container := newTestServer(t)
+	userID, access, _ := registerUser(t, srv, "eva", "eva@example.com", "password123")
+
+	now := util.FormatTime(time.Now().UTC())
+	mediaID := "media-" + uuid.NewString()
+	_, err := container.DB.Exec(
+		`INSERT INTO media_objects (id, provider, bucket, object_key, original_filename, mime_type, size_bytes, duration_sec, created_by, created_at)
+		 VALUES (?, 'local', '', ?, 'source.mp4', 'video/mp4', 2048, 90, ?, ?)`,
+		mediaID,
+		"videos/"+userID+"/seed/source.mp4",
+		userID,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("insert source media: %v", err)
+	}
+
+	status, createResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos", map[string]interface{}{
+		"title":           "processing video",
+		"description":     "queued",
+		"source_media_id": mediaID,
+		"visibility":      "public",
+	}, map[string]string{"Authorization": "Bearer " + access})
+	if status != http.StatusCreated {
+		t.Fatalf("create video should succeed, got %d (%s)", status, createResp.Message)
+	}
+
+	var createData struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(createResp.Data, &createData); err != nil {
+		t.Fatalf("parse create video response: %v", err)
+	}
+	if createData.ID == "" {
+		t.Fatalf("create response missing video id")
+	}
+	if createData.Status != "processing" {
+		t.Fatalf("expected processing status, got %q", createData.Status)
+	}
+
+	var dbStatus string
+	if err := container.DB.QueryRow(`SELECT status FROM videos WHERE id = ?`, createData.ID).Scan(&dbStatus); err != nil {
+		t.Fatalf("query created video: %v", err)
+	}
+	if dbStatus != "processing" {
+		t.Fatalf("expected db status processing, got %q", dbStatus)
+	}
+
+	var queuedJobs int
+	if err := container.DB.QueryRow(`SELECT COUNT(1) FROM video_transcode_jobs WHERE video_id = ? AND status = 'queued'`, createData.ID).Scan(&queuedJobs); err != nil {
+		t.Fatalf("query transcode jobs: %v", err)
+	}
+	if queuedJobs != 1 {
+		t.Fatalf("expected one queued transcode job, got %d", queuedJobs)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+createData.ID, nil, nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("public should not access processing video detail, got %d", status)
+	}
+
+	status, ownerDetail := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+createData.ID, nil, map[string]string{
+		"Authorization": "Bearer " + access,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("owner should access processing video detail, got %d", status)
+	}
+	var detailData struct {
+		Status   string `json:"status"`
+		Playback struct {
+			Status string `json:"status"`
+			Type   string `json:"type"`
+		} `json:"playback"`
+	}
+	if err := json.Unmarshal(ownerDetail.Data, &detailData); err != nil {
+		t.Fatalf("parse detail response: %v", err)
+	}
+	if detailData.Status != "processing" {
+		t.Fatalf("expected detail status processing, got %q", detailData.Status)
+	}
+	if detailData.Playback.Status != "processing" {
+		t.Fatalf("expected playback status processing, got %q", detailData.Playback.Status)
+	}
+	if detailData.Playback.Type != "" {
+		t.Fatalf("expected empty playback type during processing, got %q", detailData.Playback.Type)
+	}
+}
+
+func TestVideoDetailPlaybackModeCompat(t *testing.T) {
+	srv, container := newTestServer(t)
+	userID, _, _ := registerUser(t, srv, "fred", "fred@example.com", "password123")
+	videoID := prepareVideoForUser(t, container, userID)
+
+	status, detailResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+videoID, nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("legacy video detail should be accessible, got %d", status)
+	}
+	var legacyData struct {
+		SourceURL string `json:"source_url"`
+		Playback  struct {
+			Status string `json:"status"`
+			Type   string `json:"type"`
+			MP4URL string `json:"mp4_url"`
+		} `json:"playback"`
+	}
+	if err := json.Unmarshal(detailResp.Data, &legacyData); err != nil {
+		t.Fatalf("parse legacy detail: %v", err)
+	}
+	if legacyData.Playback.Status != "ready" {
+		t.Fatalf("expected legacy playback status ready, got %q", legacyData.Playback.Status)
+	}
+	if legacyData.Playback.Type != "mp4" {
+		t.Fatalf("expected legacy playback type mp4, got %q", legacyData.Playback.Type)
+	}
+	if legacyData.SourceURL == "" || legacyData.Playback.MP4URL == "" {
+		t.Fatalf("expected legacy mp4 urls to be present")
+	}
+
+	variantsJSON := `[{"name":"360p","width":640,"height":360,"bandwidth":896000,"playlist_object_key":"hls/` + userID + `/` + videoID + `/360p/index.m3u8"}]`
+	now := util.FormatTime(time.Now().UTC())
+	_, err := container.DB.Exec(
+		`INSERT INTO video_hls_assets (video_id, provider, bucket, master_object_key, variants_json, segment_seconds, created_at, updated_at)
+		 VALUES (?, 'local', '', ?, ?, 4, ?, ?)`,
+		videoID,
+		"hls/"+userID+"/"+videoID+"/master.m3u8",
+		variantsJSON,
+		now,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("insert hls asset: %v", err)
+	}
+
+	status, hlsResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+videoID, nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("hls video detail should be accessible, got %d", status)
+	}
+	var hlsData struct {
+		Playback struct {
+			Status       string `json:"status"`
+			Type         string `json:"type"`
+			HLSMasterURL string `json:"hls_master_url"`
+			MP4URL       string `json:"mp4_url"`
+			Variants     []struct {
+				Name string `json:"name"`
+				URL  string `json:"url"`
+			} `json:"variants"`
+		} `json:"playback"`
+	}
+	if err := json.Unmarshal(hlsResp.Data, &hlsData); err != nil {
+		t.Fatalf("parse hls detail: %v", err)
+	}
+	if hlsData.Playback.Status != "ready" {
+		t.Fatalf("expected hls playback status ready, got %q", hlsData.Playback.Status)
+	}
+	if hlsData.Playback.Type != "hls" {
+		t.Fatalf("expected playback type hls, got %q", hlsData.Playback.Type)
+	}
+	if hlsData.Playback.HLSMasterURL == "" {
+		t.Fatalf("expected hls master url")
+	}
+	if hlsData.Playback.MP4URL == "" {
+		t.Fatalf("expected mp4 fallback url")
+	}
+	if len(hlsData.Playback.Variants) == 0 || hlsData.Playback.Variants[0].URL == "" {
+		t.Fatalf("expected at least one hls variant url")
 	}
 }

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { EmptyState } from "@/components/common/EmptyState";
 import { LoadingSkeleton } from "@/components/common/LoadingSkeleton";
+import { ArtHlsPlayer } from "@/components/video/ArtHlsPlayer";
 import type { CommentItem, CommentsData, VideoCard, VideoDetail } from "@/lib/dto";
 import { mapCommentsData, mapVideoCard, mapVideoDetail } from "@/lib/dto/mappers";
 import { cn } from "@/lib/utils/cn";
@@ -33,9 +34,7 @@ function formatDurationLabel(duration: number): string {
 function actionButtonClass(active: boolean): string {
   return cn(
     "flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
-    active
-      ? "bg-primary text-white shadow-lg shadow-primary/30"
-      : "bg-primary/10 text-primary hover:bg-primary/20",
+    active ? "bg-primary text-white shadow-lg shadow-primary/30" : "bg-primary/10 text-primary hover:bg-primary/20",
   );
 }
 
@@ -59,25 +58,38 @@ export function VideoPage({ videoId }: VideoPageProps) {
 
   const hasTrackedView = useRef(false);
 
+  const fetchDetail = useCallback(async (): Promise<VideoDetail> => {
+    const data = await request<VideoDetail>(`/videos/${videoId}`, { auth: true });
+    return mapVideoDetail(data);
+  }, [request, videoId]);
+
   const fetchComments = useCallback(async () => {
     const data = await request<CommentsData>(`/videos/${videoId}/comments?limit=20`, { auth: false });
     setComments(mapCommentsData(data).items ?? []);
   }, [request, videoId]);
+
+  const fetchRecommendations = useCallback(async () => {
+    const data = await request<{ items: VideoCard[] }>(`/videos/${videoId}/recommendations?limit=8`, { auth: false });
+    setRecommendations((data.items ?? []).map(mapVideoCard));
+  }, [request, videoId]);
+
+  const fetchPublishedExtras = useCallback(async () => {
+    await Promise.all([fetchRecommendations(), fetchComments()]);
+  }, [fetchComments, fetchRecommendations]);
 
   const fetchPageData = useCallback(async () => {
     setLoading(true);
     setError("");
 
     try {
-      const [detailData, recData, commentData] = await Promise.all([
-        request<VideoDetail>(`/videos/${videoId}`, { auth: false }),
-        request<{ items: VideoCard[] }>(`/videos/${videoId}/recommendations?limit=8`, { auth: false }),
-        request<CommentsData>(`/videos/${videoId}/comments?limit=20`, { auth: false }),
-      ]);
-
-      setDetail(mapVideoDetail(detailData));
-      setRecommendations((recData.items ?? []).map(mapVideoCard));
-      setComments(mapCommentsData(commentData).items ?? []);
+      const nextDetail = await fetchDetail();
+      setDetail(nextDetail);
+      if (nextDetail.status === "published") {
+        await fetchPublishedExtras();
+      } else {
+        setRecommendations([]);
+        setComments([]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载播放页失败");
       setDetail(null);
@@ -86,7 +98,19 @@ export function VideoPage({ videoId }: VideoPageProps) {
     } finally {
       setLoading(false);
     }
-  }, [request, videoId]);
+  }, [fetchDetail, fetchPublishedExtras]);
+
+  const refreshDetailStatus = useCallback(async () => {
+    try {
+      const nextDetail = await fetchDetail();
+      setDetail(nextDetail);
+      if (nextDetail.status === "published") {
+        await fetchPublishedExtras();
+      }
+    } catch {
+      // Keep the current UI state; periodic refresh should not break playback page.
+    }
+  }, [fetchDetail, fetchPublishedExtras]);
 
   useEffect(() => {
     hasTrackedView.current = false;
@@ -94,7 +118,19 @@ export function VideoPage({ videoId }: VideoPageProps) {
   }, [fetchPageData]);
 
   useEffect(() => {
-    if (!detail || hasTrackedView.current) {
+    if (!detail || detail.status !== "processing") {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void refreshDetailStatus();
+    }, 5000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [detail, refreshDetailStatus]);
+
+  useEffect(() => {
+    if (!detail || detail.status !== "published" || hasTrackedView.current) {
       return;
     }
     hasTrackedView.current = true;
@@ -114,7 +150,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
   };
 
   const toggleLike = async () => {
-    if (!detail || pendingLike) {
+    if (!detail || detail.status !== "published" || pendingLike) {
       return;
     }
     if (!requireAuth()) {
@@ -148,7 +184,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
   };
 
   const toggleFavorite = async () => {
-    if (!detail || pendingFavorite) {
+    if (!detail || detail.status !== "published" || pendingFavorite) {
       return;
     }
     if (!requireAuth()) {
@@ -192,7 +228,6 @@ export function VideoPage({ videoId }: VideoPageProps) {
     setPendingFollow(true);
     const prev = detail;
     const nextActive = !detail.viewer_actions.following_uploader;
-
     const followers = Math.max(0, detail.uploader.followers_count + (nextActive ? 1 : -1));
 
     setDetail({
@@ -230,7 +265,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
   };
 
   const shareVideo = async () => {
-    if (!detail) {
+    if (!detail || detail.status !== "published") {
       return;
     }
 
@@ -255,10 +290,10 @@ export function VideoPage({ videoId }: VideoPageProps) {
   };
 
   const publishComment = async (payload: { content: string; parent_comment_id?: string }) => {
-    if (!requireAuth()) {
+    if (!detail || detail.status !== "published" || pendingComment) {
       return;
     }
-    if (!detail || pendingComment) {
+    if (!requireAuth()) {
       return;
     }
 
@@ -290,9 +325,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
     if (payload.parent_comment_id) {
       setComments((prev) =>
         prev.map((item) =>
-          item.id === payload.parent_comment_id
-            ? { ...item, replies: [...item.replies, optimisticComment] }
-            : item,
+          item.id === payload.parent_comment_id ? { ...item, replies: [...item.replies, optimisticComment] } : item,
         ),
       );
     } else {
@@ -332,6 +365,19 @@ export function VideoPage({ videoId }: VideoPageProps) {
   };
 
   const recommendationCards = useMemo(() => recommendations.slice(0, 8), [recommendations]);
+  const playerSource = useMemo(() => {
+    if (!detail) {
+      return null;
+    }
+    if (detail.playback.type === "hls" && detail.playback.hls_master_url) {
+      return { type: "m3u8" as const, url: detail.playback.hls_master_url };
+    }
+    const mp4 = detail.playback.mp4_url || detail.source_url;
+    if (mp4) {
+      return { type: "mp4" as const, url: mp4 };
+    }
+    return null;
+  }, [detail]);
 
   if (loading) {
     return (
@@ -358,13 +404,27 @@ export function VideoPage({ videoId }: VideoPageProps) {
     <div className="flex flex-col gap-8 lg:flex-row">
       <div className="flex-1 space-y-6">
         <section className="group relative aspect-video overflow-hidden rounded-xl bg-black shadow-2xl">
-          <video
-            className="h-full w-full object-cover opacity-90"
-            controls
-            poster={detail.video.cover_url}
-            src={detail.source_url}
-            preload="metadata"
-          />
+          {detail.status === "processing" ? (
+            <div className="flex h-full w-full items-center justify-center bg-slate-950/90">
+              <div className="flex flex-col items-center gap-3 text-slate-200">
+                <span className="material-symbols-outlined animate-spin text-4xl">autorenew</span>
+                <p className="text-sm font-semibold">视频正在转码中，页面会自动刷新</p>
+              </div>
+            </div>
+          ) : detail.status === "failed" ? (
+            <div className="flex h-full w-full items-center justify-center bg-slate-950/90">
+              <div className="flex flex-col items-center gap-2 text-slate-200">
+                <span className="material-symbols-outlined text-4xl text-red-400">error</span>
+                <p className="text-sm font-semibold">转码失败，请重新上传视频</p>
+              </div>
+            </div>
+          ) : playerSource ? (
+            <ArtHlsPlayer sourceType={playerSource.type} sourceUrl={playerSource.url} poster={detail.video.cover_url} />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center bg-slate-950/90 text-slate-200">
+              暂无可播放视频源
+            </div>
+          )}
         </section>
 
         <section className="space-y-4">
@@ -381,29 +441,35 @@ export function VideoPage({ videoId }: VideoPageProps) {
               </span>
             </div>
 
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={toggleLike} className={actionButtonClass(detail.viewer_actions.liked)} disabled={pendingLike}>
-                <span className="material-symbols-outlined">thumb_up</span>
-                {formatCount(detail.stats.likes_count)}
-              </button>
-              <button
-                type="button"
-                onClick={toggleFavorite}
-                className={actionButtonClass(detail.viewer_actions.favorited)}
-                disabled={pendingFavorite}
-              >
-                <span className="material-symbols-outlined">star</span>
-                {formatCount(detail.stats.favorites_count)}
-              </button>
-              <button
-                type="button"
-                onClick={shareVideo}
-                className="flex items-center gap-2 rounded-xl bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-all hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
-              >
-                <span className="material-symbols-outlined">share</span>
-                分享
-              </button>
-            </div>
+            {detail.status === "published" ? (
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={toggleLike} className={actionButtonClass(detail.viewer_actions.liked)} disabled={pendingLike}>
+                  <span className="material-symbols-outlined">thumb_up</span>
+                  {formatCount(detail.stats.likes_count)}
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleFavorite}
+                  className={actionButtonClass(detail.viewer_actions.favorited)}
+                  disabled={pendingFavorite}
+                >
+                  <span className="material-symbols-outlined">star</span>
+                  {formatCount(detail.stats.favorites_count)}
+                </button>
+                <button
+                  type="button"
+                  onClick={shareVideo}
+                  className="flex items-center gap-2 rounded-xl bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-all hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
+                >
+                  <span className="material-symbols-outlined">share</span>
+                  分享
+                </button>
+              </div>
+            ) : (
+              <span className="rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+                {detail.status === "processing" ? "转码处理中" : "转码失败"}
+              </span>
+            )}
           </div>
         </section>
 
@@ -458,136 +524,139 @@ export function VideoPage({ videoId }: VideoPageProps) {
           ) : null}
         </section>
 
-        <section className="space-y-6">
-          <h3 className="flex items-center gap-2 text-xl font-bold">
-            评论 <span className="text-sm font-normal text-slate-400">{formatCount(detail.stats.comments_count)}</span>
-          </h3>
+        {detail.status === "published" ? (
+          <section className="space-y-6">
+            <h3 className="flex items-center gap-2 text-xl font-bold">
+              评论 <span className="text-sm font-normal text-slate-400">{formatCount(detail.stats.comments_count)}</span>
+            </h3>
 
-          <div className="flex gap-4">
-            <div className="h-10 w-10 flex-shrink-0 overflow-hidden rounded-full bg-slate-200">
-              {user?.avatar_url ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={user.avatar_url} alt={user.username} className="h-full w-full object-cover" />
-              ) : null}
-            </div>
-            <div className="flex-1 space-y-2">
-              <textarea
-                className="w-full rounded-xl border border-primary/10 bg-primary/5 p-3 text-sm placeholder:text-slate-400 focus:border-primary focus:ring-primary"
-                placeholder="发一条友善的评论吧..."
-                rows={3}
-                value={commentInput}
-                onChange={(event) => setCommentInput(event.target.value)}
-              />
-              <div className="flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => publishComment({ content: commentInput })}
-                  disabled={pendingComment}
-                  className="rounded-lg bg-primary px-6 py-2 text-sm font-bold text-white transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {pendingComment ? "发布中..." : "发布评论"}
-                </button>
+            <div className="flex gap-4">
+              <div className="h-10 w-10 flex-shrink-0 overflow-hidden rounded-full bg-slate-200">
+                {user?.avatar_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={user.avatar_url} alt={user.username} className="h-full w-full object-cover" />
+                ) : null}
               </div>
-            </div>
-          </div>
-
-          <div className="space-y-6">
-            {comments.map((item) => (
-              <div key={item.id} className="space-y-3">
-                <div className="flex gap-4">
-                  <div className="h-10 w-10 overflow-hidden rounded-full bg-slate-200">
-                    {item.user.avatar_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={item.user.avatar_url} alt={commentAuthorName(item)} className="h-full w-full object-cover" />
-                    ) : null}
-                  </div>
-                  <div className="flex-1 space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-bold text-primary">{commentAuthorName(item)}</span>
-                      <span className="text-xs text-slate-400">{formatDate(item.created_at)}</span>
-                    </div>
-                    <p className="text-sm text-slate-800">{item.content}</p>
-                    <div className="flex items-center gap-4 pt-2">
-                      <button
-                        className="flex items-center gap-1 text-xs text-slate-400 transition-colors hover:text-primary"
-                        type="button"
-                      >
-                        <span className="material-symbols-outlined text-sm">thumb_up</span>
-                        {formatCount(item.like_count)}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setReplyTargetId(replyTargetId === item.id ? null : item.id);
-                          setReplyInput("");
-                        }}
-                        className="text-xs text-slate-400 transition-colors hover:text-primary"
-                      >
-                        回复
-                      </button>
-                    </div>
-                  </div>
+              <div className="flex-1 space-y-2">
+                <textarea
+                  className="w-full rounded-xl border border-primary/10 bg-primary/5 p-3 text-sm placeholder:text-slate-400 focus:border-primary focus:ring-primary"
+                  placeholder="发一条友善的评论吧..."
+                  rows={3}
+                  value={commentInput}
+                  onChange={(event) => setCommentInput(event.target.value)}
+                />
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => publishComment({ content: commentInput })}
+                    disabled={pendingComment}
+                    className="rounded-lg bg-primary px-6 py-2 text-sm font-bold text-white transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {pendingComment ? "发布中..." : "发布评论"}
+                  </button>
                 </div>
+              </div>
+            </div>
 
-                {replyTargetId === item.id ? (
-                  <div className="ml-[56px] rounded-xl border border-primary/10 bg-primary/5 p-3">
-                    <textarea
-                      rows={2}
-                      value={replyInput}
-                      onChange={(event) => setReplyInput(event.target.value)}
-                      placeholder={`回复 @${commentAuthorName(item)}`}
-                      className="w-full rounded-lg border border-primary/10 bg-white p-2 text-sm focus:border-primary focus:ring-primary"
-                    />
-                    <div className="mt-2 flex justify-end gap-2">
-                      <button
-                        type="button"
-                        className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-600"
-                        onClick={() => {
-                          setReplyTargetId(null);
-                          setReplyInput("");
-                        }}
-                      >
-                        取消
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-lg bg-primary px-3 py-1 text-xs font-semibold text-white"
-                        onClick={() => publishComment({ content: replyInput, parent_comment_id: item.id })}
-                        disabled={pendingComment}
-                      >
-                        回复
-                      </button>
+            <div className="space-y-6">
+              {comments.map((item) => (
+                <div key={item.id} className="space-y-3">
+                  <div className="flex gap-4">
+                    <div className="h-10 w-10 overflow-hidden rounded-full bg-slate-200">
+                      {item.user.avatar_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={item.user.avatar_url} alt={commentAuthorName(item)} className="h-full w-full object-cover" />
+                      ) : null}
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-primary">{commentAuthorName(item)}</span>
+                        <span className="text-xs text-slate-400">{formatDate(item.created_at)}</span>
+                      </div>
+                      <p className="text-sm text-slate-800">{item.content}</p>
+                      <div className="flex items-center gap-4 pt-2">
+                        <button className="flex items-center gap-1 text-xs text-slate-400 transition-colors hover:text-primary" type="button">
+                          <span className="material-symbols-outlined text-sm">thumb_up</span>
+                          {formatCount(item.like_count)}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setReplyTargetId(replyTargetId === item.id ? null : item.id);
+                            setReplyInput("");
+                          }}
+                          className="text-xs text-slate-400 transition-colors hover:text-primary"
+                        >
+                          回复
+                        </button>
+                      </div>
                     </div>
                   </div>
-                ) : null}
 
-                {item.replies.length > 0 ? (
-                  <div className="ml-[56px] space-y-3 rounded-xl border border-slate-100 bg-white p-3">
-                    {item.replies.map((reply) => (
-                      <div key={reply.id} className="flex gap-3">
-                        <div className="h-8 w-8 overflow-hidden rounded-full bg-slate-200">
-                          {reply.user.avatar_url ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={reply.user.avatar_url} alt={commentAuthorName(reply)} className="h-full w-full object-cover" />
-                          ) : null}
-                        </div>
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-bold text-slate-700">{commentAuthorName(reply)}</span>
-                            <span className="text-xs text-slate-400">{formatDate(reply.created_at)}</span>
-                          </div>
-                          <p className="text-sm text-slate-700">{reply.content}</p>
-                        </div>
+                  {replyTargetId === item.id ? (
+                    <div className="ml-[56px] rounded-xl border border-primary/10 bg-primary/5 p-3">
+                      <textarea
+                        rows={2}
+                        value={replyInput}
+                        onChange={(event) => setReplyInput(event.target.value)}
+                        placeholder={`回复 @${commentAuthorName(item)}`}
+                        className="w-full rounded-lg border border-primary/10 bg-white p-2 text-sm focus:border-primary focus:ring-primary"
+                      />
+                      <div className="mt-2 flex justify-end gap-2">
+                        <button
+                          type="button"
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-600"
+                          onClick={() => {
+                            setReplyTargetId(null);
+                            setReplyInput("");
+                          }}
+                        >
+                          取消
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-lg bg-primary px-3 py-1 text-xs font-semibold text-white"
+                          onClick={() => publishComment({ content: replyInput, parent_comment_id: item.id })}
+                          disabled={pendingComment}
+                        >
+                          回复
+                        </button>
                       </div>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ))}
+                    </div>
+                  ) : null}
 
-            {comments.length === 0 ? <EmptyState title="还没有评论" description="成为第一个评论的人吧。" /> : null}
-          </div>
-        </section>
+                  {item.replies.length > 0 ? (
+                    <div className="ml-[56px] space-y-3 rounded-xl border border-slate-100 bg-white p-3">
+                      {item.replies.map((reply) => (
+                        <div key={reply.id} className="flex gap-3">
+                          <div className="h-8 w-8 overflow-hidden rounded-full bg-slate-200">
+                            {reply.user.avatar_url ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={reply.user.avatar_url} alt={commentAuthorName(reply)} className="h-full w-full object-cover" />
+                            ) : null}
+                          </div>
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-slate-700">{commentAuthorName(reply)}</span>
+                              <span className="text-xs text-slate-400">{formatDate(reply.created_at)}</span>
+                            </div>
+                            <p className="text-sm text-slate-700">{reply.content}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+
+              {comments.length === 0 ? <EmptyState title="还没有评论" description="成为第一个评论的人吧。" /> : null}
+            </div>
+          </section>
+        ) : (
+          <section className="rounded-xl border border-primary/10 bg-primary/5 p-6 text-center text-sm text-slate-600">
+            {detail.status === "processing" ? "转码完成后即可评论与互动。" : "视频转码失败，评论区暂不可用。"}
+          </section>
+        )}
       </div>
 
       <aside className="w-full space-y-4 lg:w-96">
@@ -609,11 +678,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
               <div className="relative h-24 w-40 flex-shrink-0 overflow-hidden rounded-lg">
                 {video.cover_url ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={video.cover_url}
-                    alt={video.title}
-                    className="h-full w-full object-cover transition-transform group-hover:scale-110"
-                  />
+                  <img src={video.cover_url} alt={video.title} className="h-full w-full object-cover transition-transform group-hover:scale-110" />
                 ) : (
                   <div className="h-full w-full bg-primary/10" />
                 )}
@@ -622,9 +687,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
                 </div>
               </div>
               <div className="flex flex-col justify-between py-0.5">
-                <h4 className="line-clamp-2 text-sm font-bold leading-snug transition-colors group-hover:text-primary">
-                  {video.title}
-                </h4>
+                <h4 className="line-clamp-2 text-sm font-bold leading-snug transition-colors group-hover:text-primary">{video.title}</h4>
                 <div className="space-y-0.5">
                   <p className="text-xs text-slate-500">{video.author.username}</p>
                   <p className="flex items-center gap-1 text-[10px] text-slate-400">
@@ -636,7 +699,11 @@ export function VideoPage({ videoId }: VideoPageProps) {
             </Link>
           ))}
 
-          {recommendationCards.length === 0 ? <EmptyState title="暂无推荐视频" description="稍后再试试看。" /> : null}
+          {detail.status !== "published" ? (
+            <EmptyState title="推荐暂不可用" description="当前视频转码中，完成后会显示相关推荐。" />
+          ) : recommendationCards.length === 0 ? (
+            <EmptyState title="暂无推荐视频" description="稍后再试试看。" />
+          ) : null}
         </div>
       </aside>
     </div>

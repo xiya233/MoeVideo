@@ -24,6 +24,8 @@ Migration file: `internal/db/migrations/0001_init.sql`
 - `comments`
 - `comment_likes`
 - `video_view_events`
+- `video_transcode_jobs`
+- `video_hls_assets`
 
 ## Constraints
 
@@ -39,3 +41,5 @@ Migration file: `internal/db/migrations/0001_init.sql`
 - `comments(video_id, parent_comment_id, created_at DESC)`
 - `video_actions(video_id, action_type)`
 - `follows(followee_id)`
+- `video_transcode_jobs(status, available_at)`
+- `video_hls_assets(video_id)`

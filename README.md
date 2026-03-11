@@ -6,6 +6,7 @@
 - Backend: Go + Fiber + SQLite WAL（`backend/`）
 - Storage: local（默认）/ s3（环境变量切换）
 - Tooling: bun + mise
+- Transcode: ffmpeg/ffprobe（后端内置 HLS 多码率 Worker）
 
 ## Quick Start
 

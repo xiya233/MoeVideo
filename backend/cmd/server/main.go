@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -17,6 +20,7 @@ import (
 	"moevideo/backend/internal/handlers"
 	"moevideo/backend/internal/response"
 	"moevideo/backend/internal/storage"
+	"moevideo/backend/internal/transcode"
 )
 
 func main() {
@@ -91,6 +95,10 @@ func main() {
 
 	api := server.Group("/api/v1")
 	handlers.RegisterRoutes(api, appContainer)
+
+	workerCtx, cancelWorker := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancelWorker()
+	go transcode.NewWorker(appContainer).Run(workerCtx)
 
 	log.Printf("MoeVideo API listening on %s", cfg.HTTPAddr)
 	if err := server.Listen(cfg.HTTPAddr); err != nil {

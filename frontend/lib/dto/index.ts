@@ -34,8 +34,22 @@ export type HomeData = {
 };
 
 export type VideoDetail = {
+  status: "processing" | "published" | "failed";
   video: VideoCard;
   source_url: string;
+  playback: {
+    status: "processing" | "ready" | "failed";
+    type: "" | "hls" | "mp4";
+    hls_master_url?: string;
+    mp4_url?: string;
+    variants: Array<{
+      name: string;
+      width: number;
+      height: number;
+      bandwidth: number;
+      url: string;
+    }>;
+  };
   description: string;
   tags: string[];
   stats: {

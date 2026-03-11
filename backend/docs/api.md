@@ -61,6 +61,21 @@ Query params:
 - `PUT /videos/{videoId}/favorite`
 - `POST /videos/{videoId}/share`
 
+### `GET /videos/{videoId}` additions
+
+- top-level `status`: `processing | published | failed`
+- `playback`:
+  - `status`: `processing | ready | failed`
+  - `type`: `hls | mp4 | ""`
+  - optional `hls_master_url`
+  - optional `mp4_url`
+  - optional `variants[]`
+
+Visibility rules:
+
+- public users can only access `published + public`
+- uploader can access `processing/failed` details for polling
+
 ## Comments (one-level reply)
 
 - `GET /videos/{videoId}/comments`
@@ -81,3 +96,9 @@ Query params:
 - max size configurable by `MAX_UPLOAD_MB` (default 2048 MB)
 - supported video MIME: `video/mp4`, `video/quicktime`, `video/x-msvideo`, `video/webm`
 - supported cover MIME: `image/jpeg`, `image/png`, `image/webp`
+
+### `POST /videos` additions
+
+- response payload now includes `{ id, status }`
+- new videos are created with `status=processing`
+- backend worker transcodes HLS and then promotes to `published`
