@@ -2,6 +2,8 @@
 
 import { useEffect, useRef } from "react";
 
+const DEFAULT_PLAYER_THEME = "#3db8f5";
+
 type PlayerQuality = {
   html: string;
   url: string;
@@ -18,6 +20,15 @@ type ArtHlsPlayerProps = {
   onPause?: (positionSec: number, durationSec: number) => void;
   onEnded?: (durationSec: number) => void;
 };
+
+function resolvePlayerThemeColor(): string {
+  if (typeof window === "undefined") {
+    return DEFAULT_PLAYER_THEME;
+  }
+  const computed = window.getComputedStyle(document.documentElement);
+  const color = computed.getPropertyValue("--color-primary").trim();
+  return color || DEFAULT_PLAYER_THEME;
+}
 
 export function ArtHlsPlayer({
   sourceUrl,
@@ -73,6 +84,7 @@ export function ArtHlsPlayer({
       if (disposed || !containerRef.current) {
         return;
       }
+      const themeColor = resolvePlayerThemeColor();
 
       const customType =
         sourceType === "m3u8"
@@ -102,15 +114,23 @@ export function ArtHlsPlayer({
         type: sourceType,
         customType,
         poster,
+        theme: themeColor,
+        cssVar: {
+          "--art-theme": themeColor,
+        },
         volume: 0.7,
         autoplay: false,
         autoSize: true,
         fullscreen: true,
         fullscreenWeb: true,
         playbackRate: true,
+        screenshot: true,
         setting: true,
         // ArtPlayer mutates quality items by defining internal props; clone to avoid redefine errors on re-init.
         quality: sourceType === "m3u8" ? qualities.map((item) => ({ ...item })) : [],
+        moreVideoAttr: {
+          crossOrigin: "anonymous",
+        },
         pip: true,
         mutex: true,
       });

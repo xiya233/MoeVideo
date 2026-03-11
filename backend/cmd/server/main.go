@@ -83,7 +83,12 @@ func main() {
 	})
 
 	server.Use(recover.New())
-	server.Use(cors.New())
+	server.Use(cors.New(cors.Config{
+		AllowOrigins:  "*",
+		AllowMethods:  "GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD",
+		AllowHeaders:  "Origin,Content-Type,Accept,Authorization,Range",
+		ExposeHeaders: "Content-Length,Content-Range,Accept-Ranges",
+	}))
 
 	server.Get("/healthz", func(c *fiber.Ctx) error {
 		return response.OK(c, fiber.Map{"status": "ok"})
