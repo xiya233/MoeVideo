@@ -135,12 +135,14 @@ func (h *Handler) ListMyVideos(c *fiber.Ctx) error {
 SELECT v.id, v.title, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at),
        COALESCE(c.name, ''),
        COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, ''),
+       COALESCE(pm.provider, ''), COALESCE(pm.bucket, ''), COALESCE(pm.object_key, ''),
        u.id, u.username, COALESCE(u.followers_count, 0),
        COALESCE(am.provider, ''), COALESCE(am.bucket, ''), COALESCE(am.object_key, '')
 FROM videos v
 JOIN users u ON u.id = v.uploader_id
 LEFT JOIN categories c ON c.id = v.category_id
 LEFT JOIN media_objects cm ON cm.id = v.cover_media_id
+LEFT JOIN media_objects pm ON pm.id = v.preview_media_id
 LEFT JOIN media_objects am ON am.id = u.avatar_media_id
 WHERE v.uploader_id = ? AND v.status != 'deleted'
 `
@@ -187,12 +189,13 @@ func (h *Handler) scanVideoCards(rows *sql.Rows) ([]map[string]interface{}, erro
 	cards := make([]map[string]interface{}, 0)
 	for rows.Next() {
 		var (
-			id, title, publishedAt, category              string
-			durationSec, viewsCount, commentsCount        int64
-			coverProvider, coverBucket, coverObjectKey    string
-			authorID, authorName                          string
-			authorFollowers                               int64
-			authorProvider, authorBucket, authorObjectKey string
+			id, title, publishedAt, category                 string
+			durationSec, viewsCount, commentsCount           int64
+			coverProvider, coverBucket, coverObjectKey       string
+			previewProvider, previewBucket, previewObjectKey string
+			authorID, authorName                             string
+			authorFollowers                                  int64
+			authorProvider, authorBucket, authorObjectKey    string
 		)
 		if err := rows.Scan(
 			&id,
@@ -205,6 +208,9 @@ func (h *Handler) scanVideoCards(rows *sql.Rows) ([]map[string]interface{}, erro
 			&coverProvider,
 			&coverBucket,
 			&coverObjectKey,
+			&previewProvider,
+			&previewBucket,
+			&previewObjectKey,
 			&authorID,
 			&authorName,
 			&authorFollowers,
@@ -215,14 +221,15 @@ func (h *Handler) scanVideoCards(rows *sql.Rows) ([]map[string]interface{}, erro
 			return nil, err
 		}
 		cards = append(cards, map[string]interface{}{
-			"id":             id,
-			"title":          title,
-			"cover_url":      mediaURL(h.app.Storage, coverProvider, coverBucket, coverObjectKey),
-			"duration_sec":   durationSec,
-			"views_count":    viewsCount,
-			"comments_count": commentsCount,
-			"published_at":   publishedAt,
-			"category":       category,
+			"id":               id,
+			"title":            title,
+			"cover_url":        mediaURL(h.app.Storage, coverProvider, coverBucket, coverObjectKey),
+			"preview_webp_url": mediaURL(h.app.Storage, previewProvider, previewBucket, previewObjectKey),
+			"duration_sec":     durationSec,
+			"views_count":      viewsCount,
+			"comments_count":   commentsCount,
+			"published_at":     publishedAt,
+			"category":         category,
 			"author": map[string]interface{}{
 				"id":              authorID,
 				"username":        authorName,

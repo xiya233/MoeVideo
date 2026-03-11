@@ -31,6 +31,64 @@ function formatDurationLabel(duration: number): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+const PROGRESS_KEY_PREFIX = "moevideo.progress.v1:";
+
+function progressStorageKey(videoId: string): string {
+  return `${PROGRESS_KEY_PREFIX}${videoId}`;
+}
+
+function loadLocalProgress(videoId: string): { position_sec: number; duration_sec: number } {
+  if (typeof window === "undefined") {
+    return { position_sec: 0, duration_sec: 0 };
+  }
+  try {
+    const raw = window.localStorage.getItem(progressStorageKey(videoId));
+    if (!raw) {
+      return { position_sec: 0, duration_sec: 0 };
+    }
+    const parsed = JSON.parse(raw) as { position_sec?: unknown; duration_sec?: unknown };
+    const position = Number(parsed.position_sec);
+    const duration = Number(parsed.duration_sec);
+    return {
+      position_sec: Number.isFinite(position) ? Math.max(0, Math.floor(position)) : 0,
+      duration_sec: Number.isFinite(duration) ? Math.max(0, Math.floor(duration)) : 0,
+    };
+  } catch {
+    return { position_sec: 0, duration_sec: 0 };
+  }
+}
+
+function saveLocalProgress(videoId: string, positionSec: number, durationSec: number): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(
+    progressStorageKey(videoId),
+    JSON.stringify({
+      position_sec: Math.max(0, Math.floor(positionSec)),
+      duration_sec: Math.max(0, Math.floor(durationSec)),
+      updated_at: Date.now(),
+    }),
+  );
+}
+
+function clearLocalProgress(videoId: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.removeItem(progressStorageKey(videoId));
+}
+
+function shouldOfferResume(positionSec: number, durationSec: number): boolean {
+  if (positionSec <= 30) {
+    return false;
+  }
+  if (durationSec <= 0) {
+    return true;
+  }
+  return durationSec - positionSec > 15;
+}
+
 function actionButtonClass(active: boolean): string {
   return cn(
     "flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
@@ -55,8 +113,14 @@ export function VideoPage({ videoId }: VideoPageProps) {
   const [pendingFavorite, setPendingFavorite] = useState(false);
   const [pendingFollow, setPendingFollow] = useState(false);
   const [pendingComment, setPendingComment] = useState(false);
+  const [resumePromptOpen, setResumePromptOpen] = useState(false);
+  const [resumePositionSec, setResumePositionSec] = useState(0);
+  const [playerStartSec, setPlayerStartSec] = useState(0);
 
   const hasTrackedView = useRef(false);
+  const progressRef = useRef<{ positionSec: number; durationSec: number }>({ positionSec: 0, durationSec: 0 });
+  const lastPersistedSecRef = useRef(-1);
+  const persistingProgressRef = useRef(false);
 
   const fetchDetail = useCallback(async (): Promise<VideoDetail> => {
     const data = await request<VideoDetail>(`/videos/${videoId}`, { auth: true });
@@ -141,6 +205,33 @@ export function VideoPage({ videoId }: VideoPageProps) {
     });
   }, [detail, request, videoId]);
 
+  useEffect(() => {
+    if (!detail || detail.status !== "published") {
+      setResumePromptOpen(false);
+      setResumePositionSec(0);
+      setPlayerStartSec(0);
+      progressRef.current = { positionSec: 0, durationSec: 0 };
+      lastPersistedSecRef.current = -1;
+      return;
+    }
+
+    progressRef.current = { positionSec: 0, durationSec: detail.video.duration_sec || 0 };
+    lastPersistedSecRef.current = -1;
+    setPlayerStartSec(0);
+
+    const serverProgress = Math.max(0, Math.floor(detail.viewer_progress_sec ?? 0));
+    const localProgress = loadLocalProgress(videoId).position_sec;
+    const initialProgress = session ? serverProgress : localProgress;
+
+    if (shouldOfferResume(initialProgress, detail.video.duration_sec || 0)) {
+      setResumePositionSec(initialProgress);
+      setResumePromptOpen(true);
+    } else {
+      setResumePositionSec(0);
+      setResumePromptOpen(false);
+    }
+  }, [detail?.status, detail?.video.duration_sec, detail?.viewer_progress_sec, session, videoId]);
+
   const requireAuth = (): boolean => {
     if (session) {
       return true;
@@ -148,6 +239,99 @@ export function VideoPage({ videoId }: VideoPageProps) {
     openAuthDialog("login");
     return false;
   };
+
+  const clearStoredProgress = useCallback(async () => {
+    if (session) {
+      try {
+        await request<{ saved: boolean; position_sec: number }>(`/videos/${videoId}/progress`, {
+          method: "PUT",
+          auth: true,
+          body: {
+            position_sec: 0,
+            duration_sec: detail?.video.duration_sec ?? 0,
+            completed: true,
+          },
+        });
+      } catch {
+        // Ignore progress cleanup errors.
+      }
+    } else {
+      clearLocalProgress(videoId);
+    }
+    lastPersistedSecRef.current = 0;
+  }, [detail?.video.duration_sec, request, session, videoId]);
+
+  const persistProgress = useCallback(
+    async ({ force = false, completed = false }: { force?: boolean; completed?: boolean } = {}) => {
+      if (!detail || detail.status !== "published") {
+        return;
+      }
+      if (persistingProgressRef.current && !force) {
+        return;
+      }
+
+      const positionSec = Math.max(0, Math.floor(progressRef.current.positionSec));
+      const durationSec = Math.max(0, Math.floor(progressRef.current.durationSec || detail.video.duration_sec || 0));
+      if (!force && positionSec === lastPersistedSecRef.current) {
+        return;
+      }
+
+      const shouldClear = completed || (durationSec > 0 && positionSec >= durationSec - 15);
+      const shouldWrite = positionSec > 0 || shouldClear;
+      if (!shouldWrite) {
+        return;
+      }
+
+      persistingProgressRef.current = true;
+      try {
+        if (session) {
+          const data = await request<{ saved: boolean; position_sec: number }>(`/videos/${videoId}/progress`, {
+            method: "PUT",
+            auth: true,
+            body: {
+              position_sec: positionSec,
+              duration_sec: durationSec,
+              completed: shouldClear,
+            },
+          });
+          lastPersistedSecRef.current = Math.max(0, Math.floor(data.position_sec ?? 0));
+        } else if (shouldClear) {
+          clearLocalProgress(videoId);
+          lastPersistedSecRef.current = 0;
+        } else {
+          saveLocalProgress(videoId, positionSec, durationSec);
+          lastPersistedSecRef.current = positionSec;
+        }
+      } catch {
+        // Ignore progress persistence errors.
+      } finally {
+        persistingProgressRef.current = false;
+      }
+    },
+    [detail, request, session, videoId],
+  );
+
+  useEffect(() => {
+    if (!detail || detail.status !== "published") {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void persistProgress();
+    }, 5000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [detail?.status, persistProgress]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      void persistProgress({ force: true });
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [persistProgress]);
 
   const toggleLike = async () => {
     if (!detail || detail.status !== "published" || pendingLike) {
@@ -393,6 +577,50 @@ export function VideoPage({ videoId }: VideoPageProps) {
     return [{ html: "Auto", url: detail.playback.hls_master_url, default: true }, ...variants];
   }, [detail]);
 
+  const handlePlayerTimeUpdate = useCallback((positionSec: number, durationSec: number) => {
+    progressRef.current = {
+      positionSec,
+      durationSec,
+    };
+  }, []);
+
+  const handlePlayerPause = useCallback(
+    (positionSec: number, durationSec: number) => {
+      progressRef.current = {
+        positionSec,
+        durationSec,
+      };
+      void persistProgress({ force: true });
+    },
+    [persistProgress],
+  );
+
+  const handlePlayerEnded = useCallback(
+    (durationSec: number) => {
+      progressRef.current = {
+        positionSec: durationSec,
+        durationSec,
+      };
+      setResumePromptOpen(false);
+      setResumePositionSec(0);
+      void persistProgress({ force: true, completed: true });
+    },
+    [persistProgress],
+  );
+
+  const continueFromResume = () => {
+    setPlayerStartSec(resumePositionSec);
+    setResumePromptOpen(false);
+  };
+
+  const restartFromBeginning = () => {
+    setPlayerStartSec(0);
+    setResumePromptOpen(false);
+    setResumePositionSec(0);
+    progressRef.current = { positionSec: 0, durationSec: detail?.video.duration_sec ?? 0 };
+    void clearStoredProgress();
+  };
+
   if (loading) {
     return (
       <div className="flex flex-col gap-8 lg:flex-row">
@@ -438,12 +666,38 @@ export function VideoPage({ videoId }: VideoPageProps) {
               sourceUrl={playerSource.url}
               poster={detail.video.cover_url}
               qualities={playerQualities}
+              startTimeSec={playerStartSec}
+              onTimeUpdate={handlePlayerTimeUpdate}
+              onPause={handlePlayerPause}
+              onEnded={handlePlayerEnded}
             />
           ) : (
             <div className="flex h-full w-full items-center justify-center bg-slate-950/90 text-slate-200">
               暂无可播放视频源
             </div>
           )}
+          {detail.status === "published" && resumePromptOpen ? (
+            <div className="absolute left-4 top-4 z-10 max-w-[280px] rounded-xl border border-white/20 bg-black/65 p-3 text-white shadow-xl backdrop-blur">
+              <p className="text-xs font-semibold">检测到上次播放进度</p>
+              <p className="mt-1 text-xs text-white/80">继续播放到 {formatDurationLabel(resumePositionSec)}</p>
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={continueFromResume}
+                  className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-slate-900"
+                >
+                  继续播放
+                </button>
+                <button
+                  type="button"
+                  onClick={restartFromBeginning}
+                  className="rounded-lg border border-white/40 px-3 py-1.5 text-xs font-semibold text-white"
+                >
+                  从头开始
+                </button>
+              </div>
+            </div>
+          ) : null}
         </section>
 
         <section className="space-y-4">

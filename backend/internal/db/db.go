@@ -57,6 +57,13 @@ func applyPragmas(db *sql.DB) error {
 }
 
 func runMigrations(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		name TEXT PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+
 	entries, err := fs.ReadDir(migrationFS, "migrations")
 	if err != nil {
 		return fmt.Errorf("read migrations: %w", err)
@@ -72,12 +79,33 @@ func runMigrations(db *sql.DB) error {
 	sort.Strings(files)
 
 	for _, file := range files {
+		var appliedName string
+		err := db.QueryRow(`SELECT name FROM schema_migrations WHERE name = ? LIMIT 1`, file).Scan(&appliedName)
+		if err == nil {
+			continue
+		}
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("query schema_migrations for %s: %w", file, err)
+		}
+
 		body, err := migrationFS.ReadFile(file)
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", file, err)
 		}
-		if _, err := db.Exec(string(body)); err != nil {
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			return fmt.Errorf("begin migration tx %s: %w", file, err)
+		}
+		if _, err := tx.Exec(string(body)); err != nil {
+			_ = tx.Rollback()
 			return fmt.Errorf("apply migration %s: %w", file, err)
+		}
+		if _, err := tx.Exec(`INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)`, file, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("record migration %s: %w", file, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %s: %w", file, err)
 		}
 	}
 	return nil

@@ -2,6 +2,7 @@ package transcode
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,6 +51,20 @@ func (f fakeEngine) BuildHLS(_ context.Context, _ string, outputDir string, segm
 			},
 		},
 	}, nil
+}
+
+func (f fakeEngine) GenerateCover(_ context.Context, _ string, outputPath string) error {
+	if f.err != nil {
+		return f.err
+	}
+	return os.WriteFile(outputPath, []byte("cover"), 0o644)
+}
+
+func (f fakeEngine) GeneratePreviewWebP(_ context.Context, _ string, outputPath string) error {
+	if f.err != nil {
+		return f.err
+	}
+	return os.WriteFile(outputPath, []byte("preview"), 0o644)
 }
 
 func buildWorkerTestApp(t *testing.T) (*app.App, string) {
@@ -196,6 +211,20 @@ func TestWorkerRunOnceSuccess(t *testing.T) {
 	}
 	if hlsCount != 1 {
 		t.Fatalf("expected one hls asset row, got %d", hlsCount)
+	}
+
+	var (
+		coverMediaID   sql.NullString
+		previewMediaID sql.NullString
+	)
+	if err := appContainer.DB.QueryRow(`SELECT cover_media_id, preview_media_id FROM videos WHERE id = ?`, videoID).Scan(&coverMediaID, &previewMediaID); err != nil {
+		t.Fatalf("query generated media ids: %v", err)
+	}
+	if !coverMediaID.Valid {
+		t.Fatalf("expected cover media id to be generated")
+	}
+	if !previewMediaID.Valid {
+		t.Fatalf("expected preview media id to be generated")
 	}
 }
 

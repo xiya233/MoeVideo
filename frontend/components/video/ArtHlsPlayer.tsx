@@ -13,9 +13,22 @@ type ArtHlsPlayerProps = {
   sourceType: "m3u8" | "mp4";
   poster?: string;
   qualities?: PlayerQuality[];
+  startTimeSec?: number;
+  onTimeUpdate?: (positionSec: number, durationSec: number) => void;
+  onPause?: (positionSec: number, durationSec: number) => void;
+  onEnded?: (durationSec: number) => void;
 };
 
-export function ArtHlsPlayer({ sourceUrl, sourceType, poster, qualities = [] }: ArtHlsPlayerProps) {
+export function ArtHlsPlayer({
+  sourceUrl,
+  sourceType,
+  poster,
+  qualities = [],
+  startTimeSec = 0,
+  onTimeUpdate,
+  onPause,
+  onEnded,
+}: ArtHlsPlayerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -24,7 +37,13 @@ export function ArtHlsPlayer({ sourceUrl, sourceType, poster, qualities = [] }: 
     }
 
     let disposed = false;
-    let artInstance: { destroy: (removeHtml?: boolean) => void } | null = null;
+    let artInstance:
+      | {
+          destroy: (removeHtml?: boolean) => void;
+          on?: (eventName: string, callback: () => void) => void;
+          video?: HTMLVideoElement;
+        }
+      | null = null;
     let hlsInstance:
       | {
           destroy: () => void;
@@ -78,6 +97,47 @@ export function ArtHlsPlayer({ sourceUrl, sourceType, poster, qualities = [] }: 
         pip: true,
         mutex: true,
       });
+
+      const video = artInstance.video as HTMLVideoElement;
+      let hasAppliedStartTime = false;
+      const applyStartTime = () => {
+        if (hasAppliedStartTime || startTimeSec <= 0) {
+          return;
+        }
+        const duration = Number.isFinite(video.duration) ? video.duration : 0;
+        if (duration > 0 && startTimeSec < duration - 1) {
+          video.currentTime = startTimeSec;
+        }
+        hasAppliedStartTime = true;
+      };
+      if (video.readyState >= 1) {
+        applyStartTime();
+      } else {
+        video.addEventListener("loadedmetadata", applyStartTime, { once: true });
+      }
+
+      const handleTimeUpdate = () => {
+        onTimeUpdate?.(video.currentTime || 0, Number.isFinite(video.duration) ? video.duration : 0);
+      };
+      const handlePause = () => {
+        onPause?.(video.currentTime || 0, Number.isFinite(video.duration) ? video.duration : 0);
+      };
+      const handleEnded = () => {
+        onEnded?.(Number.isFinite(video.duration) ? video.duration : 0);
+      };
+
+      video.addEventListener("timeupdate", handleTimeUpdate);
+      video.addEventListener("pause", handlePause);
+      video.addEventListener("ended", handleEnded);
+
+      const cleanupListeners = () => {
+        video.removeEventListener("timeupdate", handleTimeUpdate);
+        video.removeEventListener("pause", handlePause);
+        video.removeEventListener("ended", handleEnded);
+      };
+      if (artInstance.on) {
+        artInstance.on("destroy", cleanupListeners);
+      }
     })();
 
     return () => {
@@ -89,7 +149,7 @@ export function ArtHlsPlayer({ sourceUrl, sourceType, poster, qualities = [] }: 
         artInstance.destroy(false);
       }
     };
-  }, [poster, qualities, sourceType, sourceUrl]);
+  }, [onEnded, onPause, onTimeUpdate, poster, qualities, sourceType, sourceUrl, startTimeSec]);
 
   return (
     <div className="h-full w-full [&_.art-video-player]:!h-full [&_.art-video-player]:!w-full">

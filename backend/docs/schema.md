@@ -1,6 +1,10 @@
 # SQLite Schema
 
-Migration file: `internal/db/migrations/0001_init.sql`
+Migration files:
+
+- `internal/db/migrations/0001_init.sql`
+- `internal/db/migrations/0002_hls_transcode.sql`
+- `internal/db/migrations/0003_playback_preview.sql`
 
 ## Runtime pragmas
 
@@ -26,6 +30,11 @@ Migration file: `internal/db/migrations/0001_init.sql`
 - `video_view_events`
 - `video_transcode_jobs`
 - `video_hls_assets`
+- `user_video_progress`
+
+`videos` table additions:
+
+- `preview_media_id` (nullable FK to `media_objects`)
 
 ## Constraints
 
@@ -43,3 +52,5 @@ Migration file: `internal/db/migrations/0001_init.sql`
 - `follows(followee_id)`
 - `video_transcode_jobs(status, available_at)`
 - `video_hls_assets(video_id)`
+- `user_video_progress(updated_at DESC)`
+- `videos(preview_media_id)`

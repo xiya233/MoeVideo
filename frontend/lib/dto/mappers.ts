@@ -67,6 +67,7 @@ export function mapVideoCard(value: unknown): VideoCard {
     id: str(src.id),
     title: str(src.title, "未命名视频"),
     cover_url: str(src.cover_url) || undefined,
+    preview_webp_url: str(src.preview_webp_url) || undefined,
     duration_sec: num(src.duration_sec),
     views_count: num(src.views_count),
     comments_count: num(src.comments_count),
@@ -121,6 +122,7 @@ export function mapVideoDetail(value: unknown): VideoDetail {
     status,
     video: mapVideoCard(src.video),
     source_url: str(src.source_url),
+    viewer_progress_sec: num(src.viewer_progress_sec),
     playback: {
       status: playbackStatus,
       type: playbackType,

@@ -37,15 +37,16 @@ type Author struct {
 }
 
 type VideoCard struct {
-	ID            string `json:"id"`
-	Title         string `json:"title"`
-	CoverURL      string `json:"cover_url,omitempty"`
-	DurationSec   int64  `json:"duration_sec"`
-	Author        Author `json:"author"`
-	ViewsCount    int64  `json:"views_count"`
-	CommentsCount int64  `json:"comments_count"`
-	PublishedAt   string `json:"published_at"`
-	Category      string `json:"category"`
+	ID             string `json:"id"`
+	Title          string `json:"title"`
+	CoverURL       string `json:"cover_url,omitempty"`
+	PreviewWebPURL string `json:"preview_webp_url,omitempty"`
+	DurationSec    int64  `json:"duration_sec"`
+	Author         Author `json:"author"`
+	ViewsCount     int64  `json:"views_count"`
+	CommentsCount  int64  `json:"comments_count"`
+	PublishedAt    string `json:"published_at"`
+	Category       string `json:"category"`
 }
 
 type VideoStats struct {
@@ -63,13 +64,14 @@ type ViewerActions struct {
 }
 
 type VideoDetail struct {
-	Video         VideoCard     `json:"video"`
-	SourceURL     string        `json:"source_url"`
-	Description   string        `json:"description"`
-	Tags          []string      `json:"tags"`
-	Stats         VideoStats    `json:"stats"`
-	Uploader      Author        `json:"uploader"`
-	ViewerActions ViewerActions `json:"viewer_actions"`
+	Video             VideoCard     `json:"video"`
+	SourceURL         string        `json:"source_url"`
+	ViewerProgressSec int64         `json:"viewer_progress_sec,omitempty"`
+	Description       string        `json:"description"`
+	Tags              []string      `json:"tags"`
+	Stats             VideoStats    `json:"stats"`
+	Uploader          Author        `json:"uploader"`
+	ViewerActions     ViewerActions `json:"viewer_actions"`
 }
 
 type CommentItem struct {

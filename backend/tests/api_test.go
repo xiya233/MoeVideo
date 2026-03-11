@@ -380,6 +380,164 @@ func TestLocalUploadOverDefaultBodyLimit(t *testing.T) {
 	}
 }
 
+func TestUploadPresignExtendedVideoFormats(t *testing.T) {
+	srv, _ := newTestServer(t)
+	_, access, _ := registerUser(t, srv, "doris", "doris@example.com", "password123")
+
+	status, _ := doJSONRequest(t, srv, http.MethodPost, "/api/v1/uploads/presign", map[string]interface{}{
+		"purpose":         "video",
+		"filename":        "sample.mkv",
+		"content_type":    "video/x-matroska",
+		"file_size_bytes": 1024,
+	}, map[string]string{"Authorization": "Bearer " + access})
+	if status != http.StatusCreated {
+		t.Fatalf("mkv upload should be accepted, got %d", status)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/uploads/presign", map[string]interface{}{
+		"purpose":         "video",
+		"filename":        "type-empty.ts",
+		"content_type":    "",
+		"file_size_bytes": 1024,
+	}, map[string]string{"Authorization": "Bearer " + access})
+	if status != http.StatusCreated {
+		t.Fatalf("empty mime with allowed extension should be accepted, got %d", status)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/uploads/presign", map[string]interface{}{
+		"purpose":         "video",
+		"filename":        "evil.exe",
+		"content_type":    "application/octet-stream",
+		"file_size_bytes": 1024,
+	}, map[string]string{"Authorization": "Bearer " + access})
+	if status != http.StatusBadRequest {
+		t.Fatalf("unsupported extension should be rejected, got %d", status)
+	}
+}
+
+func TestVideoProgressSaveAndClear(t *testing.T) {
+	srv, container := newTestServer(t)
+	userID, access, _ := registerUser(t, srv, "gina", "gina@example.com", "password123")
+	videoID := prepareVideoForUser(t, container, userID)
+
+	status, saveResp := doJSONRequest(t, srv, http.MethodPut, "/api/v1/videos/"+videoID+"/progress", map[string]interface{}{
+		"position_sec": 45,
+		"duration_sec": 120,
+	}, map[string]string{"Authorization": "Bearer " + access})
+	if status != http.StatusOK {
+		t.Fatalf("save progress should succeed, got %d (%s)", status, saveResp.Message)
+	}
+	var saveData struct {
+		PositionSec int64 `json:"position_sec"`
+	}
+	if err := json.Unmarshal(saveResp.Data, &saveData); err != nil {
+		t.Fatalf("parse save progress response: %v", err)
+	}
+	if saveData.PositionSec != 45 {
+		t.Fatalf("expected saved progress 45, got %d", saveData.PositionSec)
+	}
+
+	status, detailResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+videoID, nil, map[string]string{
+		"Authorization": "Bearer " + access,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("owner detail should succeed, got %d", status)
+	}
+	var detailData struct {
+		ViewerProgressSec int64 `json:"viewer_progress_sec"`
+	}
+	if err := json.Unmarshal(detailResp.Data, &detailData); err != nil {
+		t.Fatalf("parse detail data: %v", err)
+	}
+	if detailData.ViewerProgressSec != 45 {
+		t.Fatalf("expected viewer_progress_sec=45, got %d", detailData.ViewerProgressSec)
+	}
+
+	status, clearResp := doJSONRequest(t, srv, http.MethodPut, "/api/v1/videos/"+videoID+"/progress", map[string]interface{}{
+		"position_sec": 119,
+		"duration_sec": 120,
+		"completed":    true,
+	}, map[string]string{"Authorization": "Bearer " + access})
+	if status != http.StatusOK {
+		t.Fatalf("clear progress should succeed, got %d (%s)", status, clearResp.Message)
+	}
+	var clearData struct {
+		PositionSec int64 `json:"position_sec"`
+	}
+	if err := json.Unmarshal(clearResp.Data, &clearData); err != nil {
+		t.Fatalf("parse clear progress response: %v", err)
+	}
+	if clearData.PositionSec != 0 {
+		t.Fatalf("expected cleared progress 0, got %d", clearData.PositionSec)
+	}
+
+	status, detailResp = doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+videoID, nil, map[string]string{
+		"Authorization": "Bearer " + access,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("owner detail should still succeed, got %d", status)
+	}
+	if err := json.Unmarshal(detailResp.Data, &detailData); err != nil {
+		t.Fatalf("parse detail data after clear: %v", err)
+	}
+	if detailData.ViewerProgressSec != 0 {
+		t.Fatalf("expected viewer_progress_sec reset to 0, got %d", detailData.ViewerProgressSec)
+	}
+}
+
+func TestVideoCardIncludesPreviewWebPURL(t *testing.T) {
+	srv, container := newTestServer(t)
+	userID, _, _ := registerUser(t, srv, "helen", "helen@example.com", "password123")
+	videoID := prepareVideoForUser(t, container, userID)
+
+	now := util.FormatTime(time.Now().UTC())
+	previewMediaID := "media-" + uuid.NewString()
+	if _, err := container.DB.Exec(
+		`INSERT INTO media_objects (id, provider, bucket, object_key, original_filename, mime_type, size_bytes, duration_sec, created_by, created_at)
+		 VALUES (?, 'local', '', ?, 'preview.webp', 'image/webp', 1234, 0, ?, ?)`,
+		previewMediaID,
+		"hls/"+userID+"/"+videoID+"/preview.webp",
+		userID,
+		now,
+	); err != nil {
+		t.Fatalf("insert preview media: %v", err)
+	}
+	if _, err := container.DB.Exec(`UPDATE videos SET preview_media_id = ?, updated_at = ? WHERE id = ?`, previewMediaID, now, videoID); err != nil {
+		t.Fatalf("set preview media id: %v", err)
+	}
+
+	status, videosResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos?limit=10", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list videos should succeed, got %d", status)
+	}
+	var payload struct {
+		Items []struct {
+			ID             string `json:"id"`
+			PreviewWebPURL string `json:"preview_webp_url"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(videosResp.Data, &payload); err != nil {
+		t.Fatalf("parse videos payload: %v", err)
+	}
+	if len(payload.Items) == 0 {
+		t.Fatalf("expected at least one video card")
+	}
+
+	found := false
+	for _, item := range payload.Items {
+		if item.ID != videoID {
+			continue
+		}
+		found = true
+		if item.PreviewWebPURL == "" {
+			t.Fatalf("expected preview_webp_url for target video")
+		}
+	}
+	if !found {
+		t.Fatalf("expected target video %s in list payload", videoID)
+	}
+}
+
 func TestCreateVideoEnqueueProcessingAndDetailVisibility(t *testing.T) {
 	srv, container := newTestServer(t)
 	userID, access, _ := registerUser(t, srv, "eva", "eva@example.com", "password123")

@@ -17,6 +17,65 @@ import (
 
 var unsafeFileChars = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 
+var allowedVideoMIMEs = map[string]struct{}{
+	"video/mp4":              {},
+	"video/quicktime":        {},
+	"video/x-msvideo":        {},
+	"video/webm":             {},
+	"video/x-matroska":       {},
+	"video/matroska":         {},
+	"video/mkv":              {},
+	"video/x-mkv":            {},
+	"application/x-matroska": {},
+	"application/matroska":   {},
+	"video/x-flv":            {},
+	"video/mpeg":             {},
+	"video/3gpp":             {},
+	"video/x-m4v":            {},
+	"video/mp2t":             {},
+}
+
+var allowedVideoExts = map[string]struct{}{
+	".mp4":  {},
+	".mov":  {},
+	".avi":  {},
+	".webm": {},
+	".mkv":  {},
+	".flv":  {},
+	".mpeg": {},
+	".mpg":  {},
+	".3gp":  {},
+	".m4v":  {},
+	".ts":   {},
+}
+
+var allowedCoverMIMEs = map[string]struct{}{
+	"image/jpeg": {},
+	"image/png":  {},
+	"image/webp": {},
+}
+
+var coverMIMEByExt = map[string]string{
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png":  "image/png",
+	".webp": "image/webp",
+}
+
+var videoMIMEByExt = map[string]string{
+	".mp4":  "video/mp4",
+	".mov":  "video/quicktime",
+	".avi":  "video/x-msvideo",
+	".webm": "video/webm",
+	".mkv":  "video/x-matroska",
+	".flv":  "video/x-flv",
+	".mpeg": "video/mpeg",
+	".mpg":  "video/mpeg",
+	".3gp":  "video/3gpp",
+	".m4v":  "video/x-m4v",
+	".ts":   "video/mp2t",
+}
+
 type presignRequest struct {
 	Purpose       string `json:"purpose"`
 	Filename      string `json:"filename"`
@@ -44,15 +103,16 @@ func (h *Handler) CreateUploadPresign(c *fiber.Ctx) error {
 	if req.Purpose != "video" && req.Purpose != "cover" {
 		return response.Error(c, fiber.StatusBadRequest, "purpose must be video or cover")
 	}
-	if req.Filename == "" || req.ContentType == "" {
-		return response.Error(c, fiber.StatusBadRequest, "filename and content_type are required")
+	if req.Filename == "" {
+		return response.Error(c, fiber.StatusBadRequest, "filename is required")
 	}
 	if req.FileSizeBytes <= 0 || req.FileSizeBytes > h.app.Config.MaxUploadBytes {
 		return response.Error(c, fiber.StatusBadRequest, "file_size_bytes is invalid")
 	}
-	if !isAllowedMIME(req.Purpose, req.ContentType) {
+	if !isAllowedUpload(req.Purpose, req.ContentType, req.Filename) {
 		return response.Error(c, fiber.StatusBadRequest, "content_type is not allowed")
 	}
+	req.ContentType = resolveContentType(req.Purpose, req.ContentType, req.Filename)
 
 	uploadID := newID()
 	uploadToken, err := util.RandomToken(32)
@@ -322,19 +382,49 @@ func buildObjectKey(purpose, userID, uploadID, filename string) string {
 func isAllowedMIME(purpose, mime string) bool {
 	mime = strings.ToLower(strings.TrimSpace(mime))
 	if purpose == "video" {
-		switch mime {
-		case "video/mp4", "video/quicktime", "video/x-msvideo", "video/webm":
-			return true
-		default:
-			return false
-		}
+		_, ok := allowedVideoMIMEs[mime]
+		return ok
 	}
-	switch mime {
-	case "image/jpeg", "image/png", "image/webp":
+	_, ok := allowedCoverMIMEs[mime]
+	return ok
+}
+
+func isAllowedUpload(purpose, mime, filename string) bool {
+	mime = strings.ToLower(strings.TrimSpace(mime))
+	if isAllowedMIME(purpose, mime) {
 		return true
-	default:
+	}
+
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(filename)))
+	if ext == "" {
 		return false
 	}
+	if purpose == "video" {
+		_, ok := allowedVideoExts[ext]
+		return ok
+	}
+	if _, ok := coverMIMEByExt[ext]; !ok {
+		return false
+	}
+	return mime == "" || mime == "application/octet-stream"
+}
+
+func resolveContentType(purpose, mime, filename string) string {
+	mime = strings.ToLower(strings.TrimSpace(mime))
+	if isAllowedMIME(purpose, mime) {
+		return mime
+	}
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(filename)))
+	if purpose == "video" {
+		if mapped, ok := videoMIMEByExt[ext]; ok {
+			return mapped
+		}
+		return "application/octet-stream"
+	}
+	if mapped, ok := coverMIMEByExt[ext]; ok {
+		return mapped
+	}
+	return "application/octet-stream"
 }
 
 func nullableInt(v int64) interface{} {

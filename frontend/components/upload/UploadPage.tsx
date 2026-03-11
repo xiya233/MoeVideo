@@ -9,8 +9,71 @@ import type { Category, UploadCompleteData, UploadTicket } from "@/lib/dto";
 import { mapCategory, mapUploadCompleteData, mapUploadTicket } from "@/lib/dto/mappers";
 
 const MAX_BYTES = 2 * 1024 * 1024 * 1024;
+const ALLOWED_VIDEO_MIMES = new Set([
+  "video/mp4",
+  "video/quicktime",
+  "video/x-msvideo",
+  "video/webm",
+  "video/x-matroska",
+  "video/matroska",
+  "video/mkv",
+  "video/x-mkv",
+  "application/x-matroska",
+  "application/matroska",
+  "video/x-flv",
+  "video/mpeg",
+  "video/3gpp",
+  "video/x-m4v",
+  "video/mp2t",
+]);
+const ALLOWED_VIDEO_EXTENSIONS = new Set([
+  ".mp4",
+  ".mov",
+  ".avi",
+  ".webm",
+  ".mkv",
+  ".flv",
+  ".mpeg",
+  ".mpg",
+  ".3gp",
+  ".m4v",
+  ".ts",
+]);
+const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".avi": "video/x-msvideo",
+  ".webm": "video/webm",
+  ".mkv": "video/x-matroska",
+  ".flv": "video/x-flv",
+  ".mpeg": "video/mpeg",
+  ".mpg": "video/mpeg",
+  ".3gp": "video/3gpp",
+  ".m4v": "video/x-m4v",
+  ".ts": "video/mp2t",
+};
 
 type UploadPurpose = "video" | "cover";
+
+function getFileExtension(filename: string): string {
+  const idx = filename.lastIndexOf(".");
+  if (idx < 0) {
+    return "";
+  }
+  return filename.slice(idx).toLowerCase();
+}
+
+function resolveVideoContentType(file: File): string {
+  const fileType = file.type.toLowerCase().trim();
+  if (ALLOWED_VIDEO_MIMES.has(fileType)) {
+    return fileType;
+  }
+  const ext = getFileExtension(file.name);
+  if (ext && VIDEO_MIME_BY_EXTENSION[ext]) {
+    return VIDEO_MIME_BY_EXTENSION[ext];
+  }
+  return fileType || "application/octet-stream";
+}
 
 export function UploadPage() {
   const router = useRouter();
@@ -105,9 +168,12 @@ export function UploadPage() {
     }
 
     if (purpose === "video") {
-      const allowed = ["video/mp4", "video/quicktime", "video/x-msvideo", "video/webm"];
-      if (!allowed.includes(file.type)) {
-        return "视频格式不支持，仅支持 MP4/MOV/AVI/WEBM";
+      const fileType = file.type.toLowerCase().trim();
+      const ext = getFileExtension(file.name);
+      const mimeAllowed = ALLOWED_VIDEO_MIMES.has(fileType);
+      const extFallbackAllowed = ALLOWED_VIDEO_EXTENSIONS.has(ext);
+      if (!mimeAllowed && !extFallbackAllowed) {
+        return "视频格式不支持，仅支持 MP4/MOV/AVI/WEBM/MKV/FLV/MPEG/MPG/3GP/M4V/TS";
       }
       return null;
     }
@@ -132,7 +198,7 @@ export function UploadPage() {
       body: {
         purpose,
         filename: file.name,
-        content_type: file.type,
+        content_type: purpose === "video" ? resolveVideoContentType(file) : file.type,
         file_size_bytes: file.size,
       },
     });
@@ -241,6 +307,9 @@ export function UploadPage() {
           <div className="flex flex-col items-center gap-2">
             <p className="text-center text-xl font-bold text-slate-900">点击或拖拽视频至此上传</p>
             <p className="text-center text-sm text-slate-500">支持 MP4, MOV, AVI, WEBM，文件大小不超过 2GB</p>
+            <p className="text-center text-xs text-slate-400">
+              也支持 MKV / FLV / MPEG / MPG / 3GP / M4V / TS
+            </p>
             {videoFile ? <p className="text-sm font-semibold text-primary">已选择：{videoFile.name}</p> : null}
           </div>
           <button
@@ -254,7 +323,7 @@ export function UploadPage() {
           ref={videoInputRef}
           className="hidden"
           type="file"
-          accept="video/mp4,video/quicktime,video/x-msvideo,video/webm"
+          accept="video/mp4,video/quicktime,video/x-msvideo,video/webm,video/x-matroska,video/matroska,video/mkv,video/x-mkv,application/x-matroska,application/matroska,video/x-flv,video/mpeg,video/3gpp,video/x-m4v,video/mp2t,.mp4,.mov,.avi,.webm,.mkv,.flv,.mpeg,.mpg,.3gp,.m4v,.ts"
           onChange={(event) => setVideoFile(event.target.files?.[0] ?? null)}
         />
       </div>

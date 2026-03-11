@@ -17,6 +17,7 @@ export type VideoCard = {
   id: string;
   title: string;
   cover_url?: string;
+  preview_webp_url?: string;
   duration_sec: number;
   views_count: number;
   comments_count: number;
@@ -37,6 +38,7 @@ export type VideoDetail = {
   status: "processing" | "published" | "failed";
   video: VideoCard;
   source_url: string;
+  viewer_progress_sec?: number;
   playback: {
     status: "processing" | "ready" | "failed";
     type: "" | "hls" | "mp4";
@@ -106,6 +108,11 @@ export type UploadCompleteData = {
   media_object_id: string;
   object_key: string;
   url: string;
+};
+
+export type SaveProgressData = {
+  saved: boolean;
+  position_sec: number;
 };
 
 export type LoginOrRegisterData = {

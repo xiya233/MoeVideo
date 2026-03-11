@@ -39,6 +39,7 @@ func RegisterRoutes(api fiber.Router, a *app.App) {
 	api.Put("/videos/:videoId/like", middleware.RequireAuth(a), h.ToggleVideoLike)
 	api.Put("/videos/:videoId/favorite", middleware.RequireAuth(a), h.ToggleVideoFavorite)
 	api.Post("/videos/:videoId/share", h.TrackVideoShare)
+	api.Put("/videos/:videoId/progress", middleware.RequireAuth(a), h.UpdateVideoProgress)
 	api.Post("/videos", middleware.RequireAuth(a), h.CreateVideo)
 	api.Delete("/videos/:videoId", middleware.RequireAuth(a), h.DeleteVideo)
 

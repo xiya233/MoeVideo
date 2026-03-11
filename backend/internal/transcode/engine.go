@@ -29,6 +29,8 @@ type BuildResult struct {
 
 type Engine interface {
 	BuildHLS(ctx context.Context, inputPath, outputDir string, segmentSeconds int64) (*BuildResult, error)
+	GenerateCover(ctx context.Context, inputPath, outputPath string) error
+	GeneratePreviewWebP(ctx context.Context, inputPath, outputPath string) error
 }
 
 type FFmpegEngine struct {
@@ -84,6 +86,7 @@ func (e *FFmpegEngine) BuildHLS(ctx context.Context, inputPath, outputDir string
 		Variants:       make([]VariantInfo, 0, len(presets)),
 		SegmentSeconds: segmentSeconds,
 	}
+	videoEncoder := e.pickH264Encoder(ctx)
 
 	for _, preset := range presets {
 		targetHeight := makeEven(preset.Height)
@@ -105,11 +108,8 @@ func (e *FFmpegEngine) BuildHLS(ctx context.Context, inputPath, outputDir string
 			"-map", "0:v:0",
 			"-map", "0:a:0?",
 			"-vf", fmt.Sprintf("scale=%d:%d", targetWidth, targetHeight),
-			"-c:v", "libx264",
-			"-preset", "veryfast",
-			"-profile:v", "main",
-			"-crf", "20",
-			"-sc_threshold", "0",
+			"-c:v", videoEncoder,
+			"-pix_fmt", "yuv420p",
 			"-g", "48",
 			"-keyint_min", "48",
 			"-b:v", toKbps(preset.VideoBitrate),
@@ -124,6 +124,15 @@ func (e *FFmpegEngine) BuildHLS(ctx context.Context, inputPath, outputDir string
 			"-hls_flags", "independent_segments",
 			"-hls_segment_filename", segmentPattern,
 			playlistPath,
+		}
+		if videoEncoder == "libx264" {
+			// Keep x264-specific tuning only when libx264 is available.
+			ffArgs = insertAfterValue(ffArgs, "-c:v", []string{
+				"-preset", "veryfast",
+				"-profile:v", "main",
+				"-crf", "20",
+				"-sc_threshold", "0",
+			})
 		}
 		if err := runCommand(ctx, e.ffmpegBin, ffArgs...); err != nil {
 			return nil, fmt.Errorf("transcode %s failed: %w", preset.Name, err)
@@ -177,16 +186,79 @@ func (e *FFmpegEngine) probeVideoResolution(ctx context.Context, inputPath strin
 	return parsed.Streams[0].Width, parsed.Streams[0].Height, nil
 }
 
+func (e *FFmpegEngine) GenerateCover(ctx context.Context, inputPath, outputPath string) error {
+	args := []string{
+		"-y",
+		"-ss", "3",
+		"-i", inputPath,
+		"-frames:v", "1",
+		"-q:v", "2",
+		outputPath,
+	}
+	if err := runCommand(ctx, e.ffmpegBin, args...); err != nil {
+		return fmt.Errorf("generate cover: %w", err)
+	}
+	return nil
+}
+
+func (e *FFmpegEngine) GeneratePreviewWebP(ctx context.Context, inputPath, outputPath string) error {
+	args := []string{
+		"-y",
+		"-ss", "1",
+		"-t", "3",
+		"-i", inputPath,
+		"-vf", "fps=12,scale=320:-1:flags=lanczos",
+		"-loop", "0",
+		"-an",
+		outputPath,
+	}
+	if err := runCommand(ctx, e.ffmpegBin, args...); err != nil {
+		return fmt.Errorf("generate preview webp: %w", err)
+	}
+	return nil
+}
+
 func runCommand(ctx context.Context, bin string, args ...string) error {
 	output, err := exec.CommandContext(ctx, bin, args...).CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(output))
-		if len(msg) > 2000 {
-			msg = msg[:2000]
+		const maxOutput = 4000
+		if len(msg) > maxOutput {
+			keepHead := 800
+			keepTail := maxOutput - keepHead - 40
+			msg = msg[:keepHead] + "\n...[truncated]...\n" + msg[len(msg)-keepTail:]
 		}
 		return fmt.Errorf("%w: %s", err, msg)
 	}
 	return nil
+}
+
+func (e *FFmpegEngine) pickH264Encoder(ctx context.Context) string {
+	encoders, err := exec.CommandContext(ctx, e.ffmpegBin, "-hide_banner", "-encoders").CombinedOutput()
+	if err != nil {
+		return "libx264"
+	}
+	output := string(encoders)
+	if strings.Contains(output, " libx264 ") {
+		return "libx264"
+	}
+	if strings.Contains(output, " libopenh264 ") {
+		return "libopenh264"
+	}
+	return "libx264"
+}
+
+func insertAfterValue(args []string, marker string, insert []string) []string {
+	out := make([]string, 0, len(args)+len(insert))
+	for i := 0; i < len(args); i++ {
+		out = append(out, args[i])
+		if args[i] == marker && i+1 < len(args) {
+			out = append(out, args[i+1])
+			out = append(out, insert...)
+			i++
+		}
+	}
+	return out
 }
 
 func writeMasterPlaylist(path string, variants []VariantInfo) error {

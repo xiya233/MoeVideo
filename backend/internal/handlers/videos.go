@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"strings"
 	"time"
@@ -24,6 +25,12 @@ type createVideoRequest struct {
 	SourceMediaID string   `json:"source_media_id"`
 	Tags          []string `json:"tags"`
 	Visibility    string   `json:"visibility"`
+}
+
+type updateProgressRequest struct {
+	PositionSec float64 `json:"position_sec"`
+	DurationSec float64 `json:"duration_sec"`
+	Completed   bool    `json:"completed"`
 }
 
 func (h *Handler) ListVideos(c *fiber.Ctx) error {
@@ -57,6 +64,7 @@ SELECT v.id, v.title, v.description, v.status, v.duration_sec, v.views_count, v.
        u.id, u.username, COALESCE(u.followers_count, 0),
        COALESCE(am.provider, ''), COALESCE(am.bucket, ''), COALESCE(am.object_key, ''),
        COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, ''),
+       COALESCE(pm.provider, ''), COALESCE(pm.bucket, ''), COALESCE(pm.object_key, ''),
        COALESCE(sm.provider, ''), COALESCE(sm.bucket, ''), COALESCE(sm.object_key, ''),
        COALESCE(hls.provider, ''), COALESCE(hls.bucket, ''), COALESCE(hls.master_object_key, ''), COALESCE(hls.variants_json, '')
 FROM videos v
@@ -64,6 +72,7 @@ JOIN users u ON u.id = v.uploader_id
 LEFT JOIN categories cat ON cat.id = v.category_id
 LEFT JOIN media_objects am ON am.id = u.avatar_media_id
 LEFT JOIN media_objects cm ON cm.id = v.cover_media_id
+LEFT JOIN media_objects pm ON pm.id = v.preview_media_id
 LEFT JOIN media_objects sm ON sm.id = v.source_media_id
 LEFT JOIN video_hls_assets hls ON hls.video_id = v.id
 WHERE v.id = ?
@@ -75,6 +84,7 @@ LIMIT 1`
 		uploaderID, uploaderName                                               string
 		avatarProvider, avatarBucket, avatarKey                                string
 		coverProvider, coverBucket, coverKey                                   string
+		previewProvider, previewBucket, previewKey                             string
 		sourceProvider, sourceBucket, sourceKey                                string
 		hlsProvider, hlsBucket, hlsMasterKey, hlsVariantsJSON                  string
 	)
@@ -102,6 +112,9 @@ LIMIT 1`
 		&coverProvider,
 		&coverBucket,
 		&coverKey,
+		&previewProvider,
+		&previewBucket,
+		&previewKey,
 		&sourceProvider,
 		&sourceBucket,
 		&sourceKey,
@@ -148,11 +161,19 @@ ORDER BY t.name ASC`, videoID)
 	}
 
 	liked, favorited, followingUploader := false, false, false
+	viewerProgressSec := int64(0)
 	if viewerID != "" {
 		_ = h.app.DB.QueryRowContext(c.UserContext(), `SELECT EXISTS(SELECT 1 FROM video_actions WHERE user_id = ? AND video_id = ? AND action_type = 'like')`, viewerID, videoID).Scan(&liked)
 		_ = h.app.DB.QueryRowContext(c.UserContext(), `SELECT EXISTS(SELECT 1 FROM video_actions WHERE user_id = ? AND video_id = ? AND action_type = 'favorite')`, viewerID, videoID).Scan(&favorited)
 		if viewerID != uploaderID {
 			_ = h.app.DB.QueryRowContext(c.UserContext(), `SELECT EXISTS(SELECT 1 FROM follows WHERE follower_id = ? AND followee_id = ?)`, viewerID, uploaderID).Scan(&followingUploader)
+		}
+		if err := h.app.DB.QueryRowContext(c.UserContext(),
+			`SELECT position_sec FROM user_video_progress WHERE user_id = ? AND video_id = ? LIMIT 1`,
+			viewerID,
+			videoID,
+		).Scan(&viewerProgressSec); err != nil && !isNotFound(err) {
+			return response.Error(c, fiber.StatusInternalServerError, "failed to load playback progress")
 		}
 	}
 
@@ -210,14 +231,15 @@ ORDER BY t.name ASC`, videoID)
 	data := fiber.Map{
 		"status": videoStatus,
 		"video": fiber.Map{
-			"id":             id,
-			"title":          title,
-			"cover_url":      mediaURL(h.app.Storage, coverProvider, coverBucket, coverKey),
-			"duration_sec":   durationSec,
-			"views_count":    views,
-			"comments_count": comments,
-			"published_at":   publishedAt,
-			"category":       category,
+			"id":               id,
+			"title":            title,
+			"cover_url":        mediaURL(h.app.Storage, coverProvider, coverBucket, coverKey),
+			"preview_webp_url": mediaURL(h.app.Storage, previewProvider, previewBucket, previewKey),
+			"duration_sec":     durationSec,
+			"views_count":      views,
+			"comments_count":   comments,
+			"published_at":     publishedAt,
+			"category":         category,
 			"author": fiber.Map{
 				"id":              uploaderID,
 				"username":        uploaderName,
@@ -237,6 +259,9 @@ ORDER BY t.name ASC`, videoID)
 			"favorited":          favorited,
 			"following_uploader": followingUploader,
 		},
+	}
+	if viewerID != "" {
+		data["viewer_progress_sec"] = viewerProgressSec
 	}
 
 	return response.OK(c, data)
@@ -419,6 +444,98 @@ func (h *Handler) TrackVideoShare(c *fiber.Ctx) error {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to commit share")
 	}
 	return response.OK(c, fiber.Map{"shared": true})
+}
+
+func (h *Handler) UpdateVideoProgress(c *fiber.Ctx) error {
+	uid := currentUserID(c)
+	videoID := strings.TrimSpace(c.Params("videoId"))
+	if videoID == "" {
+		return response.Error(c, fiber.StatusBadRequest, "videoId is required")
+	}
+
+	var req updateProgressRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.Error(c, fiber.StatusBadRequest, "invalid request body")
+	}
+
+	positionSec := int64(math.Round(req.PositionSec))
+	durationSec := int64(math.Round(req.DurationSec))
+	if positionSec < 0 {
+		positionSec = 0
+	}
+	if durationSec < 0 {
+		durationSec = 0
+	}
+	if durationSec > 0 && positionSec > durationSec {
+		positionSec = durationSec
+	}
+
+	var (
+		uploaderID string
+		status     string
+		visibility string
+		videoDur   int64
+	)
+	err := h.app.DB.QueryRowContext(
+		c.UserContext(),
+		`SELECT uploader_id, status, COALESCE(visibility, 'public'), COALESCE(duration_sec, 0) FROM videos WHERE id = ? LIMIT 1`,
+		videoID,
+	).Scan(&uploaderID, &status, &visibility, &videoDur)
+	if err != nil {
+		if isNotFound(err) {
+			return response.Error(c, fiber.StatusNotFound, "video not found")
+		}
+		return response.Error(c, fiber.StatusInternalServerError, "failed to validate video")
+	}
+
+	isOwner := uid == uploaderID
+	if status == "deleted" {
+		return response.Error(c, fiber.StatusNotFound, "video not found")
+	}
+	if !isOwner && (status != "published" || visibility != "public") {
+		return response.Error(c, fiber.StatusNotFound, "video not found")
+	}
+	if durationSec <= 0 {
+		durationSec = videoDur
+	}
+
+	shouldClear := req.Completed
+	if !shouldClear && durationSec > 0 && positionSec >= durationSec-15 {
+		shouldClear = true
+	}
+
+	if shouldClear || positionSec <= 0 {
+		if _, err := h.app.DB.ExecContext(
+			c.UserContext(),
+			`DELETE FROM user_video_progress WHERE user_id = ? AND video_id = ?`,
+			uid,
+			videoID,
+		); err != nil {
+			return response.Error(c, fiber.StatusInternalServerError, "failed to clear progress")
+		}
+		return response.OK(c, fiber.Map{"saved": true, "position_sec": int64(0)})
+	}
+
+	now := nowString()
+	if _, err := h.app.DB.ExecContext(
+		c.UserContext(),
+		`INSERT INTO user_video_progress (user_id, video_id, position_sec, duration_sec, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(user_id, video_id) DO UPDATE SET
+			position_sec = excluded.position_sec,
+			duration_sec = excluded.duration_sec,
+			updated_at = excluded.updated_at`,
+		uid,
+		videoID,
+		positionSec,
+		durationSec,
+		now,
+		now,
+	); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to save progress")
+	}
+
+	return response.OK(c, fiber.Map{"saved": true, "position_sec": positionSec})
 }
 
 func (h *Handler) CreateVideo(c *fiber.Ctx) error {

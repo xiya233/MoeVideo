@@ -44,13 +44,31 @@ function VideoGridCard({ video }: { video: VideoCard }) {
   return (
     <article className="group flex flex-col gap-3">
       <Link href={`/videos/${video.id}`} className="relative aspect-video overflow-hidden rounded-xl shadow-md">
-        {video.cover_url ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={video.cover_url}
-            alt={video.title}
-            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
-          />
+        {video.cover_url || video.preview_webp_url ? (
+          <>
+            {video.cover_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={video.cover_url}
+                alt={video.title}
+                className={cn(
+                  "h-full w-full object-cover transition-transform duration-500 group-hover:scale-105",
+                  video.preview_webp_url ? "transition-opacity duration-200 group-hover:opacity-0" : "",
+                )}
+              />
+            ) : (
+              <div className="h-full w-full bg-primary/10" />
+            )}
+
+            {video.preview_webp_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={video.preview_webp_url}
+                alt={`${video.title} 预览`}
+                className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-200 group-hover:opacity-100"
+              />
+            ) : null}
+          </>
         ) : (
           <div className="h-full w-full bg-primary/10" />
         )}

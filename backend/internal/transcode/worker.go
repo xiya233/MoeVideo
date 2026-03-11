@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"moevideo/backend/internal/app"
 	"moevideo/backend/internal/util"
 )
@@ -206,6 +208,16 @@ type hlsAssetPayload struct {
 	MasterObjectKey string
 	VariantsJSON    string
 	SegmentSeconds  int64
+	UploaderID      string
+	Cover           *generatedMedia
+	Preview         *generatedMedia
+}
+
+type generatedMedia struct {
+	ObjectKey        string
+	ContentType      string
+	OriginalFilename string
+	SizeBytes        int64
 }
 
 func (w *Worker) processJob(ctx context.Context, job claimedJob) (*hlsAssetPayload, error) {
@@ -300,12 +312,61 @@ LIMIT 1`,
 	if w.app.Storage.Driver() == "s3" {
 		bucket = w.app.Storage.Bucket()
 	}
+
+	supplementalDir := filepath.Join(tmpDir, "supplemental")
+	if err := os.MkdirAll(supplementalDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create supplemental dir: %w", err)
+	}
+
+	var coverMedia *generatedMedia
+	coverPath := filepath.Join(supplementalDir, "cover.jpg")
+	if err := w.engine.GenerateCover(ctx, inputPath, coverPath); err != nil {
+		w.logger.Printf("transcode job %s: generate cover failed (soft): %v", job.ID, err)
+	} else {
+		coverObjectKey := filepath.ToSlash(filepath.Join(rootObjectKey, "cover.jpg"))
+		if err := w.app.Storage.UploadFile(ctx, coverObjectKey, "image/jpeg", coverPath); err != nil {
+			w.logger.Printf("transcode job %s: upload auto cover failed (soft): %v", job.ID, err)
+		} else if info, statErr := os.Stat(coverPath); statErr != nil {
+			w.logger.Printf("transcode job %s: stat auto cover failed (soft): %v", job.ID, statErr)
+		} else {
+			coverMedia = &generatedMedia{
+				ObjectKey:        coverObjectKey,
+				ContentType:      "image/jpeg",
+				OriginalFilename: "cover.jpg",
+				SizeBytes:        info.Size(),
+			}
+		}
+	}
+
+	var previewMedia *generatedMedia
+	previewPath := filepath.Join(supplementalDir, "preview.webp")
+	if err := w.engine.GeneratePreviewWebP(ctx, inputPath, previewPath); err != nil {
+		w.logger.Printf("transcode job %s: generate preview webp failed (soft): %v", job.ID, err)
+	} else {
+		previewObjectKey := filepath.ToSlash(filepath.Join(rootObjectKey, "preview.webp"))
+		if err := w.app.Storage.UploadFile(ctx, previewObjectKey, "image/webp", previewPath); err != nil {
+			w.logger.Printf("transcode job %s: upload preview webp failed (soft): %v", job.ID, err)
+		} else if info, statErr := os.Stat(previewPath); statErr != nil {
+			w.logger.Printf("transcode job %s: stat preview webp failed (soft): %v", job.ID, statErr)
+		} else {
+			previewMedia = &generatedMedia{
+				ObjectKey:        previewObjectKey,
+				ContentType:      "image/webp",
+				OriginalFilename: "preview.webp",
+				SizeBytes:        info.Size(),
+			}
+		}
+	}
+
 	return &hlsAssetPayload{
 		Provider:        w.app.Storage.Driver(),
 		Bucket:          bucket,
 		MasterObjectKey: filepath.ToSlash(filepath.Join(rootObjectKey, buildResult.MasterPlaylist)),
 		VariantsJSON:    string(variantsJSON),
 		SegmentSeconds:  buildResult.SegmentSeconds,
+		UploaderID:      src.UploaderID,
+		Cover:           coverMedia,
+		Preview:         previewMedia,
 	}, nil
 }
 
@@ -339,6 +400,44 @@ ON CONFLICT(video_id) DO UPDATE SET
 	)
 	if err != nil {
 		return fmt.Errorf("upsert hls assets: %w", err)
+	}
+
+	if asset.Cover != nil {
+		coverMediaID, err := upsertGeneratedMediaTx(ctx, tx, asset.Provider, asset.Bucket, asset.UploaderID, *asset.Cover, now)
+		if err != nil {
+			w.logger.Printf("transcode job %s: persist auto cover failed (soft): %v", job.ID, err)
+		} else {
+			if _, err := tx.ExecContext(ctx, `
+UPDATE videos
+SET cover_media_id = COALESCE(cover_media_id, ?),
+    updated_at = ?
+WHERE id = ?`,
+				coverMediaID,
+				now,
+				job.VideoID,
+			); err != nil {
+				w.logger.Printf("transcode job %s: set auto cover failed (soft): %v", job.ID, err)
+			}
+		}
+	}
+
+	if asset.Preview != nil {
+		previewMediaID, err := upsertGeneratedMediaTx(ctx, tx, asset.Provider, asset.Bucket, asset.UploaderID, *asset.Preview, now)
+		if err != nil {
+			w.logger.Printf("transcode job %s: persist preview webp failed (soft): %v", job.ID, err)
+		} else {
+			if _, err := tx.ExecContext(ctx, `
+UPDATE videos
+SET preview_media_id = ?,
+    updated_at = ?
+WHERE id = ?`,
+				previewMediaID,
+				now,
+				job.VideoID,
+			); err != nil {
+				w.logger.Printf("transcode job %s: set preview media failed (soft): %v", job.ID, err)
+			}
+		}
 	}
 
 	res, err := tx.ExecContext(ctx, `
@@ -478,7 +577,21 @@ func truncateErr(err error, limit int) string {
 	if limit <= 0 || len(msg) <= limit {
 		return msg
 	}
-	return msg[:limit]
+	if limit < 120 {
+		return msg[len(msg)-limit:]
+	}
+	head := limit / 3
+	if head > 320 {
+		head = 320
+	}
+	tail := limit - head - 20
+	if tail < 80 {
+		tail = 80
+	}
+	if tail > len(msg) {
+		tail = len(msg)
+	}
+	return msg[:head] + "\n...[truncated]...\n" + msg[len(msg)-tail:]
 }
 
 func backoffForAttempt(attempt int) time.Duration {
@@ -520,9 +633,42 @@ func detectContentType(name string) string {
 		return "application/vnd.apple.mpegurl"
 	case ".ts":
 		return "video/mp2t"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".webp":
+		return "image/webp"
 	default:
 		return "application/octet-stream"
 	}
+}
+
+func upsertGeneratedMediaTx(ctx context.Context, tx *sql.Tx, provider, bucket, createdBy string, media generatedMedia, now string) (string, error) {
+	mediaID := uuid.NewString()
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO media_objects (id, provider, bucket, object_key, original_filename, mime_type, size_bytes, checksum_sha256, duration_sec, width, height, created_by, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL, NULL, ?, ?)
+ON CONFLICT(object_key) DO UPDATE SET
+    mime_type = excluded.mime_type,
+    size_bytes = excluded.size_bytes`,
+		mediaID,
+		provider,
+		nullableString(bucket),
+		media.ObjectKey,
+		media.OriginalFilename,
+		media.ContentType,
+		media.SizeBytes,
+		createdBy,
+		now,
+	)
+	if err != nil {
+		return "", err
+	}
+
+	var existingID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM media_objects WHERE object_key = ? LIMIT 1`, media.ObjectKey).Scan(&existingID); err != nil {
+		return "", err
+	}
+	return existingID, nil
 }
 
 func nullableString(v string) interface{} {
