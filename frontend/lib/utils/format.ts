@@ -2,13 +2,25 @@ export function formatCount(value: number): string {
   if (!Number.isFinite(value)) {
     return "0";
   }
-  if (value >= 100000000) {
-    return `${(value / 100000000).toFixed(1)}亿`;
+
+  const abs = Math.abs(value);
+  const sign = value < 0 ? "-" : "";
+  const withUnit = (unit: number, suffix: string): string => {
+    const compact = (abs / unit).toFixed(1);
+    return `${sign}${compact.endsWith(".0") ? compact.slice(0, -2) : compact}${suffix}`;
+  };
+
+  if (abs >= 100000000) {
+    return withUnit(100000000, "亿");
   }
-  if (value >= 10000) {
-    return `${(value / 10000).toFixed(1)}w`;
+  if (abs >= 10000) {
+    return withUnit(10000, "w");
   }
-  return `${Math.floor(value)}`;
+  if (abs >= 1000) {
+    return withUnit(1000, "k");
+  }
+
+  return `${Math.trunc(value)}`;
 }
 
 export function formatDate(iso: string): string {

@@ -23,6 +23,23 @@ function formatDurationLabel(duration: number): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+function VideoMetricBadge({ icon, value }: { icon: string; value: string }) {
+  return (
+    <div className="flex h-6 items-center gap-1.5 rounded-lg bg-black/50 px-2 py-1 backdrop-blur-md">
+      <span className="material-symbols-outlined text-[14px] text-white">{icon}</span>
+      <span className="text-[10px] font-bold text-white">{value}</span>
+    </div>
+  );
+}
+
+function VideoDurationBadge({ value }: { value: string }) {
+  return (
+    <div className="flex h-6 items-center rounded-lg bg-black/50 px-2 py-1 backdrop-blur-md">
+      <span className="text-[10px] font-bold tracking-wider text-white">{value}</span>
+    </div>
+  );
+}
+
 function VideoGridCard({ video }: { video: VideoCard }) {
   return (
     <article className="group flex flex-col gap-3">
@@ -39,23 +56,17 @@ function VideoGridCard({ video }: { video: VideoCard }) {
         )}
 
         <div className="absolute bottom-2 left-2 flex items-center gap-2">
-          <div className="flex h-6 items-center gap-1.5 rounded-lg bg-black/50 px-2 py-1 backdrop-blur-md">
-            <span className="material-symbols-outlined text-[14px] text-white">play_arrow</span>
-            <span className="text-[10px] font-bold text-white">{formatCount(video.views_count)}</span>
-          </div>
-          <div className="flex h-6 items-center gap-1.5 rounded-lg bg-black/50 px-2 py-1 backdrop-blur-md">
-            <span className="material-symbols-outlined text-[14px] text-white">chat_bubble</span>
-            <span className="text-[10px] font-bold text-white">{formatCount(video.comments_count)}</span>
-          </div>
+          <VideoMetricBadge icon="play_arrow" value={formatCount(video.views_count)} />
+          <VideoMetricBadge icon="chat_bubble" value={formatCount(video.comments_count)} />
         </div>
 
-        <div className="absolute bottom-2 right-2 rounded-lg bg-black/50 px-2 py-1 backdrop-blur-md">
-          <span className="text-[10px] font-bold tracking-wider text-white">{formatDurationLabel(video.duration_sec)}</span>
+        <div className="absolute bottom-2 right-2">
+          <VideoDurationBadge value={formatDurationLabel(video.duration_sec)} />
         </div>
       </Link>
 
       <div>
-        <h3 className="mb-2 line-clamp-2 text-sm font-bold leading-tight text-slate-900 transition-colors group-hover:text-primary">
+        <h3 className="mb-2 line-clamp-2 text-sm font-bold leading-tight transition-colors group-hover:text-primary">
           {video.title}
         </h3>
         <div className="flex items-center gap-2 opacity-70">
@@ -276,7 +287,7 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
           {(home?.videos?.length ?? 0) === 0 ? (
             <EmptyState title="暂无视频" description="试试更换分类或搜索关键词。" />
           ) : (
-            <section className="grid grid-cols-2 gap-x-6 gap-y-10 md:grid-cols-4 lg:grid-cols-6">
+            <section className="grid grid-cols-1 gap-x-6 gap-y-10 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
               {(home?.videos ?? []).map((video) => (
                 <VideoGridCard key={video.id} video={video} />
               ))}
