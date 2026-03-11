@@ -2,13 +2,20 @@
 
 import { useEffect, useRef } from "react";
 
+type PlayerQuality = {
+  html: string;
+  url: string;
+  default?: boolean;
+};
+
 type ArtHlsPlayerProps = {
   sourceUrl: string;
   sourceType: "m3u8" | "mp4";
   poster?: string;
+  qualities?: PlayerQuality[];
 };
 
-export function ArtHlsPlayer({ sourceUrl, sourceType, poster }: ArtHlsPlayerProps) {
+export function ArtHlsPlayer({ sourceUrl, sourceType, poster, qualities = [] }: ArtHlsPlayerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -44,6 +51,9 @@ export function ArtHlsPlayer({ sourceUrl, sourceType, poster }: ArtHlsPlayerProp
                   video.src = url;
                   return;
                 }
+                if (hlsInstance) {
+                  hlsInstance.destroy();
+                }
                 hlsInstance = new Hls();
                 hlsInstance.loadSource(url);
                 hlsInstance.attachMedia(video);
@@ -64,6 +74,7 @@ export function ArtHlsPlayer({ sourceUrl, sourceType, poster }: ArtHlsPlayerProp
         fullscreenWeb: true,
         playbackRate: true,
         setting: true,
+        quality: sourceType === "m3u8" ? qualities : [],
         pip: true,
         mutex: true,
       });
@@ -78,7 +89,7 @@ export function ArtHlsPlayer({ sourceUrl, sourceType, poster }: ArtHlsPlayerProp
         artInstance.destroy(false);
       }
     };
-  }, [poster, sourceType, sourceUrl]);
+  }, [poster, qualities, sourceType, sourceUrl]);
 
   return (
     <div className="h-full w-full [&_.art-video-player]:!h-full [&_.art-video-player]:!w-full">

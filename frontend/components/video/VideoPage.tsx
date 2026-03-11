@@ -378,6 +378,20 @@ export function VideoPage({ videoId }: VideoPageProps) {
     }
     return null;
   }, [detail]);
+  const playerQualities = useMemo(() => {
+    if (!detail || detail.playback.type !== "hls" || !detail.playback.hls_master_url) {
+      return [];
+    }
+    const variants = [...detail.playback.variants]
+      .filter((item) => item.url)
+      .sort((a, b) => b.height - a.height)
+      .map((item) => ({
+        html: item.name || `${item.height}p`,
+        url: item.url,
+        default: false,
+      }));
+    return [{ html: "Auto", url: detail.playback.hls_master_url, default: true }, ...variants];
+  }, [detail]);
 
   if (loading) {
     return (
@@ -419,7 +433,12 @@ export function VideoPage({ videoId }: VideoPageProps) {
               </div>
             </div>
           ) : playerSource ? (
-            <ArtHlsPlayer sourceType={playerSource.type} sourceUrl={playerSource.url} poster={detail.video.cover_url} />
+            <ArtHlsPlayer
+              sourceType={playerSource.type}
+              sourceUrl={playerSource.url}
+              poster={detail.video.cover_url}
+              qualities={playerQualities}
+            />
           ) : (
             <div className="flex h-full w-full items-center justify-center bg-slate-950/90 text-slate-200">
               暂无可播放视频源
