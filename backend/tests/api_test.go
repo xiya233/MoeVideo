@@ -1,0 +1,317 @@
+package tests
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
+
+	"moevideo/backend/internal/app"
+	"moevideo/backend/internal/auth"
+	"moevideo/backend/internal/config"
+	"moevideo/backend/internal/db"
+	"moevideo/backend/internal/handlers"
+	"moevideo/backend/internal/storage"
+	"moevideo/backend/internal/util"
+)
+
+type apiResponse struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data"`
+}
+
+func newTestServer(t *testing.T) (*fiber.App, *app.App) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	cfg := config.Config{
+		Env:              "test",
+		HTTPAddr:         ":0",
+		DBPath:           filepath.Join(tmpDir, "moevideo-test.db"),
+		JWTSecret:        "test-secret",
+		AccessTokenTTL:   15 * time.Minute,
+		RefreshTokenTTL:  24 * time.Hour,
+		StorageDriver:    "local",
+		LocalStorageDir:  filepath.Join(tmpDir, "storage"),
+		PublicBaseURL:    "http://localhost:8080",
+		MaxUploadBytes:   2 * 1024 * 1024 * 1024,
+		UploadURLExpires: 15 * time.Minute,
+	}
+
+	database, err := db.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
+
+	if err := os.MkdirAll(cfg.LocalStorageDir, 0o755); err != nil {
+		t.Fatalf("mkdir local storage: %v", err)
+	}
+	storageSvc, err := storage.NewService(cfg)
+	if err != nil {
+		t.Fatalf("create storage service: %v", err)
+	}
+
+	container := &app.App{
+		Config:  cfg,
+		DB:      database,
+		JWT:     auth.NewManager(cfg.JWTSecret),
+		Storage: storageSvc,
+	}
+
+	server := fiber.New()
+	api := server.Group("/api/v1")
+	handlers.RegisterRoutes(api, container)
+	server.Static("/media", cfg.LocalStorageDir)
+
+	return server, container
+}
+
+func doJSONRequest(t *testing.T, srv *fiber.App, method, path string, body interface{}, headers map[string]string) (int, apiResponse) {
+	t.Helper()
+
+	var payload io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		payload = bytes.NewReader(b)
+	}
+	if payload == nil {
+		payload = http.NoBody
+	}
+
+	req := httptest.NewRequest(method, path, payload)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := srv.Test(req, -1)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+
+	var out apiResponse
+	if err := json.Unmarshal(bodyBytes, &out); err != nil {
+		t.Fatalf("unmarshal response: %v, body=%s", err, string(bodyBytes))
+	}
+	return resp.StatusCode, out
+}
+
+func registerUser(t *testing.T, srv *fiber.App, username, email, password string) (userID, accessToken, refreshToken string) {
+	t.Helper()
+
+	status, resp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/register", map[string]interface{}{
+		"username":         username,
+		"email":            email,
+		"password":         password,
+		"password_confirm": password,
+	}, nil)
+	if status != http.StatusCreated {
+		t.Fatalf("expected 201 register, got %d (%s)", status, resp.Message)
+	}
+
+	var payload struct {
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
+		Tokens struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(resp.Data, &payload); err != nil {
+		t.Fatalf("parse register response: %v", err)
+	}
+	return payload.User.ID, payload.Tokens.AccessToken, payload.Tokens.RefreshToken
+}
+
+func TestAuthFlow(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	_, _, refresh := registerUser(t, srv, "alice", "alice@example.com", "password123")
+
+	status, _ := doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{
+		"account":  "alice",
+		"password": "password123",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("username login should succeed, got %d", status)
+	}
+
+	status, loginByEmail := doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{
+		"account":  "alice@example.com",
+		"password": "password123",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("email login should succeed, got %d", status)
+	}
+
+	var loginData struct {
+		Tokens struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(loginByEmail.Data, &loginData); err != nil {
+		t.Fatalf("parse login response: %v", err)
+	}
+
+	status, refreshResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/refresh", map[string]interface{}{
+		"refresh_token": refresh,
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("refresh should succeed, got %d", status)
+	}
+	var refreshed struct {
+		Tokens struct {
+			RefreshToken string `json:"refresh_token"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(refreshResp.Data, &refreshed); err != nil {
+		t.Fatalf("parse refresh response: %v", err)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/logout", map[string]interface{}{
+		"refresh_token": loginData.Tokens.RefreshToken,
+	}, map[string]string{"Authorization": "Bearer " + loginData.Tokens.AccessToken})
+	if status != http.StatusOK {
+		t.Fatalf("logout should succeed, got %d", status)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/refresh", map[string]interface{}{
+		"refresh_token": loginData.Tokens.RefreshToken,
+	}, nil)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("revoked refresh should fail with 401, got %d", status)
+	}
+}
+
+func prepareVideoForUser(t *testing.T, container *app.App, userID string) string {
+	t.Helper()
+	now := util.FormatTime(time.Now().UTC())
+	mediaID := "media-" + uuid.NewString()
+	videoID := "video-" + uuid.NewString()
+
+	_, err := container.DB.Exec(
+		`INSERT INTO media_objects (id, provider, bucket, object_key, original_filename, mime_type, size_bytes, duration_sec, created_by, created_at)
+		 VALUES (?, 'local', '', ?, 'sample.mp4', 'video/mp4', 1024, 120, ?, ?)`,
+		mediaID,
+		"videos/"+userID+"/seed/sample.mp4",
+		userID,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("insert media: %v", err)
+	}
+
+	_, err = container.DB.Exec(
+		`INSERT INTO videos (id, uploader_id, title, description, source_media_id, status, visibility, duration_sec, published_at, created_at, updated_at)
+		 VALUES (?, ?, 'seed video', 'seed', ?, 'published', 'public', 120, ?, ?, ?)`,
+		videoID,
+		userID,
+		mediaID,
+		now,
+		now,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("insert video: %v", err)
+	}
+	return videoID
+}
+
+func TestCommentNestedReplyRejected(t *testing.T) {
+	srv, container := newTestServer(t)
+	userID, access, _ := registerUser(t, srv, "bob", "bob@example.com", "password123")
+	videoID := prepareVideoForUser(t, container, userID)
+
+	status, topResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/comments", map[string]interface{}{
+		"content": "top comment",
+	}, map[string]string{"Authorization": "Bearer " + access})
+	if status != http.StatusCreated {
+		t.Fatalf("create top comment should succeed, got %d", status)
+	}
+	var topData struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(topResp.Data, &topData); err != nil {
+		t.Fatalf("parse top comment response: %v", err)
+	}
+
+	status, replyResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/comments", map[string]interface{}{
+		"content":           "first-level reply",
+		"parent_comment_id": topData.ID,
+	}, map[string]string{"Authorization": "Bearer " + access})
+	if status != http.StatusCreated {
+		t.Fatalf("first-level reply should succeed, got %d", status)
+	}
+	var replyData struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(replyResp.Data, &replyData); err != nil {
+		t.Fatalf("parse reply response: %v", err)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/comments", map[string]interface{}{
+		"content":           "nested reply",
+		"parent_comment_id": replyData.ID,
+	}, map[string]string{"Authorization": "Bearer " + access})
+	if status != http.StatusBadRequest {
+		t.Fatalf("nested reply should be rejected with 400, got %d", status)
+	}
+}
+
+func TestVideoLikeIdempotent(t *testing.T) {
+	srv, container := newTestServer(t)
+	userID, access, _ := registerUser(t, srv, "carol", "carol@example.com", "password123")
+	videoID := prepareVideoForUser(t, container, userID)
+
+	for i := 0; i < 2; i++ {
+		status, _ := doJSONRequest(t, srv, http.MethodPut, "/api/v1/videos/"+videoID+"/like", map[string]interface{}{"active": true}, map[string]string{"Authorization": "Bearer " + access})
+		if status != http.StatusOK {
+			t.Fatalf("like request %d should succeed, got %d", i+1, status)
+		}
+	}
+
+	var likes int64
+	if err := container.DB.QueryRow(`SELECT likes_count FROM videos WHERE id = ?`, videoID).Scan(&likes); err != nil {
+		t.Fatalf("query likes count: %v", err)
+	}
+	if likes != 1 {
+		t.Fatalf("likes_count expected 1, got %d", likes)
+	}
+
+	for i := 0; i < 2; i++ {
+		status, _ := doJSONRequest(t, srv, http.MethodPut, "/api/v1/videos/"+videoID+"/like", map[string]interface{}{"active": false}, map[string]string{"Authorization": "Bearer " + access})
+		if status != http.StatusOK {
+			t.Fatalf("unlike request %d should succeed, got %d", i+1, status)
+		}
+	}
+
+	if err := container.DB.QueryRow(`SELECT likes_count FROM videos WHERE id = ?`, videoID).Scan(&likes); err != nil {
+		t.Fatalf("query likes count: %v", err)
+	}
+	if likes != 0 {
+		t.Fatalf("likes_count expected 0, got %d", likes)
+	}
+}

@@ -1,0 +1,17 @@
+# OS
+.DS_Store
+
+# Frontend
+frontend/node_modules
+frontend/.next
+frontend/.turbo
+frontend/.env
+frontend/tsconfig.tsbuildinfo
+
+# Backend
+backend/data
+backend/storage
+backend/.env
+
+# Logs
+*.log

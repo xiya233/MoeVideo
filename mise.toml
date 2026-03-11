@@ -1,0 +1,23 @@
+[tools]
+bun = "latest"
+go = "latest"
+
+[tasks.backend-dev]
+description = "Run Fiber API server"
+run = "cd backend && go run ./cmd/server"
+
+[tasks.backend-test]
+description = "Run backend tests"
+run = "cd backend && go test ./..."
+
+[tasks.frontend-install]
+description = "Install frontend dependencies with bun"
+run = "cd frontend && bun install"
+
+[tasks.frontend-dev]
+description = "Run Next.js dev server"
+run = "cd frontend && bun run dev"
+
+[tasks.frontend-build]
+description = "Build frontend"
+run = "cd frontend && bun run build"
