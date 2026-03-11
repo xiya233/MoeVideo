@@ -13,6 +13,10 @@ import { cn } from "@/lib/utils/cn";
 import { formatCount, formatDate } from "@/lib/utils/format";
 
 const homeBadgeIconStyle = {
+  fontSize: "14px",
+  width: "14px",
+  height: "14px",
+  lineHeight: "14px",
   fontVariationSettings: "'FILL' 0, 'wght' 400",
 } as const;
 
@@ -30,7 +34,7 @@ function formatDurationLabel(duration: number): string {
 function VideoMetricBadge({ icon, value }: { icon: string; value: string }) {
   return (
     <div className="flex h-6 items-center gap-1.5 rounded-[1rem] bg-black/50 px-2 py-1 backdrop-blur-md">
-      <span className="material-symbols-outlined text-[14px] leading-none text-white" style={homeBadgeIconStyle}>
+      <span className="material-symbols-outlined shrink-0 text-white" style={homeBadgeIconStyle}>
         {icon}
       </span>
       <span className="text-[10px] font-bold text-white">{value}</span>
