@@ -2,11 +2,17 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"io"
+	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -258,20 +264,20 @@ func (h *Handler) CompleteUpload(c *fiber.Ctx) error {
 	defer tx.Rollback()
 
 	var (
-		provider, bucket, objectKey, contentType, originalFilename, status string
-		fileSize                                                           int64
-		expiresAt                                                          string
-		mediaObjectID                                                      sql.NullString
+		provider, bucket, objectKey, contentType, originalFilename, status, purpose string
+		fileSize                                                                    int64
+		expiresAt                                                                   string
+		mediaObjectID                                                               sql.NullString
 	)
 	err = tx.QueryRowContext(c.UserContext(),
-		`SELECT provider, CASE WHEN provider='s3' THEN ? ELSE '' END, object_key, content_type, original_filename, file_size_bytes, status, expires_at, media_object_id
+		`SELECT provider, CASE WHEN provider='s3' THEN ? ELSE '' END, object_key, content_type, original_filename, file_size_bytes, status, expires_at, media_object_id, purpose
 		 FROM upload_sessions
 		 WHERE id = ? AND user_id = ?
 		 LIMIT 1`,
 		h.app.Storage.Bucket(),
 		uploadID,
 		uid,
-	).Scan(&provider, &bucket, &objectKey, &contentType, &originalFilename, &fileSize, &status, &expiresAt, &mediaObjectID)
+	).Scan(&provider, &bucket, &objectKey, &contentType, &originalFilename, &fileSize, &status, &expiresAt, &mediaObjectID, &purpose)
 	if err != nil {
 		if isNotFound(err) {
 			return response.Error(c, fiber.StatusNotFound, "upload session not found")
@@ -305,6 +311,24 @@ func (h *Handler) CompleteUpload(c *fiber.Ctx) error {
 		fileSize = fi.Size()
 	}
 
+	durationSec := req.DurationSec
+	width := req.Width
+	height := req.Height
+	if purpose == "video" {
+		probedDuration, probedWidth, probedHeight, probeErr := h.probeUploadedVideoMetadata(c.UserContext(), provider, bucket, objectKey)
+		if probeErr == nil {
+			if probedDuration > 0 {
+				durationSec = probedDuration
+			}
+			if width <= 0 && probedWidth > 0 {
+				width = probedWidth
+			}
+			if height <= 0 && probedHeight > 0 {
+				height = probedHeight
+			}
+		}
+	}
+
 	mediaID := newID()
 	now := nowString()
 	_, err = tx.ExecContext(c.UserContext(),
@@ -318,9 +342,9 @@ func (h *Handler) CompleteUpload(c *fiber.Ctx) error {
 		contentType,
 		fileSize,
 		nullableString(strings.TrimSpace(req.ChecksumSHA256)),
-		req.DurationSec,
-		nullableInt(req.Width),
-		nullableInt(req.Height),
+		durationSec,
+		nullableInt(width),
+		nullableInt(height),
 		uid,
 		now,
 	)
@@ -425,6 +449,92 @@ func resolveContentType(purpose, mime, filename string) string {
 		return mapped
 	}
 	return "application/octet-stream"
+}
+
+func (h *Handler) probeUploadedVideoMetadata(ctx context.Context, provider, bucket, objectKey string) (int64, int64, int64, error) {
+	var (
+		inputPath string
+		cleanup   func()
+	)
+
+	switch provider {
+	case "local":
+		inputPath = h.app.Storage.LocalObjectPath(objectKey)
+		cleanup = func() {}
+	case "s3":
+		tmpDir, err := os.MkdirTemp("", "moevideo-probe-*")
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("create probe temp dir: %w", err)
+		}
+		cleanup = func() { _ = os.RemoveAll(tmpDir) }
+
+		filename := filepath.Base(objectKey)
+		if strings.TrimSpace(filepath.Ext(filename)) == "" {
+			filename = "source.mp4"
+		}
+		inputPath = filepath.Join(tmpDir, filename)
+		if err := h.app.Storage.DownloadObjectToPath(ctx, provider, bucket, objectKey, inputPath); err != nil {
+			cleanup()
+			return 0, 0, 0, fmt.Errorf("download object for probe: %w", err)
+		}
+	default:
+		return 0, 0, 0, fmt.Errorf("unsupported provider for probe: %s", provider)
+	}
+	defer cleanup()
+
+	return probeVideoFileMetadata(ctx, h.app.Config.FFprobeBin, inputPath)
+}
+
+func probeVideoFileMetadata(ctx context.Context, ffprobeBin, inputPath string) (int64, int64, int64, error) {
+	bin := strings.TrimSpace(ffprobeBin)
+	if bin == "" {
+		bin = "ffprobe"
+	}
+
+	args := []string{
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=width,height:format=duration",
+		"-of", "json",
+		inputPath,
+	}
+	output, err := exec.CommandContext(ctx, bin, args...).CombinedOutput()
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("ffprobe failed: %w (%s)", err, strings.TrimSpace(string(output)))
+	}
+
+	var parsed struct {
+		Streams []struct {
+			Width  int64 `json:"width"`
+			Height int64 `json:"height"`
+		} `json:"streams"`
+		Format struct {
+			Duration string `json:"duration"`
+		} `json:"format"`
+	}
+	if err := json.Unmarshal(output, &parsed); err != nil {
+		return 0, 0, 0, fmt.Errorf("parse ffprobe output: %w", err)
+	}
+
+	durationSec := int64(0)
+	if parsed.Format.Duration != "" {
+		d, err := strconv.ParseFloat(parsed.Format.Duration, 64)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("parse duration: %w", err)
+		}
+		if d > 0 {
+			durationSec = int64(math.Round(d))
+		}
+	}
+
+	width := int64(0)
+	height := int64(0)
+	if len(parsed.Streams) > 0 {
+		width = parsed.Streams[0].Width
+		height = parsed.Streams[0].Height
+	}
+
+	return durationSec, width, height, nil
 }
 
 func nullableInt(v int64) interface{} {
