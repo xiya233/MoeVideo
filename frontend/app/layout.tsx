@@ -1,16 +1,32 @@
 import type { Metadata } from "next";
+import type { ReactNode } from "react";
+
+import { AuthProvider } from "@/components/auth/AuthProvider";
+import { SiteShell } from "@/components/layout/SiteShell";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "MoeVideo",
-  description: "MoeVideo VOD - Next.js + Fiber",
+  description: "MoeVideo VOD - Stitch design implementation",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="zh-CN">
+      <head>
+        <link
+          href="https://fonts.googleapis.com/css2?family=Spline+Sans:wght@300;400;500;600;700&display=swap"
+          rel="stylesheet"
+        />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200"
+          rel="stylesheet"
+        />
+      </head>
       <body>
-        <div className="mx-auto min-h-screen w-full max-w-6xl px-4 py-8 md:px-6">{children}</div>
+        <AuthProvider>
+          <SiteShell>{children}</SiteShell>
+        </AuthProvider>
       </body>
     </html>
   );
