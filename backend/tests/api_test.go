@@ -3,9 +3,11 @@ package tests
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,6 +21,7 @@ import (
 	"moevideo/backend/internal/config"
 	"moevideo/backend/internal/db"
 	"moevideo/backend/internal/handlers"
+	"moevideo/backend/internal/response"
 	"moevideo/backend/internal/storage"
 	"moevideo/backend/internal/util"
 )
@@ -70,7 +73,19 @@ func newTestServer(t *testing.T) (*fiber.App, *app.App) {
 		Storage: storageSvc,
 	}
 
-	server := fiber.New()
+	server := fiber.New(fiber.Config{
+		BodyLimit: int(cfg.MaxUploadBytes),
+		ErrorHandler: func(c *fiber.Ctx, err error) error {
+			if errors.Is(err, fiber.ErrRequestEntityTooLarge) {
+				return response.Error(c, fiber.StatusRequestEntityTooLarge, "request entity too large")
+			}
+			var fiberErr *fiber.Error
+			if errors.As(err, &fiberErr) {
+				return response.Error(c, fiberErr.Code, fiberErr.Message)
+			}
+			return response.Error(c, fiber.StatusInternalServerError, "internal server error")
+		},
+	})
 	api := server.Group("/api/v1")
 	handlers.RegisterRoutes(api, container)
 	server.Static("/media", cfg.LocalStorageDir)
@@ -313,5 +328,50 @@ func TestVideoLikeIdempotent(t *testing.T) {
 	}
 	if likes != 0 {
 		t.Fatalf("likes_count expected 0, got %d", likes)
+	}
+}
+
+func TestLocalUploadOverDefaultBodyLimit(t *testing.T) {
+	srv, _ := newTestServer(t)
+	_, access, _ := registerUser(t, srv, "dave", "dave@example.com", "password123")
+
+	status, presignResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/uploads/presign", map[string]interface{}{
+		"purpose":         "video",
+		"filename":        "big-file.mp4",
+		"content_type":    "video/mp4",
+		"file_size_bytes": 5 * 1024 * 1024,
+	}, map[string]string{"Authorization": "Bearer " + access})
+	if status != http.StatusCreated {
+		t.Fatalf("presign should succeed, got %d (%s)", status, presignResp.Message)
+	}
+
+	var presignData struct {
+		UploadURL string `json:"upload_url"`
+	}
+	if err := json.Unmarshal(presignResp.Data, &presignData); err != nil {
+		t.Fatalf("parse presign response: %v", err)
+	}
+
+	parsedURL, err := url.Parse(presignData.UploadURL)
+	if err != nil {
+		t.Fatalf("parse upload url: %v", err)
+	}
+
+	body := bytes.Repeat([]byte("a"), 5*1024*1024)
+	req := httptest.NewRequest(http.MethodPut, parsedURL.Path, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "video/mp4")
+
+	resp, err := srv.Test(req, -1)
+	if err != nil {
+		t.Fatalf("upload request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read upload response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upload should succeed with 200, got %d, body=%s", resp.StatusCode, string(respBody))
 	}
 }

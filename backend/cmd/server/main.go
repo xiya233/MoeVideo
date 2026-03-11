@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -51,9 +52,27 @@ func main() {
 		Storage: storageSvc,
 	}
 
+	maxInt := int64(^uint(0) >> 1)
+	bodyLimit := 4 * 1024 * 1024
+	if cfg.MaxUploadBytes > 0 {
+		if cfg.MaxUploadBytes > maxInt {
+			bodyLimit = int(maxInt)
+		} else {
+			bodyLimit = int(cfg.MaxUploadBytes)
+		}
+	}
+
 	server := fiber.New(fiber.Config{
-		AppName: "MoeVideo API",
+		AppName:   "MoeVideo API",
+		BodyLimit: bodyLimit,
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
+			if errors.Is(err, fiber.ErrRequestEntityTooLarge) {
+				return response.Error(c, fiber.StatusRequestEntityTooLarge, "request entity too large")
+			}
+			var fiberErr *fiber.Error
+			if errors.As(err, &fiberErr) {
+				return response.Error(c, fiberErr.Code, fiberErr.Message)
+			}
 			log.Printf("request error: %v", err)
 			return response.Error(c, fiber.StatusInternalServerError, "internal server error")
 		},
