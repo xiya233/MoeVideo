@@ -30,6 +30,22 @@ export function ArtHlsPlayer({
   onEnded,
 }: ArtHlsPlayerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const onTimeUpdateRef = useRef(onTimeUpdate);
+  const onPauseRef = useRef(onPause);
+  const onEndedRef = useRef(onEnded);
+
+  useEffect(() => {
+    onTimeUpdateRef.current = onTimeUpdate;
+  }, [onTimeUpdate]);
+
+  useEffect(() => {
+    onPauseRef.current = onPause;
+  }, [onPause]);
+
+  useEffect(() => {
+    onEndedRef.current = onEnded;
+  }, [onEnded]);
 
   useEffect(() => {
     if (!containerRef.current || !sourceUrl) {
@@ -93,37 +109,23 @@ export function ArtHlsPlayer({
         fullscreenWeb: true,
         playbackRate: true,
         setting: true,
-        quality: sourceType === "m3u8" ? qualities : [],
+        // ArtPlayer mutates quality items by defining internal props; clone to avoid redefine errors on re-init.
+        quality: sourceType === "m3u8" ? qualities.map((item) => ({ ...item })) : [],
         pip: true,
         mutex: true,
       });
 
       const video = artInstance.video as HTMLVideoElement;
-      let hasAppliedStartTime = false;
-      const applyStartTime = () => {
-        if (hasAppliedStartTime || startTimeSec <= 0) {
-          return;
-        }
-        const duration = Number.isFinite(video.duration) ? video.duration : 0;
-        if (duration > 0 && startTimeSec < duration - 1) {
-          video.currentTime = startTimeSec;
-        }
-        hasAppliedStartTime = true;
-      };
-      if (video.readyState >= 1) {
-        applyStartTime();
-      } else {
-        video.addEventListener("loadedmetadata", applyStartTime, { once: true });
-      }
+      videoRef.current = video;
 
       const handleTimeUpdate = () => {
-        onTimeUpdate?.(video.currentTime || 0, Number.isFinite(video.duration) ? video.duration : 0);
+        onTimeUpdateRef.current?.(video.currentTime || 0, Number.isFinite(video.duration) ? video.duration : 0);
       };
       const handlePause = () => {
-        onPause?.(video.currentTime || 0, Number.isFinite(video.duration) ? video.duration : 0);
+        onPauseRef.current?.(video.currentTime || 0, Number.isFinite(video.duration) ? video.duration : 0);
       };
       const handleEnded = () => {
-        onEnded?.(Number.isFinite(video.duration) ? video.duration : 0);
+        onEndedRef.current?.(Number.isFinite(video.duration) ? video.duration : 0);
       };
 
       video.addEventListener("timeupdate", handleTimeUpdate);
@@ -142,6 +144,7 @@ export function ArtHlsPlayer({
 
     return () => {
       disposed = true;
+      videoRef.current = null;
       if (hlsInstance) {
         hlsInstance.destroy();
       }
@@ -149,7 +152,31 @@ export function ArtHlsPlayer({
         artInstance.destroy(false);
       }
     };
-  }, [onEnded, onPause, onTimeUpdate, poster, qualities, sourceType, sourceUrl, startTimeSec]);
+  }, [poster, qualities, sourceType, sourceUrl]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || startTimeSec <= 0) {
+      return;
+    }
+
+    const seekToStart = () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      if (duration > 0 && startTimeSec < duration - 1) {
+        video.currentTime = startTimeSec;
+      }
+    };
+
+    if (video.readyState >= 1) {
+      seekToStart();
+      return;
+    }
+
+    video.addEventListener("loadedmetadata", seekToStart, { once: true });
+    return () => {
+      video.removeEventListener("loadedmetadata", seekToStart);
+    };
+  }, [startTimeSec]);
 
   return (
     <div className="h-full w-full [&_.art-video-player]:!h-full [&_.art-video-player]:!w-full">
