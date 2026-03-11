@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -36,6 +36,9 @@ export function UploadPage() {
 
   const videoInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
+
+  const fieldClass =
+    "w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-70";
 
   const loadCategories = useCallback(async () => {
     setLoadingCategories(true);
@@ -200,13 +203,13 @@ export function UploadPage() {
 
   if (!session) {
     return (
-      <div className="rounded-2xl border border-sky-100 bg-white p-10">
+      <div className="mx-auto w-full max-w-5xl rounded-xl border border-primary/10 bg-white p-10 shadow-sm">
         <EmptyState title="请先登录后再上传" description="上传中心需要登录态，登录后可发布视频与封面。" />
         <div className="mt-6 flex justify-center">
           <button
             type="button"
             onClick={() => openAuthDialog("login")}
-            className="rounded-full bg-sky-500 px-6 py-2.5 text-sm font-bold text-white transition hover:bg-sky-600"
+            className="rounded-full bg-primary px-6 py-2.5 text-sm font-bold text-white transition-all hover:bg-primary/90"
           >
             立即登录
           </button>
@@ -216,10 +219,10 @@ export function UploadPage() {
   }
 
   return (
-    <div className="rounded-xl border border-sky-100 bg-white p-6 shadow-sm md:p-10">
-      <div className="mb-10">
+    <div className="mx-auto w-full max-w-5xl rounded-xl border border-primary/5 bg-white p-6 shadow-sm md:p-10">
+      <div className="mb-10 flex flex-col">
         <div
-          className="group flex cursor-pointer flex-col items-center gap-6 rounded-3xl border-2 border-dashed border-sky-300 bg-sky-50 px-6 py-16 transition hover:bg-sky-100/70"
+          className="group flex cursor-pointer flex-col items-center gap-6 rounded-xl border-2 border-dashed border-primary/30 px-6 py-16 transition-colors hover:bg-primary/5"
           onDragOver={(event) => {
             event.preventDefault();
           }}
@@ -232,19 +235,17 @@ export function UploadPage() {
           }}
           onClick={() => videoInputRef.current?.click()}
         >
-          <div className="flex h-20 w-20 items-center justify-center rounded-full bg-sky-100 transition group-hover:scale-110">
-            <span className="material-symbols-outlined text-5xl text-sky-500">cloud_upload</span>
+          <div className="flex size-20 items-center justify-center rounded-full bg-primary/10 transition-transform group-hover:scale-110">
+            <span className="material-symbols-outlined text-5xl text-primary">cloud_upload</span>
           </div>
-          <div className="text-center">
-            <p className="text-xl font-bold text-slate-900">点击或拖拽视频至此上传</p>
-            <p className="mt-2 text-sm text-slate-500">支持 MP4, MOV, AVI, WEBM，文件大小不超过 2GB</p>
-            {videoFile ? (
-              <p className="mt-2 text-sm font-semibold text-sky-600">已选择：{videoFile.name}</p>
-            ) : null}
+          <div className="flex flex-col items-center gap-2">
+            <p className="text-center text-xl font-bold text-slate-900">点击或拖拽视频至此上传</p>
+            <p className="text-center text-sm text-slate-500">支持 MP4, MOV, AVI, WEBM，文件大小不超过 2GB</p>
+            {videoFile ? <p className="text-sm font-semibold text-primary">已选择：{videoFile.name}</p> : null}
           </div>
           <button
             type="button"
-            className="rounded-full bg-sky-500 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-sky-500/25 transition hover:shadow-xl"
+            className="flex h-12 min-w-[140px] items-center justify-center rounded-full bg-primary px-6 text-sm font-bold text-white shadow-lg shadow-primary/30 transition-all hover:shadow-xl active:scale-95"
           >
             选择视频文件
           </button>
@@ -261,68 +262,77 @@ export function UploadPage() {
       <div className="grid grid-cols-1 gap-10 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
           <h3 className="flex items-center gap-2 text-lg font-bold text-slate-900">
-            <span className="material-symbols-outlined text-sky-500">edit_note</span>
+            <span className="material-symbols-outlined text-primary">edit_note</span>
             基础信息
           </h3>
 
-          <label className="block">
-            <span className="mb-2 ml-1 block text-sm font-bold text-slate-700">视频标题</span>
-            <input
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none ring-sky-300 transition focus:ring-2"
-              placeholder="起一个超级吸睛的标题吧~"
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-            />
-          </label>
+          <div className="space-y-4">
+            <label className="block">
+              <span className="mb-2 ml-1 block text-sm font-bold text-slate-700">视频标题</span>
+              <input
+                className={fieldClass}
+                placeholder="起一个超级吸睛的标题吧~"
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+              />
+            </label>
 
-          <label className="block">
-            <span className="mb-2 ml-1 block text-sm font-bold text-slate-700">视频描述</span>
-            <textarea
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none ring-sky-300 transition focus:ring-2"
-              placeholder="详细介绍下你的视频内容，让更多人发现它..."
-              rows={5}
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-            />
-          </label>
+            <label className="block">
+              <span className="mb-2 ml-1 block text-sm font-bold text-slate-700">视频描述</span>
+              <textarea
+                className={fieldClass}
+                placeholder="详细介绍下你的视频内容，让更多人发现它..."
+                rows={4}
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+              />
+            </label>
 
-          <label className="block">
-            <span className="mb-2 ml-1 block text-sm font-bold text-slate-700">添加标签</span>
-            <div className="mb-2 flex flex-wrap gap-2">
-              {tags.map((tag) => (
-                <span key={tag} className="flex items-center gap-1 rounded-full bg-sky-100 px-3 py-1 text-xs font-bold text-sky-700">
-                  {tag}
-                  <button type="button" onClick={() => removeTag(tag)}>
-                    <span className="material-symbols-outlined text-[14px]">close</span>
-                  </button>
-                </span>
-              ))}
-            </div>
-            <input
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none ring-sky-300 transition focus:ring-2"
-              placeholder="输入标签按回车添加"
-              value={tagInput}
-              onChange={(event) => setTagInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  addTag(tagInput);
-                  setTagInput("");
-                }
-              }}
-            />
-          </label>
+            <label className="block">
+              <span className="mb-2 ml-1 block text-sm font-bold text-slate-700">添加标签</span>
+              <div className="mb-2 flex flex-wrap gap-2">
+                {tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="flex items-center gap-1 rounded-full bg-primary/10 px-3 py-1 text-xs font-bold text-primary"
+                  >
+                    {tag}
+                    <button type="button" onClick={() => removeTag(tag)}>
+                      <span className="material-symbols-outlined cursor-pointer text-[14px]">close</span>
+                    </button>
+                  </span>
+                ))}
+              </div>
+
+              <div className="relative">
+                <input
+                  className={`${fieldClass} pl-10`}
+                  placeholder="输入标签按回车添加"
+                  value={tagInput}
+                  onChange={(event) => setTagInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addTag(tagInput);
+                      setTagInput("");
+                    }
+                  }}
+                />
+                <span className="material-symbols-outlined absolute left-3 top-3.5 text-slate-400">tag</span>
+              </div>
+            </label>
+          </div>
         </div>
 
         <div className="space-y-6">
           <div>
             <h3 className="mb-4 flex items-center gap-2 text-lg font-bold text-slate-900">
-              <span className="material-symbols-outlined text-sky-500">image</span>
+              <span className="material-symbols-outlined text-primary">image</span>
               封面设置
             </h3>
 
             <div
-              className="group relative flex aspect-video cursor-pointer flex-col items-center justify-center gap-2 overflow-hidden rounded-xl border-2 border-dashed border-sky-300 bg-sky-50"
+              className="group relative flex aspect-video w-full cursor-pointer flex-col items-center justify-center gap-2 overflow-hidden rounded-xl border-2 border-dashed border-primary/30 bg-primary/5"
               onClick={() => coverInputRef.current?.click()}
             >
               {coverFile && coverPreviewUrl ? (
@@ -334,10 +344,10 @@ export function UploadPage() {
                 />
               ) : (
                 <>
-                  <span className="material-symbols-outlined text-4xl text-sky-400 transition group-hover:text-sky-500">
+                  <span className="material-symbols-outlined text-4xl text-primary/40 transition-colors group-hover:text-primary">
                     add_photo_alternate
                   </span>
-                  <span className="text-xs font-medium text-sky-600">点击上传自定义封面</span>
+                  <span className="text-xs font-medium text-primary/60">点击上传自定义封面</span>
                 </>
               )}
               <div className="absolute inset-0 flex items-center justify-center bg-slate-900/40 opacity-0 transition-opacity group-hover:opacity-100">
@@ -356,7 +366,7 @@ export function UploadPage() {
           <div>
             <span className="mb-2 ml-1 block text-sm font-bold text-slate-700">全部分类</span>
             <select
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none ring-sky-300 transition focus:ring-2"
+              className={`${fieldClass} appearance-none`}
               value={categoryId}
               onChange={(event) => setCategoryId(event.target.value)}
               disabled={loadingCategories}
@@ -371,8 +381,8 @@ export function UploadPage() {
             {categoriesError ? <p className="mt-2 text-xs text-rose-500">{categoriesError}</p> : null}
           </div>
 
-          <div className="rounded-xl border border-sky-100 bg-sky-50 p-4">
-            <h4 className="mb-2 flex items-center gap-1 text-xs font-bold text-sky-700">
+          <div className="rounded-xl border border-primary/10 bg-primary/5 p-4">
+            <h4 className="mb-2 flex items-center gap-1 text-xs font-bold text-primary">
               <span className="material-symbols-outlined text-xs">info</span>
               上传小贴士
             </h4>
@@ -383,38 +393,37 @@ export function UploadPage() {
         </div>
       </div>
 
-      <div className="mt-12 border-t border-slate-100 pt-8">
-        {statusText ? <p className="mb-3 text-sm font-medium text-sky-700">{statusText}</p> : null}
-        {errorText ? <p className="mb-3 text-sm font-medium text-rose-500">{errorText}</p> : null}
+      <div className="mt-12 flex flex-col items-center justify-end gap-4 border-t border-slate-100 pt-8 sm:flex-row">
+        {statusText ? <p className="w-full text-sm font-medium text-primary sm:mr-auto sm:w-auto">{statusText}</p> : null}
+        {errorText ? <p className="w-full text-sm font-medium text-rose-500 sm:mr-auto sm:w-auto">{errorText}</p> : null}
 
-        <div className="flex flex-col items-center justify-end gap-4 sm:flex-row">
-          <button
-            type="button"
-            className="w-full rounded-full px-10 py-3 text-sm font-bold text-slate-500 transition hover:bg-slate-100 sm:w-auto"
-            onClick={() => {
-              setVideoFile(null);
-              setCoverFile(null);
-              setTitle("");
-              setDescription("");
-              setTagInput("");
-              setTags([]);
-              setCategoryId("");
-              setErrorText("");
-              setStatusText("");
-            }}
-            disabled={submitting}
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            className="w-full rounded-full bg-sky-500 px-12 py-3 text-sm font-bold text-white shadow-lg shadow-sky-500/30 transition hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
-            onClick={() => void onPublish()}
-            disabled={submitting}
-          >
-            {submitting ? "发布中..." : "立即发布"}
-          </button>
-        </div>
+        <button
+          type="button"
+          className="w-full rounded-full px-10 py-3 text-sm font-bold text-slate-500 transition-colors hover:bg-slate-100 sm:w-auto"
+          onClick={() => {
+            setVideoFile(null);
+            setCoverFile(null);
+            setTitle("");
+            setDescription("");
+            setTagInput("");
+            setTags([]);
+            setCategoryId("");
+            setErrorText("");
+            setStatusText("");
+          }}
+          disabled={submitting}
+        >
+          取消
+        </button>
+
+        <button
+          type="button"
+          className="w-full rounded-full bg-primary px-12 py-3 text-sm font-bold text-white shadow-lg shadow-primary/30 transition-all hover:shadow-xl hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+          onClick={() => void onPublish()}
+          disabled={submitting}
+        >
+          {submitting ? "发布中..." : "立即发布"}
+        </button>
       </div>
     </div>
   );

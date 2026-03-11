@@ -1,15 +1,10 @@
 @import "tailwindcss";
 
-:root {
-  --primary: #3db8f5;
-  --background-light: #f5f7f8;
-  --background-dark: #101c22;
-  --surface: #ffffff;
-  --surface-soft: #f8fbfd;
-  --text-main: #0f172a;
-  --text-muted: #64748b;
-  --ring-soft: 0 0 0 1px rgba(61, 184, 245, 0.14);
-  --shadow-soft: 0 12px 40px rgba(15, 23, 42, 0.08);
+@theme {
+  --color-primary: #3db8f5;
+  --color-background-light: #f5f7f8;
+  --color-background-dark: #101c22;
+  --font-display: "Spline Sans", "Noto Sans SC", sans-serif;
 }
 
 * {
@@ -24,11 +19,9 @@ body {
 
 body {
   min-height: 100vh;
-  background: radial-gradient(circle at 20% -20%, rgba(61, 184, 245, 0.16), transparent 55%),
-    radial-gradient(circle at 100% 0, rgba(56, 189, 248, 0.09), transparent 35%),
-    var(--background-light);
-  color: var(--text-main);
-  font-family: "Spline Sans", sans-serif;
+  background-color: var(--color-background-light);
+  color: rgb(15 23 42);
+  font-family: var(--font-display);
 }
 
 a {
@@ -40,16 +33,25 @@ a {
   font-variation-settings: "FILL" 0, "wght" 500, "GRAD" 0, "opsz" 24;
 }
 
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(61, 184, 245, 0.35);
+  background: rgba(61, 184, 245, 0.36);
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(148, 163, 184, 0.08);
+  background: rgba(148, 163, 184, 0.12);
 }

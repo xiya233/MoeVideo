@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/common/EmptyState";
 import { LoadingSkeleton } from "@/components/common/LoadingSkeleton";
 import type { CommentItem, CommentsData, VideoCard, VideoDetail } from "@/lib/dto";
 import { mapCommentsData, mapVideoCard, mapVideoDetail } from "@/lib/dto/mappers";
+import { cn } from "@/lib/utils/cn";
 import { formatCount, formatDate } from "@/lib/utils/format";
 
 type VideoPageProps = {
@@ -16,6 +17,26 @@ type VideoPageProps = {
 
 function commentAuthorName(comment: CommentItem): string {
   return comment.user.username || "匿名用户";
+}
+
+function formatDurationLabel(duration: number): string {
+  const total = Math.max(0, Math.round(duration));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function actionButtonClass(active: boolean): string {
+  return cn(
+    "flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
+    active
+      ? "bg-primary text-white shadow-lg shadow-primary/30"
+      : "bg-primary/10 text-primary hover:bg-primary/20",
+  );
 }
 
 export function VideoPage({ videoId }: VideoPageProps) {
@@ -68,6 +89,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
   }, [request, videoId]);
 
   useEffect(() => {
+    hasTrackedView.current = false;
     void fetchPageData();
   }, [fetchPageData]);
 
@@ -211,6 +233,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
     if (!detail) {
       return;
     }
+
     const prev = detail;
     setDetail({
       ...detail,
@@ -312,16 +335,16 @@ export function VideoPage({ videoId }: VideoPageProps) {
 
   if (loading) {
     return (
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="space-y-4">
+      <div className="flex flex-col gap-8 lg:flex-row">
+        <div className="flex-1 space-y-4">
           <LoadingSkeleton className="aspect-video" />
           <LoadingSkeleton className="h-20" />
-          <LoadingSkeleton className="h-40" />
+          <LoadingSkeleton className="h-44" />
         </div>
-        <div className="space-y-3">
-          <LoadingSkeleton className="h-20" />
-          <LoadingSkeleton className="h-20" />
-          <LoadingSkeleton className="h-20" />
+        <div className="w-full space-y-4 lg:w-96">
+          <LoadingSkeleton className="h-24" />
+          <LoadingSkeleton className="h-24" />
+          <LoadingSkeleton className="h-24" />
         </div>
       </div>
     );
@@ -332,23 +355,21 @@ export function VideoPage({ videoId }: VideoPageProps) {
   }
 
   return (
-    <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_360px]">
-      <div className="space-y-6">
-        <section className="overflow-hidden rounded-xl bg-black shadow-2xl">
-          <div className="relative aspect-video">
-            <video
-              className="h-full w-full"
-              controls
-              poster={detail.video.cover_url}
-              src={detail.source_url}
-              preload="metadata"
-            />
-          </div>
+    <div className="flex flex-col gap-8 lg:flex-row">
+      <div className="flex-1 space-y-6">
+        <section className="group relative aspect-video overflow-hidden rounded-xl bg-black shadow-2xl">
+          <video
+            className="h-full w-full object-cover opacity-90"
+            controls
+            poster={detail.video.cover_url}
+            src={detail.source_url}
+            preload="metadata"
+          />
         </section>
 
         <section className="space-y-4">
-          <h1 className="text-2xl font-bold leading-tight text-slate-900 md:text-3xl">{detail.video.title}</h1>
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-sky-100 pb-3">
+          <h1 className="text-2xl font-bold leading-tight md:text-3xl">{detail.video.title}</h1>
+          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-primary/10 py-2">
             <div className="flex items-center gap-4 text-sm text-slate-500">
               <span className="flex items-center gap-1">
                 <span className="material-symbols-outlined text-lg">visibility</span>
@@ -361,27 +382,14 @@ export function VideoPage({ videoId }: VideoPageProps) {
             </div>
 
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={toggleLike}
-                className={`flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition ${
-                  detail.viewer_actions.liked
-                    ? "bg-sky-500 text-white"
-                    : "bg-sky-100 text-sky-700 hover:bg-sky-200"
-                }`}
-                disabled={pendingLike}
-              >
+              <button type="button" onClick={toggleLike} className={actionButtonClass(detail.viewer_actions.liked)} disabled={pendingLike}>
                 <span className="material-symbols-outlined">thumb_up</span>
                 {formatCount(detail.stats.likes_count)}
               </button>
               <button
                 type="button"
                 onClick={toggleFavorite}
-                className={`flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition ${
-                  detail.viewer_actions.favorited
-                    ? "bg-sky-500 text-white"
-                    : "bg-sky-100 text-sky-700 hover:bg-sky-200"
-                }`}
+                className={actionButtonClass(detail.viewer_actions.favorited)}
                 disabled={pendingFavorite}
               >
                 <span className="material-symbols-outlined">star</span>
@@ -390,7 +398,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
               <button
                 type="button"
                 onClick={shareVideo}
-                className="flex items-center gap-2 rounded-xl bg-sky-100 px-4 py-2 text-sm font-medium text-sky-700 transition hover:bg-sky-200"
+                className="flex items-center gap-2 rounded-xl bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-all hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
               >
                 <span className="material-symbols-outlined">share</span>
                 分享
@@ -399,43 +407,50 @@ export function VideoPage({ videoId }: VideoPageProps) {
           </div>
         </section>
 
-        <section className="flex items-center justify-between rounded-xl border border-sky-100 bg-sky-50/60 p-4">
-          <div className="flex items-center gap-3">
-            <div className="h-14 w-14 overflow-hidden rounded-full border-2 border-sky-500">
-              {detail.uploader.avatar_url ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={detail.uploader.avatar_url} alt={detail.uploader.username} className="h-full w-full object-cover" />
-              ) : (
-                <div className="flex h-full w-full items-center justify-center bg-sky-100 text-sm font-bold text-sky-700">
-                  {detail.uploader.username.slice(0, 1).toUpperCase()}
-                </div>
-              )}
+        <section className="flex items-center justify-between rounded-xl border border-primary/10 bg-primary/5 p-4">
+          <div className="flex items-center gap-4">
+            <div className="relative">
+              <div className="h-14 w-14 overflow-hidden rounded-full border-2 border-primary">
+                {detail.uploader.avatar_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={detail.uploader.avatar_url} alt={detail.uploader.username} className="h-full w-full object-cover" />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center bg-primary/20 text-sm font-bold text-primary">
+                    {detail.uploader.username.slice(0, 1).toUpperCase()}
+                  </div>
+                )}
+              </div>
+              <div className="absolute -bottom-1 -right-1 rounded-full border-2 border-white bg-yellow-400 p-0.5 text-white">
+                <span className="material-symbols-outlined block text-[10px]">verified</span>
+              </div>
             </div>
             <div>
-              <h3 className="text-lg font-bold text-slate-900">{detail.uploader.username}</h3>
+              <h3 className="text-lg font-bold">{detail.uploader.username}</h3>
               <p className="text-sm text-slate-500">{formatCount(detail.uploader.followers_count)} 粉丝</p>
             </div>
           </div>
+
           <button
             type="button"
             onClick={toggleFollow}
             disabled={pendingFollow}
-            className={`rounded-xl px-6 py-2 text-sm font-bold transition ${
+            className={cn(
+              "rounded-xl px-6 py-2 text-sm font-bold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
               detail.viewer_actions.following_uploader
-                ? "border border-slate-300 bg-white text-slate-700 hover:border-sky-300 hover:text-sky-600"
-                : "bg-sky-500 text-white hover:bg-sky-600"
-            }`}
+                ? "border border-slate-200 bg-white text-slate-700 hover:border-primary/30 hover:text-primary"
+                : "bg-primary text-white hover:shadow-lg hover:shadow-primary/30",
+            )}
           >
             {detail.viewer_actions.following_uploader ? "已关注" : "+ 关注"}
           </button>
         </section>
 
-        <section className="rounded-xl bg-sky-50/60 p-4">
+        <section className="rounded-xl bg-primary/5 p-4">
           <p className="whitespace-pre-line text-sm leading-relaxed text-slate-700">{detail.description || "暂无简介"}</p>
           {detail.tags.length > 0 ? (
             <div className="mt-3 flex flex-wrap gap-2">
               {detail.tags.map((tag) => (
-                <span key={tag} className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-sky-700 ring-1 ring-sky-100">
+                <span key={tag} className="rounded-full bg-primary/10 px-3 py-1 text-xs font-bold text-primary">
                   #{tag}
                 </span>
               ))}
@@ -443,13 +458,13 @@ export function VideoPage({ videoId }: VideoPageProps) {
           ) : null}
         </section>
 
-        <section className="space-y-5">
-          <h3 className="flex items-center gap-2 text-xl font-bold text-slate-900">
+        <section className="space-y-6">
+          <h3 className="flex items-center gap-2 text-xl font-bold">
             评论 <span className="text-sm font-normal text-slate-400">{formatCount(detail.stats.comments_count)}</span>
           </h3>
 
-          <div className="flex gap-3">
-            <div className="h-10 w-10 shrink-0 overflow-hidden rounded-full bg-slate-200">
+          <div className="flex gap-4">
+            <div className="h-10 w-10 flex-shrink-0 overflow-hidden rounded-full bg-slate-200">
               {user?.avatar_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={user.avatar_url} alt={user.username} className="h-full w-full object-cover" />
@@ -457,7 +472,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
             </div>
             <div className="flex-1 space-y-2">
               <textarea
-                className="w-full rounded-xl border border-sky-100 bg-sky-50/70 p-3 text-sm outline-none ring-sky-300 transition focus:ring-2"
+                className="w-full rounded-xl border border-primary/10 bg-primary/5 p-3 text-sm placeholder:text-slate-400 focus:border-primary focus:ring-primary"
                 placeholder="发一条友善的评论吧..."
                 rows={3}
                 value={commentInput}
@@ -468,7 +483,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
                   type="button"
                   onClick={() => publishComment({ content: commentInput })}
                   disabled={pendingComment}
-                  className="rounded-lg bg-sky-500 px-6 py-2 text-sm font-bold text-white transition hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="rounded-lg bg-primary px-6 py-2 text-sm font-bold text-white transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {pendingComment ? "发布中..." : "发布评论"}
                 </button>
@@ -479,7 +494,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
           <div className="space-y-6">
             {comments.map((item) => (
               <div key={item.id} className="space-y-3">
-                <div className="flex gap-3">
+                <div className="flex gap-4">
                   <div className="h-10 w-10 overflow-hidden rounded-full bg-slate-200">
                     {item.user.avatar_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
@@ -488,12 +503,15 @@ export function VideoPage({ videoId }: VideoPageProps) {
                   </div>
                   <div className="flex-1 space-y-1">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-bold text-sky-600">{commentAuthorName(item)}</span>
+                      <span className="text-sm font-bold text-primary">{commentAuthorName(item)}</span>
                       <span className="text-xs text-slate-400">{formatDate(item.created_at)}</span>
                     </div>
                     <p className="text-sm text-slate-800">{item.content}</p>
-                    <div className="flex items-center gap-4 pt-1 text-xs text-slate-400">
-                      <button className="flex items-center gap-1 transition-colors hover:text-sky-600" type="button">
+                    <div className="flex items-center gap-4 pt-2">
+                      <button
+                        className="flex items-center gap-1 text-xs text-slate-400 transition-colors hover:text-primary"
+                        type="button"
+                      >
                         <span className="material-symbols-outlined text-sm">thumb_up</span>
                         {formatCount(item.like_count)}
                       </button>
@@ -503,7 +521,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
                           setReplyTargetId(replyTargetId === item.id ? null : item.id);
                           setReplyInput("");
                         }}
-                        className="transition-colors hover:text-sky-600"
+                        className="text-xs text-slate-400 transition-colors hover:text-primary"
                       >
                         回复
                       </button>
@@ -512,13 +530,13 @@ export function VideoPage({ videoId }: VideoPageProps) {
                 </div>
 
                 {replyTargetId === item.id ? (
-                  <div className="ml-[52px] rounded-xl border border-sky-100 bg-sky-50/60 p-3">
+                  <div className="ml-[56px] rounded-xl border border-primary/10 bg-primary/5 p-3">
                     <textarea
                       rows={2}
                       value={replyInput}
                       onChange={(event) => setReplyInput(event.target.value)}
                       placeholder={`回复 @${commentAuthorName(item)}`}
-                      className="w-full rounded-lg border border-sky-100 bg-white p-2 text-sm outline-none ring-sky-300 focus:ring-2"
+                      className="w-full rounded-lg border border-primary/10 bg-white p-2 text-sm focus:border-primary focus:ring-primary"
                     />
                     <div className="mt-2 flex justify-end gap-2">
                       <button
@@ -533,7 +551,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
                       </button>
                       <button
                         type="button"
-                        className="rounded-lg bg-sky-500 px-3 py-1 text-xs font-semibold text-white"
+                        className="rounded-lg bg-primary px-3 py-1 text-xs font-semibold text-white"
                         onClick={() => publishComment({ content: replyInput, parent_comment_id: item.id })}
                         disabled={pendingComment}
                       >
@@ -544,7 +562,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
                 ) : null}
 
                 {item.replies.length > 0 ? (
-                  <div className="ml-[52px] space-y-3 rounded-xl border border-slate-100 bg-white/90 p-3">
+                  <div className="ml-[56px] space-y-3 rounded-xl border border-slate-100 bg-white p-3">
                     {item.replies.map((reply) => (
                       <div key={reply.id} className="flex gap-3">
                         <div className="h-8 w-8 overflow-hidden rounded-full bg-slate-200">
@@ -567,17 +585,19 @@ export function VideoPage({ videoId }: VideoPageProps) {
               </div>
             ))}
 
-            {comments.length === 0 ? (
-              <EmptyState title="还没有评论" description="成为第一个评论的人吧。" />
-            ) : null}
+            {comments.length === 0 ? <EmptyState title="还没有评论" description="成为第一个评论的人吧。" /> : null}
           </div>
         </section>
       </div>
 
-      <aside className="space-y-4">
-        <div className="mb-1 flex items-center justify-between">
-          <h3 className="text-lg font-bold text-slate-900">推荐视频</h3>
-          <button type="button" onClick={() => void fetchPageData()} className="flex items-center gap-1 text-xs font-medium text-sky-600">
+      <aside className="w-full space-y-4 lg:w-96">
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-lg font-bold">推荐视频</h3>
+          <button
+            type="button"
+            onClick={() => void fetchPageData()}
+            className="flex cursor-pointer items-center gap-2 text-xs font-medium text-primary transition-colors hover:opacity-80"
+          >
             <span className="material-symbols-outlined text-sm">autorenew</span>
             换一换
           </button>
@@ -585,21 +605,24 @@ export function VideoPage({ videoId }: VideoPageProps) {
 
         <div className="space-y-4">
           {recommendationCards.map((video) => (
-            <Link key={video.id} href={`/videos/${video.id}`} className="group flex gap-3">
-              <div className="relative h-24 w-40 shrink-0 overflow-hidden rounded-lg">
+            <Link key={video.id} href={`/videos/${video.id}`} className="group flex cursor-pointer gap-3">
+              <div className="relative h-24 w-40 flex-shrink-0 overflow-hidden rounded-lg">
                 {video.cover_url ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={video.cover_url}
                     alt={video.title}
-                    className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                    className="h-full w-full object-cover transition-transform group-hover:scale-110"
                   />
                 ) : (
-                  <div className="h-full w-full bg-gradient-to-br from-slate-100 to-slate-200" />
+                  <div className="h-full w-full bg-primary/10" />
                 )}
+                <div className="absolute bottom-1 right-1 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
+                  {formatDurationLabel(video.duration_sec)}
+                </div>
               </div>
               <div className="flex flex-col justify-between py-0.5">
-                <h4 className="line-clamp-2 text-sm font-bold leading-snug text-slate-900 transition-colors group-hover:text-sky-500">
+                <h4 className="line-clamp-2 text-sm font-bold leading-snug transition-colors group-hover:text-primary">
                   {video.title}
                 </h4>
                 <div className="space-y-0.5">
@@ -613,9 +636,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
             </Link>
           ))}
 
-          {recommendationCards.length === 0 ? (
-            <EmptyState title="暂无推荐视频" description="稍后再试试看。" />
-          ) : null}
+          {recommendationCards.length === 0 ? <EmptyState title="暂无推荐视频" description="稍后再试试看。" /> : null}
         </div>
       </aside>
     </div>
