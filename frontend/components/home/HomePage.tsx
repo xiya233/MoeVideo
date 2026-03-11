@@ -12,6 +12,10 @@ import { mapHomeData } from "@/lib/dto/mappers";
 import { cn } from "@/lib/utils/cn";
 import { formatCount, formatDate } from "@/lib/utils/format";
 
+const homeBadgeIconStyle = {
+  fontVariationSettings: "'FILL' 0, 'wght' 400",
+} as const;
+
 function formatDurationLabel(duration: number): string {
   const total = Math.max(0, Math.round(duration));
   const h = Math.floor(total / 3600);
@@ -25,8 +29,10 @@ function formatDurationLabel(duration: number): string {
 
 function VideoMetricBadge({ icon, value }: { icon: string; value: string }) {
   return (
-    <div className="flex h-6 items-center gap-1.5 rounded-lg bg-black/50 px-2 py-1 backdrop-blur-md">
-      <span className="material-symbols-outlined text-[14px] text-white">{icon}</span>
+    <div className="flex h-6 items-center gap-1.5 rounded-[1rem] bg-black/50 px-2 py-1 backdrop-blur-md">
+      <span className="material-symbols-outlined text-[14px] leading-none text-white" style={homeBadgeIconStyle}>
+        {icon}
+      </span>
       <span className="text-[10px] font-bold text-white">{value}</span>
     </div>
   );
@@ -34,7 +40,7 @@ function VideoMetricBadge({ icon, value }: { icon: string; value: string }) {
 
 function VideoDurationBadge({ value }: { value: string }) {
   return (
-    <div className="flex h-6 items-center rounded-lg bg-black/50 px-2 py-1 backdrop-blur-md">
+    <div className="flex h-6 items-center rounded-[1rem] bg-black/50 px-2 py-1 backdrop-blur-md">
       <span className="text-[10px] font-bold tracking-wider text-white">{value}</span>
     </div>
   );
@@ -42,8 +48,8 @@ function VideoDurationBadge({ value }: { value: string }) {
 
 function VideoGridCard({ video }: { video: VideoCard }) {
   return (
-    <article className="group flex flex-col gap-3">
-      <Link href={`/videos/${video.id}`} className="relative aspect-video overflow-hidden rounded-xl shadow-md">
+    <article className="flex flex-col gap-3 group">
+      <Link href={`/videos/${video.id}`} className="aspect-video rounded-xl overflow-hidden relative shadow-md">
         {video.cover_url || video.preview_webp_url ? (
           <>
             {video.cover_url ? (
