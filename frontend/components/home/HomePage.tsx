@@ -17,6 +17,8 @@ const homeBadgeIconStyle = {
   width: "14px",
   height: "14px",
   lineHeight: "14px",
+  display: "block",
+  textAlign: "center",
   fontVariationSettings: "'FILL' 0, 'wght' 400",
 } as const;
 
@@ -33,11 +35,13 @@ function formatDurationLabel(duration: number): string {
 
 function VideoMetricBadge({ icon, value }: { icon: string; value: string }) {
   return (
-    <div className="flex h-6 items-center gap-1.5 rounded-[1rem] bg-black/50 px-2 py-1 backdrop-blur-md">
-      <span className="material-symbols-outlined shrink-0 text-white" style={homeBadgeIconStyle}>
-        {icon}
+    <div className="inline-flex h-6 items-center rounded-[1rem] bg-black/50 px-2 py-1 backdrop-blur-md">
+      <span className="inline-flex h-[14px] w-[14px] shrink-0 items-center justify-center">
+        <span className="material-symbols-outlined shrink-0 text-white" style={homeBadgeIconStyle}>
+          {icon}
+        </span>
       </span>
-      <span className="text-[10px] font-bold text-white">{value}</span>
+      <span className="ml-1.5 text-[10px] font-bold leading-[10px] tabular-nums text-white">{value}</span>
     </div>
   );
 }
