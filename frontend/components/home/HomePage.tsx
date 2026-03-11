@@ -5,22 +5,13 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
+import { AppIcon, type IconName } from "@/components/common/AppIcon";
 import { EmptyState } from "@/components/common/EmptyState";
 import { LoadingSkeleton } from "@/components/common/LoadingSkeleton";
 import type { HomeData, VideoCard } from "@/lib/dto";
 import { mapHomeData } from "@/lib/dto/mappers";
 import { cn } from "@/lib/utils/cn";
 import { formatCount, formatDate } from "@/lib/utils/format";
-
-const homeBadgeIconStyle = {
-  fontSize: "14px",
-  width: "14px",
-  height: "14px",
-  lineHeight: "14px",
-  display: "block",
-  textAlign: "center",
-  fontVariationSettings: "'FILL' 0, 'wght' 400",
-} as const;
 
 function formatDurationLabel(duration: number): string {
   const total = Math.max(0, Math.round(duration));
@@ -33,13 +24,11 @@ function formatDurationLabel(duration: number): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function VideoMetricBadge({ icon, value }: { icon: string; value: string }) {
+function VideoMetricBadge({ icon, value }: { icon: IconName; value: string }) {
   return (
     <div className="inline-flex h-6 items-center rounded-[1rem] bg-black/50 px-2 py-1 backdrop-blur-md">
       <span className="inline-flex h-[14px] w-[14px] shrink-0 items-center justify-center">
-        <span className="material-symbols-outlined shrink-0 text-white" style={homeBadgeIconStyle}>
-          {icon}
-        </span>
+        <AppIcon name={icon} size={14} className="shrink-0 text-white" />
       </span>
       <span className="ml-1.5 text-[10px] font-bold leading-[10px] tabular-nums text-white">{value}</span>
     </div>
@@ -103,7 +92,7 @@ function VideoGridCard({ video }: { video: VideoCard }) {
         </h3>
         <div className="flex items-center gap-2 opacity-70">
           <div className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/20">
-            <span className="material-symbols-outlined text-[12px] text-primary">person</span>
+            <AppIcon name="person" size={12} className="text-primary" />
           </div>
           <span className="text-[11px] font-medium">{video.author.username}</span>
           <span className="ml-auto text-[11px]">{formatDate(video.published_at)}</span>
@@ -231,9 +220,7 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
             <aside className="rounded-xl border border-slate-100 bg-white p-6 shadow-sm lg:col-span-4">
               <div className="mb-6 flex items-center justify-between">
                 <h2 className="flex items-center gap-2 text-lg font-bold text-slate-900">
-                  <span className="material-symbols-outlined text-orange-500" style={{ fontVariationSettings: "'FILL' 1" }}>
-                    local_fire_department
-                  </span>
+                  <AppIcon name="local_fire_department" className="text-orange-500" />
                   热度排行榜
                 </h2>
                 <Link className="text-xs font-medium text-primary" href="/">

@@ -3,6 +3,7 @@
 import { useMemo, useState, type FormEvent } from "react";
 
 import { ApiError } from "@/lib/api/types";
+import { AppIcon } from "@/components/common/AppIcon";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { cn } from "@/lib/utils/cn";
 
@@ -116,7 +117,7 @@ export function AuthDialog() {
             onClick={onClose}
             className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
           >
-            <span className="material-symbols-outlined text-lg">close</span>
+            <AppIcon name="close" size={18} />
           </button>
         </div>
 

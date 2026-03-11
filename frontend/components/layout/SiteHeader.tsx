@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { AppIcon } from "@/components/common/AppIcon";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { cn } from "@/lib/utils/cn";
 
@@ -46,7 +47,7 @@ export function SiteHeader() {
         <div className="mx-auto flex w-full max-w-[1400px] items-center justify-between whitespace-nowrap">
           <div className="flex items-center gap-3 text-primary">
             <div className="flex size-8 items-center justify-center rounded-lg bg-primary/10">
-              <span className="material-symbols-outlined font-bold text-primary">movie_filter</span>
+              <AppIcon name="movie_filter" className="text-primary" />
             </div>
             <h2 className="text-xl font-bold leading-tight tracking-tight text-slate-900">喵影上传</h2>
           </div>
@@ -74,13 +75,13 @@ export function SiteHeader() {
                   type="button"
                   className="flex size-10 items-center justify-center rounded-full bg-primary/10 text-primary transition-all hover:bg-primary hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
                 >
-                  <span className="material-symbols-outlined text-[20px]">notifications</span>
+                  <AppIcon name="notifications" size={20} />
                 </button>
                 <button
                   type="button"
                   className="hidden size-10 items-center justify-center rounded-full bg-primary/10 text-primary transition-all hover:bg-primary hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 sm:flex"
                 >
-                  <span className="material-symbols-outlined text-[20px]">account_circle</span>
+                  <AppIcon name="account_circle" size={20} />
                 </button>
                 <div className="h-10 w-10 overflow-hidden rounded-full border-2 border-primary/30 bg-primary/20">
                   {user.avatar_url ? (
@@ -136,11 +137,9 @@ export function SiteHeader() {
         <div className="flex items-center gap-8">
           <Link className="flex items-center gap-2 text-primary" href="/">
             {isHome ? (
-              <span className="material-symbols-outlined text-4xl" style={{ fontVariationSettings: "'FILL' 1" }}>
-                face_5
-              </span>
+              <AppIcon name="face_5" size={36} />
             ) : (
-              <span className="material-symbols-outlined text-3xl">play_circle</span>
+              <AppIcon name="play_circle" size={30} />
             )}
             <h2 className="text-xl font-bold tracking-tight text-slate-900">MoeVideo</h2>
           </Link>
@@ -153,14 +152,14 @@ export function SiteHeader() {
                 pathname === "/" && "text-primary",
               )}
             >
-              {isHome ? <span className="material-symbols-outlined text-xl">home</span> : null}
+              {isHome ? <AppIcon name="home" size={20} /> : null}
               首页
             </Link>
             <Link
               href="/#categories"
               className="flex items-center gap-1 text-sm font-medium text-slate-700 transition-colors hover:text-primary"
             >
-              {isHome ? <span className="material-symbols-outlined text-xl">grid_view</span> : null}
+              {isHome ? <AppIcon name="grid_view" size={20} /> : null}
               分类
             </Link>
             {user ? (
@@ -180,9 +179,10 @@ export function SiteHeader() {
         {isHome ? (
           <div className="mx-8 hidden max-w-md flex-1 lg:block">
             <div className="group relative">
-              <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 transition-colors group-focus-within:text-primary">
-                search
-              </span>
+              <AppIcon
+                name="search"
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 transition-colors group-focus-within:text-primary"
+              />
               <input
                 className="w-full rounded-full border-none bg-slate-100 py-2 pl-10 pr-4 text-sm focus:ring-2 focus:ring-primary/50"
                 value={searchValue}
@@ -199,7 +199,7 @@ export function SiteHeader() {
           </div>
         ) : (
           <div className="hidden w-full max-w-md flex-1 items-center rounded-xl border border-transparent bg-primary/10 px-3 py-1.5 transition-all focus-within:border-primary/30 sm:flex">
-            <span className="material-symbols-outlined text-xl text-primary/60">search</span>
+            <AppIcon name="search" size={20} className="text-primary/60" />
             <input
               className="w-full border-none bg-transparent text-sm placeholder:text-primary/40 focus:ring-0"
               value={searchValue}
@@ -221,7 +221,7 @@ export function SiteHeader() {
             className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition-all hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
             title="上传"
           >
-            <span className="material-symbols-outlined">upload</span>
+            <AppIcon name="upload" />
           </Link>
 
           {isHome ? <div className="mx-1 hidden h-6 w-[1px] bg-slate-200 sm:block" /> : null}

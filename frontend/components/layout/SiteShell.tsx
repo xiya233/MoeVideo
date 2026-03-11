@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import { Suspense, type ReactNode } from "react";
 
 import { AuthDialog } from "@/components/auth/AuthDialog";
+import { AppIcon } from "@/components/common/AppIcon";
 import { SiteHeader } from "@/components/layout/SiteHeader";
 
 function HomeFooter() {
@@ -12,9 +13,7 @@ function HomeFooter() {
       <div className="mx-auto grid w-full max-w-[1400px] grid-cols-2 gap-8 md:grid-cols-4 lg:grid-cols-6">
         <div className="col-span-2">
           <div className="mb-6 flex items-center gap-2 text-primary">
-            <span className="material-symbols-outlined text-4xl" style={{ fontVariationSettings: "'FILL' 1" }}>
-              face_5
-            </span>
+            <AppIcon name="face_5" size={36} />
             <h2 className="text-xl font-bold tracking-tight">MoeVideo</h2>
           </div>
           <p className="mb-6 max-w-xs text-sm text-slate-500">
@@ -22,13 +21,13 @@ function HomeFooter() {
           </p>
           <div className="flex gap-4 text-primary">
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10">
-              <span className="material-symbols-outlined text-lg">public</span>
+              <AppIcon name="public" size={18} />
             </div>
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10">
-              <span className="material-symbols-outlined text-lg">alternate_email</span>
+              <AppIcon name="alternate_email" size={18} />
             </div>
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10">
-              <span className="material-symbols-outlined text-lg">chat</span>
+              <AppIcon name="chat" size={18} />
             </div>
           </div>
         </div>
@@ -82,14 +81,14 @@ function CompactFooter({ uploadPage }: { uploadPage?: boolean }) {
         ) : (
           <>
             <div className="mb-6 flex items-center justify-center gap-2 text-primary">
-              <span className="material-symbols-outlined text-2xl">play_circle</span>
+              <AppIcon name="play_circle" size={24} />
               <span className="text-lg font-bold">MoeVideo</span>
             </div>
             <p className="text-sm text-slate-500">© 2026 MoeVideo Project. Designed for anime and scenery lovers.</p>
             <div className="mt-6 flex items-center justify-center gap-6 text-slate-400">
-              <span className="material-symbols-outlined transition-colors hover:text-primary">alternate_email</span>
-              <span className="material-symbols-outlined transition-colors hover:text-primary">public</span>
-              <span className="material-symbols-outlined transition-colors hover:text-primary">groups</span>
+              <AppIcon name="alternate_email" className="transition-colors hover:text-primary" />
+              <AppIcon name="public" className="transition-colors hover:text-primary" />
+              <AppIcon name="groups" className="transition-colors hover:text-primary" />
             </div>
           </>
         )}

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
+import { AppIcon } from "@/components/common/AppIcon";
 import { EmptyState } from "@/components/common/EmptyState";
 import type { Category, UploadCompleteData, UploadTicket } from "@/lib/dto";
 import { mapCategory, mapUploadCompleteData, mapUploadTicket } from "@/lib/dto/mappers";
@@ -302,7 +303,7 @@ export function UploadPage() {
           onClick={() => videoInputRef.current?.click()}
         >
           <div className="flex size-20 items-center justify-center rounded-full bg-primary/10 transition-transform group-hover:scale-110">
-            <span className="material-symbols-outlined text-5xl text-primary">cloud_upload</span>
+            <AppIcon name="cloud_upload" size={48} className="text-primary" />
           </div>
           <div className="flex flex-col items-center gap-2">
             <p className="text-center text-xl font-bold text-slate-900">点击或拖拽视频至此上传</p>
@@ -331,7 +332,7 @@ export function UploadPage() {
       <div className="grid grid-cols-1 gap-10 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
           <h3 className="flex items-center gap-2 text-lg font-bold text-slate-900">
-            <span className="material-symbols-outlined text-primary">edit_note</span>
+            <AppIcon name="edit_note" className="text-primary" />
             基础信息
           </h3>
 
@@ -367,7 +368,7 @@ export function UploadPage() {
                   >
                     {tag}
                     <button type="button" onClick={() => removeTag(tag)}>
-                      <span className="material-symbols-outlined cursor-pointer text-[14px]">close</span>
+                      <AppIcon name="close" size={14} className="cursor-pointer" />
                     </button>
                   </span>
                 ))}
@@ -387,7 +388,7 @@ export function UploadPage() {
                     }
                   }}
                 />
-                <span className="material-symbols-outlined absolute left-3 top-3.5 text-slate-400">tag</span>
+                <AppIcon name="tag" className="absolute left-3 top-3.5 text-slate-400" />
               </div>
             </label>
           </div>
@@ -396,7 +397,7 @@ export function UploadPage() {
         <div className="space-y-6">
           <div>
             <h3 className="mb-4 flex items-center gap-2 text-lg font-bold text-slate-900">
-              <span className="material-symbols-outlined text-primary">image</span>
+              <AppIcon name="image" className="text-primary" />
               封面设置
             </h3>
 
@@ -413,9 +414,11 @@ export function UploadPage() {
                 />
               ) : (
                 <>
-                  <span className="material-symbols-outlined text-4xl text-primary/40 transition-colors group-hover:text-primary">
-                    add_photo_alternate
-                  </span>
+                  <AppIcon
+                    name="add_photo_alternate"
+                    size={36}
+                    className="text-primary/40 transition-colors group-hover:text-primary"
+                  />
                   <span className="text-xs font-medium text-primary/60">点击上传自定义封面</span>
                 </>
               )}
@@ -452,7 +455,7 @@ export function UploadPage() {
 
           <div className="rounded-xl border border-primary/10 bg-primary/5 p-4">
             <h4 className="mb-2 flex items-center gap-1 text-xs font-bold text-primary">
-              <span className="material-symbols-outlined text-xs">info</span>
+              <AppIcon name="info" size={12} />
               上传小贴士
             </h4>
             <p className="text-xs leading-relaxed text-slate-500">

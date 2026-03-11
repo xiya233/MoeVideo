@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
+import { AppIcon } from "@/components/common/AppIcon";
 import { EmptyState } from "@/components/common/EmptyState";
 import { LoadingSkeleton } from "@/components/common/LoadingSkeleton";
 import { ArtHlsPlayer } from "@/components/video/ArtHlsPlayer";
@@ -649,14 +650,14 @@ export function VideoPage({ videoId }: VideoPageProps) {
           {detail.status === "processing" ? (
             <div className="flex h-full w-full items-center justify-center bg-slate-950/90">
               <div className="flex flex-col items-center gap-3 text-slate-200">
-                <span className="material-symbols-outlined animate-spin text-4xl">autorenew</span>
+                <AppIcon name="autorenew" size={36} className="animate-spin" />
                 <p className="text-sm font-semibold">视频正在转码中，页面会自动刷新</p>
               </div>
             </div>
           ) : detail.status === "failed" ? (
             <div className="flex h-full w-full items-center justify-center bg-slate-950/90">
               <div className="flex flex-col items-center gap-2 text-slate-200">
-                <span className="material-symbols-outlined text-4xl text-red-400">error</span>
+                <AppIcon name="error" size={36} className="text-red-400" />
                 <p className="text-sm font-semibold">转码失败，请重新上传视频</p>
               </div>
             </div>
@@ -705,11 +706,11 @@ export function VideoPage({ videoId }: VideoPageProps) {
           <div className="flex flex-wrap items-center justify-between gap-4 border-b border-primary/10 py-2">
             <div className="flex items-center gap-4 text-sm text-slate-500">
               <span className="flex items-center gap-1">
-                <span className="material-symbols-outlined text-lg">visibility</span>
+                <AppIcon name="visibility" size={18} />
                 {formatCount(detail.stats.views_count)} 播放
               </span>
               <span className="flex items-center gap-1">
-                <span className="material-symbols-outlined text-lg">calendar_today</span>
+                <AppIcon name="calendar_today" size={18} />
                 {formatDate(detail.video.published_at)}
               </span>
             </div>
@@ -717,7 +718,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
             {detail.status === "published" ? (
               <div className="flex items-center gap-2">
                 <button type="button" onClick={toggleLike} className={actionButtonClass(detail.viewer_actions.liked)} disabled={pendingLike}>
-                  <span className="material-symbols-outlined">thumb_up</span>
+                  <AppIcon name="thumb_up" />
                   {formatCount(detail.stats.likes_count)}
                 </button>
                 <button
@@ -726,7 +727,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
                   className={actionButtonClass(detail.viewer_actions.favorited)}
                   disabled={pendingFavorite}
                 >
-                  <span className="material-symbols-outlined">star</span>
+                  <AppIcon name="star" />
                   {formatCount(detail.stats.favorites_count)}
                 </button>
                 <button
@@ -734,7 +735,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
                   onClick={shareVideo}
                   className="flex items-center gap-2 rounded-xl bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-all hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
                 >
-                  <span className="material-symbols-outlined">share</span>
+                  <AppIcon name="share" />
                   分享
                 </button>
               </div>
@@ -760,7 +761,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
                 )}
               </div>
               <div className="absolute -bottom-1 -right-1 rounded-full border-2 border-white bg-yellow-400 p-0.5 text-white">
-                <span className="material-symbols-outlined block text-[10px]">verified</span>
+                <AppIcon name="verified" size={10} className="block" />
               </div>
             </div>
             <div>
@@ -849,7 +850,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
                       <p className="text-sm text-slate-800">{item.content}</p>
                       <div className="flex items-center gap-4 pt-2">
                         <button className="flex items-center gap-1 text-xs text-slate-400 transition-colors hover:text-primary" type="button">
-                          <span className="material-symbols-outlined text-sm">thumb_up</span>
+                          <AppIcon name="thumb_up" size={14} />
                           {formatCount(item.like_count)}
                         </button>
                         <button
@@ -940,7 +941,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
             onClick={() => void fetchPageData()}
             className="flex cursor-pointer items-center gap-2 text-xs font-medium text-primary transition-colors hover:opacity-80"
           >
-            <span className="material-symbols-outlined text-sm">autorenew</span>
+            <AppIcon name="autorenew" size={14} />
             换一换
           </button>
         </div>
@@ -964,7 +965,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
                 <div className="space-y-0.5">
                   <p className="text-xs text-slate-500">{video.author.username}</p>
                   <p className="flex items-center gap-1 text-[10px] text-slate-400">
-                    <span className="material-symbols-outlined text-[12px]">play_circle</span>
+                    <AppIcon name="play_circle" size={12} />
                     {formatCount(video.views_count)} 播放
                   </p>
                 </div>
