@@ -941,9 +941,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
           body: payload,
         });
         const created = mapDanmakuItem(data.item);
-        if (!wsConnectedRef.current) {
-          ingestDanmaku(created);
-        }
+        ingestDanmaku(created);
         return true;
       } catch {
         return false;

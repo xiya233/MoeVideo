@@ -6,6 +6,7 @@ import type { Danmu, Result as DanmakuPluginResult } from "artplayer-plugin-danm
 import type { DanmakuItem } from "@/lib/dto";
 
 const DEFAULT_PLAYER_THEME = "#3db8f5";
+const REALTIME_DANMAKU_OFFSET_SEC = 0.15;
 
 type PlayerQuality = {
   html: string;
@@ -63,6 +64,15 @@ function toPluginDanmu(item: DanmakuItem): Danmu {
   };
 }
 
+function toRealtimeDanmu(item: DanmakuItem, currentTimeSec: number): Danmu {
+  return {
+    text: item.content,
+    time: Math.max(0, item.time_sec || 0, Math.max(0, currentTimeSec) + REALTIME_DANMAKU_OFFSET_SEC),
+    mode: item.mode,
+    color: item.color || "#FFFFFF",
+  };
+}
+
 function normalizeMode(raw: unknown): 0 | 1 | 2 {
   if (raw === 1 || raw === 2) {
     return raw;
@@ -98,6 +108,7 @@ export function ArtHlsPlayer({
   const danmakuPluginRef = useRef<DanmakuPluginResult | null>(null);
   const loadedDanmakuSignatureRef = useRef("");
   const latestDanmakuIDRef = useRef("");
+  const pendingLatestDanmakuRef = useRef<DanmakuItem | null>(null);
   const danmakuItemsRef = useRef(danmakuItems);
   const canEmitDanmakuRef = useRef(canEmitDanmaku);
   const onTimeUpdateRef = useRef(onTimeUpdate);
@@ -149,6 +160,7 @@ export function ArtHlsPlayer({
   useEffect(() => {
     loadedDanmakuSignatureRef.current = "";
     latestDanmakuIDRef.current = "";
+    pendingLatestDanmakuRef.current = null;
   }, [sourceUrl]);
 
   useEffect(() => {
@@ -234,12 +246,19 @@ export function ArtHlsPlayer({
                 return true;
               }
               try {
-                await onEmitDanmakuRef.current({
+                const sent = await onEmitDanmakuRef.current({
                   content,
                   time_sec: Math.max(0, Number(danmu.time) || 0),
                   mode: normalizeMode(danmu.mode),
                   color: normalizeColor(danmu.color),
                 });
+                if (sent) {
+                  const input = containerRef.current?.querySelector<HTMLInputElement>(".apd-input");
+                  if (input) {
+                    input.value = "";
+                    input.dispatchEvent(new Event("input", { bubbles: true }));
+                  }
+                }
               } catch {
                 // Keep emitter stable; failed sends are handled by caller.
               }
@@ -260,6 +279,12 @@ export function ArtHlsPlayer({
 
       const video = artInstance.video as HTMLVideoElement;
       videoRef.current = video;
+      const pendingLatest = pendingLatestDanmakuRef.current;
+      if (danmakuPluginRef.current && pendingLatest?.id && latestDanmakuIDRef.current !== pendingLatest.id) {
+        latestDanmakuIDRef.current = pendingLatest.id;
+        danmakuPluginRef.current.emit(toRealtimeDanmu(pendingLatest, video.currentTime || 0));
+        pendingLatestDanmakuRef.current = null;
+      }
 
       const handleTimeUpdate = () => {
         onTimeUpdateRef.current?.(video.currentTime || 0, Number.isFinite(video.duration) ? video.duration : 0);
@@ -323,14 +348,19 @@ export function ArtHlsPlayer({
 
   useEffect(() => {
     const plugin = danmakuPluginRef.current;
-    if (!plugin || !latestDanmaku || !latestDanmaku.id) {
+    if (!latestDanmaku || !latestDanmaku.id) {
       return;
     }
     if (latestDanmakuIDRef.current === latestDanmaku.id) {
       return;
     }
+    if (!plugin) {
+      pendingLatestDanmakuRef.current = latestDanmaku;
+      return;
+    }
     latestDanmakuIDRef.current = latestDanmaku.id;
-    plugin.emit(toPluginDanmu(latestDanmaku));
+    pendingLatestDanmakuRef.current = null;
+    plugin.emit(toRealtimeDanmu(latestDanmaku, videoRef.current?.currentTime || 0));
   }, [latestDanmaku]);
 
   useEffect(() => {
