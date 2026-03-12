@@ -16,6 +16,8 @@ export type Author = {
 export type VideoCard = {
   id: string;
   title: string;
+  status?: string;
+  visibility?: string;
   cover_url?: string;
   preview_webp_url?: string;
   duration_sec: number;
@@ -75,6 +77,8 @@ export type UserBrief = {
   bio?: string;
   avatar_url?: string;
   followers_count?: number;
+  following_count?: number;
+  followed?: boolean;
 };
 
 export type CommentItem = {
@@ -113,6 +117,14 @@ export type UploadCompleteData = {
 export type SaveProgressData = {
   saved: boolean;
   position_sec: number;
+};
+
+export type ContinueWatchingItem = {
+  video: VideoCard;
+  position_sec: number;
+  duration_sec: number;
+  progress_percent: number;
+  updated_at: string;
 };
 
 export type LoginOrRegisterData = {

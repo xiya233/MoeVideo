@@ -61,10 +61,10 @@ export function SiteHeader() {
                 首页
               </Link>
               <Link
-                href="/"
+                href="/me"
                 className="text-sm font-medium text-slate-600 transition-colors hover:text-primary"
               >
-                我的视频
+                个人中心
               </Link>
               <span className="text-sm font-bold text-primary">上传中心</span>
             </nav>
@@ -173,6 +173,17 @@ export function SiteHeader() {
                 上传中心
               </Link>
             ) : null}
+            {user ? (
+              <Link
+                href="/me"
+                className={cn(
+                  "text-sm font-medium transition-colors hover:text-primary",
+                  pathname === "/me" ? "text-primary" : "text-slate-700",
+                )}
+              >
+                个人中心
+              </Link>
+            ) : null}
           </nav>
         </div>
 
@@ -228,7 +239,7 @@ export function SiteHeader() {
 
           {user ? (
             <>
-              <div className="hidden items-center gap-2 rounded-full bg-primary/10 px-3 py-1 sm:flex">
+              <Link href="/me" className="hidden items-center gap-2 rounded-full bg-primary/10 px-3 py-1 sm:flex">
                 <div className="h-7 w-7 overflow-hidden rounded-full bg-white">
                   {user.avatar_url ? (
                     // eslint-disable-next-line @next/next/no-img-element
@@ -240,7 +251,7 @@ export function SiteHeader() {
                   )}
                 </div>
                 <span className="max-w-[120px] truncate text-sm font-medium text-slate-700">{user.username}</span>
-              </div>
+              </Link>
               <button
                 type="button"
                 onClick={onLogout}

@@ -485,6 +485,142 @@ func TestVideoProgressSaveAndClear(t *testing.T) {
 	}
 }
 
+func TestUpdateMeProfile(t *testing.T) {
+	srv, container := newTestServer(t)
+	userID, access, _ := registerUser(t, srv, "iris", "iris@example.com", "password123")
+
+	now := util.FormatTime(time.Now().UTC())
+	avatarMediaID := "media-" + uuid.NewString()
+	if _, err := container.DB.Exec(
+		`INSERT INTO media_objects (id, provider, bucket, object_key, original_filename, mime_type, size_bytes, duration_sec, created_by, created_at)
+		 VALUES (?, 'local', '', ?, 'avatar.webp', 'image/webp', 1024, 0, ?, ?)`,
+		avatarMediaID,
+		"images/"+userID+"/avatar.webp",
+		userID,
+		now,
+	); err != nil {
+		t.Fatalf("insert avatar media: %v", err)
+	}
+
+	status, patchResp := doJSONRequest(t, srv, http.MethodPatch, "/api/v1/users/me", map[string]interface{}{
+		"bio":             "hello moevideo",
+		"avatar_media_id": avatarMediaID,
+	}, map[string]string{"Authorization": "Bearer " + access})
+	if status != http.StatusOK {
+		t.Fatalf("patch /users/me should succeed, got %d (%s)", status, patchResp.Message)
+	}
+
+	status, meResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/users/me", nil, map[string]string{
+		"Authorization": "Bearer " + access,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("get /users/me should succeed, got %d (%s)", status, meResp.Message)
+	}
+
+	var meData struct {
+		Bio       string `json:"bio"`
+		AvatarURL string `json:"avatar_url"`
+	}
+	if err := json.Unmarshal(meResp.Data, &meData); err != nil {
+		t.Fatalf("parse /users/me response: %v", err)
+	}
+	if meData.Bio != "hello moevideo" {
+		t.Fatalf("expected bio updated, got %q", meData.Bio)
+	}
+	if meData.AvatarURL == "" {
+		t.Fatalf("expected avatar_url to be set")
+	}
+}
+
+func TestMeCenterLists(t *testing.T) {
+	srv, container := newTestServer(t)
+	ownerID, _, _ := registerUser(t, srv, "jane", "jane@example.com", "password123")
+	videoID := prepareVideoForUser(t, container, ownerID)
+	_, viewerAccess, _ := registerUser(t, srv, "kate", "kate@example.com", "password123")
+
+	status, _ := doJSONRequest(t, srv, http.MethodPut, "/api/v1/users/"+ownerID+"/follow", map[string]interface{}{
+		"active": true,
+	}, map[string]string{"Authorization": "Bearer " + viewerAccess})
+	if status != http.StatusOK {
+		t.Fatalf("follow should succeed, got %d", status)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPut, "/api/v1/videos/"+videoID+"/favorite", map[string]interface{}{
+		"active": true,
+	}, map[string]string{"Authorization": "Bearer " + viewerAccess})
+	if status != http.StatusOK {
+		t.Fatalf("favorite should succeed, got %d", status)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPut, "/api/v1/videos/"+videoID+"/progress", map[string]interface{}{
+		"position_sec": 35,
+		"duration_sec": 120,
+	}, map[string]string{"Authorization": "Bearer " + viewerAccess})
+	if status != http.StatusOK {
+		t.Fatalf("save progress should succeed, got %d", status)
+	}
+
+	status, favoritesResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/users/me/favorites?limit=10", nil, map[string]string{
+		"Authorization": "Bearer " + viewerAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("favorites list should succeed, got %d", status)
+	}
+	var favoritesData struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(favoritesResp.Data, &favoritesData); err != nil {
+		t.Fatalf("parse favorites response: %v", err)
+	}
+	if len(favoritesData.Items) == 0 || favoritesData.Items[0].ID != videoID {
+		t.Fatalf("expected favorite video %s in list", videoID)
+	}
+
+	status, followingResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/users/me/following?limit=10", nil, map[string]string{
+		"Authorization": "Bearer " + viewerAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("following list should succeed, got %d", status)
+	}
+	var followingData struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(followingResp.Data, &followingData); err != nil {
+		t.Fatalf("parse following response: %v", err)
+	}
+	if len(followingData.Items) == 0 || followingData.Items[0].ID != ownerID {
+		t.Fatalf("expected followed user %s in list", ownerID)
+	}
+
+	status, continueResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/users/me/continue-watching?limit=10", nil, map[string]string{
+		"Authorization": "Bearer " + viewerAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("continue watching list should succeed, got %d", status)
+	}
+	var continueData struct {
+		Items []struct {
+			PositionSec int64 `json:"position_sec"`
+			Video       struct {
+				ID string `json:"id"`
+			} `json:"video"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(continueResp.Data, &continueData); err != nil {
+		t.Fatalf("parse continue watching response: %v", err)
+	}
+	if len(continueData.Items) == 0 || continueData.Items[0].Video.ID != videoID {
+		t.Fatalf("expected continue watching video %s in list", videoID)
+	}
+	if continueData.Items[0].PositionSec != 35 {
+		t.Fatalf("expected position_sec=35, got %d", continueData.Items[0].PositionSec)
+	}
+}
+
 func TestVideoCardIncludesPreviewWebPURL(t *testing.T) {
 	srv, container := newTestServer(t)
 	userID, _, _ := registerUser(t, srv, "helen", "helen@example.com", "password123")

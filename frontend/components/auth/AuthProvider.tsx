@@ -35,6 +35,7 @@ type AuthContextValue = {
     password_confirm: string;
   }) => Promise<void>;
   logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
   request: <T>(path: string, options?: RequestOptions) => Promise<T>;
   uploadBinary: (url: string, file: File, headers?: Record<string, string>) => Promise<void>;
 };
@@ -103,6 +104,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Ignore sync errors. Request layer handles auth failures.
     }
   }, [request]);
+
+  const refreshUser = useCallback(async () => {
+    await syncCurrentUser();
+  }, [syncCurrentUser]);
 
   useEffect(() => {
     if (!ready || !session?.tokens.accessToken) {
@@ -197,6 +202,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       register,
       logout,
+      refreshUser,
       request,
       uploadBinary: api.uploadBinary,
     }),
@@ -210,6 +216,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       register,
       logout,
+      refreshUser,
       request,
       api.uploadBinary,
     ],

@@ -24,7 +24,11 @@ func RegisterRoutes(api fiber.Router, a *app.App) {
 	api.Post("/auth/logout", middleware.RequireAuth(a), h.Logout)
 
 	api.Get("/users/me", middleware.RequireAuth(a), h.GetMe)
+	api.Patch("/users/me", middleware.RequireAuth(a), h.UpdateMe)
 	api.Get("/users/me/videos", middleware.RequireAuth(a), h.ListMyVideos)
+	api.Get("/users/me/favorites", middleware.RequireAuth(a), h.ListMyFavorites)
+	api.Get("/users/me/following", middleware.RequireAuth(a), h.ListMyFollowing)
+	api.Get("/users/me/continue-watching", middleware.RequireAuth(a), h.ListMyContinueWatching)
 	api.Get("/users/:userId", middleware.OptionalAuth(a), h.GetUserByID)
 	api.Put("/users/:userId/follow", middleware.RequireAuth(a), h.ToggleFollow)
 

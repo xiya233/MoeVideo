@@ -3,12 +3,14 @@ import type {
   Category,
   CommentItem,
   CommentsData,
+  ContinueWatchingItem,
   HomeData,
   LoginOrRegisterData,
   UploadCompleteData,
   UploadTicket,
   VideoCard,
   VideoDetail,
+  UserBrief,
 } from "@/lib/dto";
 
 function str(value: unknown, fallback = ""): string {
@@ -51,6 +53,19 @@ export function mapAuthor(value: unknown): Author {
   };
 }
 
+export function mapUserBrief(value: unknown): UserBrief {
+  const src = obj(value);
+  return {
+    id: str(src.id),
+    username: str(src.username, "匿名用户"),
+    bio: str(src.bio) || undefined,
+    avatar_url: str(src.avatar_url) || undefined,
+    followers_count: num(src.followers_count),
+    following_count: num(src.following_count),
+    followed: bool(src.followed),
+  };
+}
+
 export function mapCategory(value: unknown): Category {
   const src = obj(value);
   return {
@@ -66,6 +81,8 @@ export function mapVideoCard(value: unknown): VideoCard {
   return {
     id: str(src.id),
     title: str(src.title, "未命名视频"),
+    status: str(src.status) || undefined,
+    visibility: str(src.visibility) || undefined,
     cover_url: str(src.cover_url) || undefined,
     preview_webp_url: str(src.preview_webp_url) || undefined,
     duration_sec: num(src.duration_sec),
@@ -150,7 +167,6 @@ export function mapVideoDetail(value: unknown): VideoDetail {
 
 function mapCommentItem(value: unknown): CommentItem {
   const src = obj(value);
-  const user = obj(src.user);
   return {
     id: str(src.id),
     video_id: str(src.video_id),
@@ -158,13 +174,7 @@ function mapCommentItem(value: unknown): CommentItem {
     like_count: num(src.like_count),
     created_at: str(src.created_at),
     parent_comment_id: str(src.parent_comment_id) || null,
-    user: {
-      id: str(user.id),
-      username: str(user.username, "匿名用户"),
-      avatar_url: str(user.avatar_url) || undefined,
-      bio: str(user.bio) || undefined,
-      followers_count: num(user.followers_count),
-    },
+    user: mapUserBrief(src.user),
     replies: arr(src.replies).map(mapCommentItem),
   };
 }
@@ -227,5 +237,16 @@ export function mapLoginRegisterData(value: unknown): LoginOrRegisterData {
       refresh_token: str(tokens.refresh_token),
       refresh_expires_at: str(tokens.refresh_expires_at),
     },
+  };
+}
+
+export function mapContinueWatchingItem(value: unknown): ContinueWatchingItem {
+  const src = obj(value);
+  return {
+    video: mapVideoCard(src.video),
+    position_sec: num(src.position_sec),
+    duration_sec: num(src.duration_sec),
+    progress_percent: num(src.progress_percent),
+    updated_at: str(src.updated_at),
   };
 }
