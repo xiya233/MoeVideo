@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
 import { AppIcon, type IconName } from "@/components/common/AppIcon";
+import { AuthorInline } from "@/components/common/AuthorInline";
 import { EmptyState } from "@/components/common/EmptyState";
 import { LoadingSkeleton } from "@/components/common/LoadingSkeleton";
 import type { HomeData, VideoCard } from "@/lib/dto";
@@ -91,10 +92,7 @@ function VideoGridCard({ video }: { video: VideoCard }) {
           {video.title}
         </h3>
         <div className="flex items-center gap-2 opacity-70">
-          <div className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/20">
-            <AppIcon name="person" size={12} className="text-primary" />
-          </div>
-          <span className="text-[11px] font-medium">{video.author.username}</span>
+          <AuthorInline username={video.author.username} avatarUrl={video.author.avatar_url} />
           <span className="ml-auto text-[11px]">{formatDate(video.published_at)}</span>
         </div>
       </div>

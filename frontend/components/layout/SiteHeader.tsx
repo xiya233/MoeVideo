@@ -4,8 +4,8 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
-import { AppIcon } from "@/components/common/AppIcon";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { AppIcon } from "@/components/common/AppIcon";
 import { cn } from "@/lib/utils/cn";
 
 export function SiteHeader() {
@@ -37,110 +37,12 @@ export function SiteHeader() {
     }
   };
 
-  const isUpload = pathname === "/upload";
-  const isVideo = pathname.startsWith("/videos/");
-  const isHome = pathname === "/";
-
-  if (isUpload) {
-    return (
-      <header className="sticky top-0 z-50 border-b border-primary/10 bg-white/80 px-6 py-3 backdrop-blur-md md:px-10">
-        <div className="mx-auto flex w-full max-w-[1400px] items-center justify-between whitespace-nowrap">
-          <div className="flex items-center gap-3 text-primary">
-            <div className="flex size-8 items-center justify-center rounded-lg bg-primary/10">
-              <AppIcon name="movie_filter" className="text-primary" />
-            </div>
-            <h2 className="text-xl font-bold leading-tight tracking-tight text-slate-900">喵影上传</h2>
-          </div>
-
-          <div className="flex flex-1 items-center justify-end gap-4 md:gap-8">
-            <nav className="hidden items-center gap-8 md:flex">
-              <Link
-                href="/"
-                className="text-sm font-medium text-slate-600 transition-colors hover:text-primary"
-              >
-                首页
-              </Link>
-              <Link
-                href="/me"
-                className="text-sm font-medium text-slate-600 transition-colors hover:text-primary"
-              >
-                个人中心
-              </Link>
-              <span className="text-sm font-bold text-primary">上传中心</span>
-            </nav>
-
-            {user ? (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className="flex size-10 items-center justify-center rounded-full bg-primary/10 text-primary transition-all hover:bg-primary hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
-                >
-                  <AppIcon name="notifications" size={20} />
-                </button>
-                <button
-                  type="button"
-                  className="hidden size-10 items-center justify-center rounded-full bg-primary/10 text-primary transition-all hover:bg-primary hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 sm:flex"
-                >
-                  <AppIcon name="account_circle" size={20} />
-                </button>
-                <div className="h-10 w-10 overflow-hidden rounded-full border-2 border-primary/30 bg-primary/20">
-                  {user.avatar_url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={user.avatar_url} alt={user.username} className="h-full w-full object-cover" />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center text-xs font-bold text-primary">
-                      {user.username.slice(0, 1).toUpperCase()}
-                    </div>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={onLogout}
-                  disabled={logoutPending}
-                  className="rounded-full border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:border-primary/30 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {logoutPending ? "退出中..." : "退出"}
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => openAuthDialog("login")}
-                  className="rounded-full px-4 py-2 text-sm font-bold text-primary transition-colors hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
-                >
-                  登录
-                </button>
-                <button
-                  type="button"
-                  onClick={() => openAuthDialog("register")}
-                  className="rounded-full bg-primary px-4 py-2 text-sm font-bold text-white shadow-lg shadow-primary/30 transition-all hover:shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 focus-visible:ring-offset-2"
-                >
-                  注册
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      </header>
-    );
-  }
-
   return (
     <header className="sticky top-0 z-50 border-b border-primary/10 bg-white/80 px-4 py-3 backdrop-blur-md md:px-10">
-      <div
-        className={cn(
-          "mx-auto flex w-full items-center justify-between gap-4",
-          isHome ? "max-w-[1400px]" : "max-w-[1440px]",
-        )}
-      >
+      <div className="mx-auto flex w-full max-w-[1400px] items-center justify-between gap-4">
         <div className="flex items-center gap-8">
           <Link className="flex items-center gap-2 text-primary" href="/">
-            {isHome ? (
-              <AppIcon name="face_5" size={36} />
-            ) : (
-              <AppIcon name="play_circle" size={30} />
-            )}
+            <AppIcon name="face_5" size={36} />
             <h2 className="text-xl font-bold tracking-tight text-slate-900">MoeVideo</h2>
           </Link>
 
@@ -152,67 +54,27 @@ export function SiteHeader() {
                 pathname === "/" && "text-primary",
               )}
             >
-              {isHome ? <AppIcon name="home" size={20} /> : null}
+              <AppIcon name="home" size={20} />
               首页
             </Link>
             <Link
               href="/#categories"
               className="flex items-center gap-1 text-sm font-medium text-slate-700 transition-colors hover:text-primary"
             >
-              {isHome ? <AppIcon name="grid_view" size={20} /> : null}
+              <AppIcon name="grid_view" size={20} />
               分类
             </Link>
-            {user ? (
-              <Link
-                href="/upload"
-                className={cn(
-                  "text-sm font-medium transition-colors hover:text-primary",
-                  pathname === "/upload" ? "text-primary" : "text-slate-700",
-                )}
-              >
-                上传中心
-              </Link>
-            ) : null}
-            {user ? (
-              <Link
-                href="/me"
-                className={cn(
-                  "text-sm font-medium transition-colors hover:text-primary",
-                  pathname === "/me" ? "text-primary" : "text-slate-700",
-                )}
-              >
-                个人中心
-              </Link>
-            ) : null}
           </nav>
         </div>
 
-        {isHome ? (
-          <div className="mx-8 hidden max-w-md flex-1 lg:block">
-            <div className="group relative">
-              <AppIcon
-                name="search"
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 transition-colors group-focus-within:text-primary"
-              />
-              <input
-                className="w-full rounded-full border-none bg-slate-100 py-2 pl-10 pr-4 text-sm focus:ring-2 focus:ring-primary/50"
-                value={searchValue}
-                onChange={(event) => setSearchValue(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    submitSearch();
-                  }
-                }}
-                placeholder="搜索萌萌的内容..."
-                type="text"
-              />
-            </div>
-          </div>
-        ) : (
-          <div className="hidden w-full max-w-md flex-1 items-center rounded-xl border border-transparent bg-primary/10 px-3 py-1.5 transition-all focus-within:border-primary/30 sm:flex">
-            <AppIcon name="search" size={20} className="text-primary/60" />
+        <div className="mx-8 hidden max-w-md flex-1 lg:block">
+          <div className="group relative">
+            <AppIcon
+              name="search"
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 transition-colors group-focus-within:text-primary"
+            />
             <input
-              className="w-full border-none bg-transparent text-sm placeholder:text-primary/40 focus:ring-0"
+              className="w-full rounded-full border-none bg-slate-100 py-2 pl-10 pr-4 text-sm focus:ring-2 focus:ring-primary/50"
               value={searchValue}
               onChange={(event) => setSearchValue(event.target.value)}
               onKeyDown={(event) => {
@@ -220,11 +82,11 @@ export function SiteHeader() {
                   submitSearch();
                 }
               }}
-              placeholder="搜索你感兴趣的视频..."
+              placeholder="搜索萌萌的内容..."
               type="text"
             />
           </div>
-        )}
+        </div>
 
         <div className="flex items-center gap-2">
           <Link
@@ -235,7 +97,7 @@ export function SiteHeader() {
             <AppIcon name="upload" />
           </Link>
 
-          {isHome ? <div className="mx-1 hidden h-6 w-[1px] bg-slate-200 sm:block" /> : null}
+          <div className="mx-1 hidden h-6 w-[1px] bg-slate-200 sm:block" />
 
           {user ? (
             <>
@@ -266,22 +128,14 @@ export function SiteHeader() {
               <button
                 type="button"
                 onClick={() => openAuthDialog("login")}
-                className={cn(
-                  "rounded-full text-sm font-bold text-primary transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
-                  isHome ? "px-5 py-2 hover:bg-primary/5" : "rounded-xl bg-primary/10 px-4 py-2 hover:bg-primary/20",
-                )}
+                className="rounded-full px-5 py-2 text-sm font-bold text-primary transition-all hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
               >
                 登录
               </button>
               <button
                 type="button"
                 onClick={() => openAuthDialog("register")}
-                className={cn(
-                  "text-sm font-bold text-white transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 focus-visible:ring-offset-2",
-                  isHome
-                    ? "rounded-full bg-primary px-5 py-2 shadow-lg shadow-primary/25 hover:scale-105 active:scale-95"
-                    : "rounded-xl bg-primary px-4 py-2 hover:shadow-lg hover:shadow-primary/30",
-                )}
+                className="rounded-full bg-primary px-5 py-2 text-sm font-bold text-white shadow-lg shadow-primary/25 transition-all hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 focus-visible:ring-offset-2"
               >
                 注册
               </button>

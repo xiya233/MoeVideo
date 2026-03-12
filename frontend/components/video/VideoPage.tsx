@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
 import { AppIcon } from "@/components/common/AppIcon";
+import { AuthorInline } from "@/components/common/AuthorInline";
 import { EmptyState } from "@/components/common/EmptyState";
 import { LoadingSkeleton } from "@/components/common/LoadingSkeleton";
 import { ArtHlsPlayer } from "@/components/video/ArtHlsPlayer";
@@ -963,7 +964,12 @@ export function VideoPage({ videoId }: VideoPageProps) {
               <div className="flex flex-col justify-between py-0.5">
                 <h4 className="line-clamp-2 text-sm font-bold leading-snug transition-colors group-hover:text-primary">{video.title}</h4>
                 <div className="space-y-0.5">
-                  <p className="text-xs text-slate-500">{video.author.username}</p>
+                  <AuthorInline
+                    username={video.author.username}
+                    avatarUrl={video.author.avatar_url}
+                    avatarClassName="h-4 w-4"
+                    usernameClassName="text-xs text-slate-500"
+                  />
                   <p className="flex items-center gap-1 text-[10px] text-slate-400">
                     <AppIcon name="play_circle" size={12} />
                     {formatCount(video.views_count)} 播放

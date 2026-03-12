@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
 import { AppIcon, type IconName } from "@/components/common/AppIcon";
+import { AuthorInline } from "@/components/common/AuthorInline";
 import { EmptyState } from "@/components/common/EmptyState";
 import type { ContinueWatchingItem, UploadCompleteData, UploadTicket, UserBrief, VideoCard } from "@/lib/dto";
 import {
@@ -151,10 +152,7 @@ function VideoGridCard({ video, showStatus = false }: { video: VideoCard; showSt
           {video.title}
         </h3>
         <div className="flex items-center gap-2 opacity-70">
-          <div className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/20">
-            <AppIcon name="person" size={12} className="text-primary" />
-          </div>
-          <span className="truncate text-[11px] font-medium">{video.author.username}</span>
+          <AuthorInline username={video.author.username} avatarUrl={video.author.avatar_url} />
           <span className="ml-auto text-[11px]">{video.category || "未分类"}</span>
         </div>
       </div>
