@@ -800,6 +800,150 @@ func TestMeCenterLists(t *testing.T) {
 	}
 }
 
+func TestUpdateMePrivacyFields(t *testing.T) {
+	srv, _ := newTestServer(t)
+	_, access, _ := registerUser(t, srv, "nina", "nina@example.com", "password123")
+
+	status, patchResp := doJSONRequest(t, srv, http.MethodPatch, "/api/v1/users/me", map[string]interface{}{
+		"profile_public":   true,
+		"public_videos":    true,
+		"public_favorites": true,
+		"public_following": true,
+		"public_followers": true,
+	}, map[string]string{"Authorization": "Bearer " + access})
+	if status != http.StatusOK {
+		t.Fatalf("patch /users/me privacy should succeed, got %d (%s)", status, patchResp.Message)
+	}
+
+	status, meResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/users/me", nil, map[string]string{
+		"Authorization": "Bearer " + access,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("get /users/me should succeed, got %d (%s)", status, meResp.Message)
+	}
+
+	var meData struct {
+		ProfilePublic   bool `json:"profile_public"`
+		PublicVideos    bool `json:"public_videos"`
+		PublicFavorites bool `json:"public_favorites"`
+		PublicFollowing bool `json:"public_following"`
+		PublicFollowers bool `json:"public_followers"`
+	}
+	if err := json.Unmarshal(meResp.Data, &meData); err != nil {
+		t.Fatalf("parse /users/me response: %v", err)
+	}
+	if !meData.ProfilePublic || !meData.PublicVideos || !meData.PublicFavorites || !meData.PublicFollowing || !meData.PublicFollowers {
+		t.Fatalf("expected all privacy flags true, got %+v", meData)
+	}
+}
+
+func TestUserProfilePrivacyAndFollowers(t *testing.T) {
+	srv, container := newTestServer(t)
+	ownerID, ownerAccess, _ := registerUser(t, srv, "olivia", "olivia@example.com", "password123")
+	videoID := prepareVideoForUser(t, container, ownerID)
+	viewerID, viewerAccess, _ := registerUser(t, srv, "peter", "peter@example.com", "password123")
+	_ = viewerID
+
+	status, _ := doJSONRequest(t, srv, http.MethodPut, "/api/v1/users/"+ownerID+"/follow", map[string]interface{}{
+		"active": true,
+	}, map[string]string{"Authorization": "Bearer " + viewerAccess})
+	if status != http.StatusOK {
+		t.Fatalf("follow should succeed, got %d", status)
+	}
+
+	status, followersResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/users/me/followers?limit=10", nil, map[string]string{
+		"Authorization": "Bearer " + ownerAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("list my followers should succeed, got %d", status)
+	}
+	var followersData struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(followersResp.Data, &followersData); err != nil {
+		t.Fatalf("parse followers response: %v", err)
+	}
+	if len(followersData.Items) == 0 || followersData.Items[0].ID == "" {
+		t.Fatalf("expected at least one follower")
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPatch, "/api/v1/users/me", map[string]interface{}{
+		"profile_public": false,
+	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
+	if status != http.StatusOK {
+		t.Fatalf("disable profile public should succeed, got %d", status)
+	}
+
+	status, userResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/users/"+ownerID, nil, map[string]string{
+		"Authorization": "Bearer " + viewerAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("get /users/{id} should succeed, got %d", status)
+	}
+	var userData struct {
+		ProfileAccessible bool `json:"profile_accessible"`
+	}
+	if err := json.Unmarshal(userResp.Data, &userData); err != nil {
+		t.Fatalf("parse /users/{id} response: %v", err)
+	}
+	if userData.ProfileAccessible {
+		t.Fatalf("expected profile_accessible=false when profile_public=0")
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodGet, "/api/v1/users/"+ownerID+"/videos?limit=10", nil, map[string]string{
+		"Authorization": "Bearer " + viewerAccess,
+	})
+	if status != http.StatusForbidden {
+		t.Fatalf("viewer should be forbidden to access private profile videos, got %d", status)
+	}
+
+	status, ownerVideosResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/users/"+ownerID+"/videos?limit=10", nil, map[string]string{
+		"Authorization": "Bearer " + ownerAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("owner should access own videos regardless privacy, got %d", status)
+	}
+	var ownerVideosData struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(ownerVideosResp.Data, &ownerVideosData); err != nil {
+		t.Fatalf("parse owner videos response: %v", err)
+	}
+	if len(ownerVideosData.Items) == 0 || ownerVideosData.Items[0].ID != videoID {
+		t.Fatalf("expected owner video %s in own profile videos list", videoID)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPatch, "/api/v1/users/me", map[string]interface{}{
+		"profile_public": true,
+		"public_videos":  true,
+	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
+	if status != http.StatusOK {
+		t.Fatalf("enable public videos should succeed, got %d", status)
+	}
+
+	status, viewerVideosResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/users/"+ownerID+"/videos?limit=10", nil, map[string]string{
+		"Authorization": "Bearer " + viewerAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("viewer should access videos when profile/videos are public, got %d", status)
+	}
+	var viewerVideosData struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(viewerVideosResp.Data, &viewerVideosData); err != nil {
+		t.Fatalf("parse viewer videos response: %v", err)
+	}
+	if len(viewerVideosData.Items) == 0 || viewerVideosData.Items[0].ID != videoID {
+		t.Fatalf("expected public video %s in viewer profile videos list", videoID)
+	}
+}
+
 func TestVideoCardIncludesPreviewWebPURL(t *testing.T) {
 	srv, container := newTestServer(t)
 	userID, _, _ := registerUser(t, srv, "helen", "helen@example.com", "password123")

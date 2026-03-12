@@ -6,6 +6,7 @@ import type {
   ContinueWatchingItem,
   HomeData,
   LoginOrRegisterData,
+  UserProfileData,
   UploadCompleteData,
   UploadTicket,
   VideoCard,
@@ -63,6 +64,20 @@ export function mapUserBrief(value: unknown): UserBrief {
     followers_count: num(src.followers_count),
     following_count: num(src.following_count),
     followed: bool(src.followed),
+    profile_public: bool(src.profile_public, true),
+    public_videos: bool(src.public_videos, true),
+    public_favorites: bool(src.public_favorites),
+    public_following: bool(src.public_following),
+    public_followers: bool(src.public_followers),
+  };
+}
+
+export function mapUserProfileData(value: unknown): UserProfileData {
+  const src = obj(value);
+  return {
+    user: mapUserBrief(src.user),
+    followed: bool(src.followed),
+    profile_accessible: bool(src.profile_accessible, true),
   };
 }
 
@@ -231,6 +246,11 @@ export function mapLoginRegisterData(value: unknown): LoginOrRegisterData {
       avatar_url: str(user.avatar_url) || undefined,
       followers_count: num(user.followers_count),
       following_count: num(user.following_count),
+      profile_public: bool(user.profile_public, true),
+      public_videos: bool(user.public_videos, true),
+      public_favorites: bool(user.public_favorites),
+      public_following: bool(user.public_following),
+      public_followers: bool(user.public_followers),
     },
     tokens: {
       access_token: str(tokens.access_token),

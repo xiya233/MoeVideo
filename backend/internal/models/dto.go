@@ -8,14 +8,19 @@ type TokenPair struct {
 }
 
 type UserBrief struct {
-	ID             string `json:"id"`
-	Username       string `json:"username"`
-	Email          string `json:"email,omitempty"`
-	Role           string `json:"role,omitempty"`
-	Bio            string `json:"bio"`
-	AvatarURL      string `json:"avatar_url,omitempty"`
-	FollowersCount int64  `json:"followers_count"`
-	FollowingCount int64  `json:"following_count"`
+	ID              string `json:"id"`
+	Username        string `json:"username"`
+	Email           string `json:"email,omitempty"`
+	Role            string `json:"role,omitempty"`
+	Bio             string `json:"bio"`
+	AvatarURL       string `json:"avatar_url,omitempty"`
+	FollowersCount  int64  `json:"followers_count"`
+	FollowingCount  int64  `json:"following_count"`
+	ProfilePublic   bool   `json:"profile_public"`
+	PublicVideos    bool   `json:"public_videos"`
+	PublicFavorites bool   `json:"public_favorites"`
+	PublicFollowing bool   `json:"public_following"`
+	PublicFollowers bool   `json:"public_followers"`
 }
 
 type UploadTicket struct {

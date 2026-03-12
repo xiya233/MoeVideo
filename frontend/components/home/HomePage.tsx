@@ -92,7 +92,11 @@ function VideoGridCard({ video }: { video: VideoCard }) {
           {video.title}
         </h3>
         <div className="flex items-center gap-2 opacity-70">
-          <AuthorInline username={video.author.username} avatarUrl={video.author.avatar_url} />
+          <AuthorInline
+            username={video.author.username}
+            avatarUrl={video.author.avatar_url}
+            href={video.author.id ? `/users/${video.author.id}` : undefined}
+          />
           <span className="ml-auto text-[11px]">{formatDate(video.published_at)}</span>
         </div>
       </div>

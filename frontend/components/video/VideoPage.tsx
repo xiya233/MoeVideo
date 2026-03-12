@@ -904,7 +904,9 @@ export function VideoPage({ videoId }: VideoPageProps) {
                 </div>
               </div>
               <div>
-                <h3 className="text-lg font-bold">{detail.uploader.username}</h3>
+                <Link href={`/users/${detail.uploader.id}`} className="text-lg font-bold transition-colors hover:text-primary">
+                  {detail.uploader.username}
+                </Link>
                 <p className="text-sm text-slate-500">{formatCount(detail.uploader.followers_count)} 粉丝</p>
               </div>
             </div>

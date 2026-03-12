@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
 import { cn } from "@/lib/utils/cn";
@@ -10,6 +11,7 @@ type AuthorInlineProps = {
   className?: string;
   avatarClassName?: string;
   usernameClassName?: string;
+  href?: string;
 };
 
 export function AuthorInline({
@@ -18,13 +20,13 @@ export function AuthorInline({
   className,
   avatarClassName,
   usernameClassName,
+  href,
 }: AuthorInlineProps) {
   const [imageBroken, setImageBroken] = useState(false);
   const showAvatar = Boolean(avatarUrl) && !imageBroken;
   const initial = (username || "U").slice(0, 1).toUpperCase();
-
-  return (
-    <div className={cn("flex min-w-0 items-center gap-2", className)}>
+  const content = (
+    <>
       <div
         className={cn(
           "relative h-5 w-5 shrink-0 overflow-hidden rounded-full bg-primary/20",
@@ -46,6 +48,19 @@ export function AuthorInline({
         )}
       </div>
       <span className={cn("truncate text-[11px] font-medium", usernameClassName)}>{username}</span>
-    </div>
+    </>
   );
+
+  if (href) {
+    return (
+      <Link
+        href={href}
+        className={cn("flex min-w-0 items-center gap-2 transition-colors hover:text-primary", className)}
+      >
+        {content}
+      </Link>
+    );
+  }
+
+  return <div className={cn("flex min-w-0 items-center gap-2", className)}>{content}</div>;
 }

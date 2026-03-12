@@ -66,6 +66,13 @@ func maybeStringPtr(v sql.NullString) *string {
 	return &s
 }
 
+func boolToInt64(v bool) int64 {
+	if v {
+		return 1
+	}
+	return 0
+}
+
 func isConflictErr(err error) bool {
 	if err == nil {
 		return false
@@ -99,14 +106,37 @@ func mediaURL(s *storage.Service, provider, bucket, objectKey string) string {
 func fetchUserBrief(db *sql.DB, s *storage.Service, userID string, includeEmail bool) (models.UserBrief, error) {
 	var u models.UserBrief
 	var provider, bucket, objectKey sql.NullString
+	var profilePublic, publicVideos, publicFavorites, publicFollowing, publicFollowers int64
 	row := db.QueryRow(`SELECT u.id, u.username, u.email, COALESCE(u.role, 'user'), u.bio, u.followers_count, u.following_count,
+		COALESCE(u.profile_public, 1), COALESCE(u.public_videos, 1), COALESCE(u.public_favorites, 0), COALESCE(u.public_following, 0), COALESCE(u.public_followers, 0),
 		COALESCE(m.provider,''), COALESCE(m.bucket,''), COALESCE(m.object_key,'')
 		FROM users u
 		LEFT JOIN media_objects m ON m.id = u.avatar_media_id
 		WHERE u.id = ?`, userID)
-	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.Bio, &u.FollowersCount, &u.FollowingCount, &provider, &bucket, &objectKey); err != nil {
+	if err := row.Scan(
+		&u.ID,
+		&u.Username,
+		&u.Email,
+		&u.Role,
+		&u.Bio,
+		&u.FollowersCount,
+		&u.FollowingCount,
+		&profilePublic,
+		&publicVideos,
+		&publicFavorites,
+		&publicFollowing,
+		&publicFollowers,
+		&provider,
+		&bucket,
+		&objectKey,
+	); err != nil {
 		return models.UserBrief{}, err
 	}
+	u.ProfilePublic = profilePublic > 0
+	u.PublicVideos = publicVideos > 0
+	u.PublicFavorites = publicFavorites > 0
+	u.PublicFollowing = publicFollowing > 0
+	u.PublicFollowers = publicFollowers > 0
 	if !includeEmail {
 		u.Email = ""
 		u.Role = ""

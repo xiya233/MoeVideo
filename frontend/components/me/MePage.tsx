@@ -8,6 +8,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { AppIcon, type IconName } from "@/components/common/AppIcon";
 import { AuthorInline } from "@/components/common/AuthorInline";
 import { EmptyState } from "@/components/common/EmptyState";
+import { AvatarCropDialog } from "@/components/me/AvatarCropDialog";
 import type { ContinueWatchingItem, UploadCompleteData, UploadTicket, UserBrief, VideoCard } from "@/lib/dto";
 import {
   mapContinueWatchingItem,
@@ -22,9 +23,9 @@ import { cn } from "@/lib/utils/cn";
 
 const PAGE_LIMIT = 12;
 const MAX_AVATAR_SIZE = 10 * 1024 * 1024;
-const ALLOWED_AVATAR_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const ALLOWED_AVATAR_INPUT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
-type TabKey = "videos" | "continue" | "favorites" | "following" | "edit";
+type TabKey = "videos" | "continue" | "favorites" | "following" | "followers" | "edit";
 
 type TabItem = {
   key: TabKey;
@@ -37,6 +38,7 @@ const TAB_ITEMS: TabItem[] = [
   { key: "continue", label: "继续观看", icon: "autorenew" },
   { key: "favorites", label: "我的收藏", icon: "star" },
   { key: "following", label: "我的关注", icon: "groups" },
+  { key: "followers", label: "我的粉丝", icon: "person" },
   { key: "edit", label: "编辑资料", icon: "edit_note" },
 ];
 
@@ -152,7 +154,11 @@ function VideoGridCard({ video, showStatus = false }: { video: VideoCard; showSt
           {video.title}
         </h3>
         <div className="flex items-center gap-2 opacity-70">
-          <AuthorInline username={video.author.username} avatarUrl={video.author.avatar_url} />
+          <AuthorInline
+            username={video.author.username}
+            avatarUrl={video.author.avatar_url}
+            href={video.author.id ? `/users/${video.author.id}` : undefined}
+          />
           <span className="ml-auto text-[11px]">{video.category || "未分类"}</span>
         </div>
       </div>
@@ -189,7 +195,14 @@ export function MePage() {
   const [bioInput, setBioInput] = useState("");
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string>("");
+  const [avatarCropSource, setAvatarCropSource] = useState<string>("");
+  const [avatarCropOpen, setAvatarCropOpen] = useState(false);
   const [removeAvatar, setRemoveAvatar] = useState(false);
+  const [profilePublicInput, setProfilePublicInput] = useState(true);
+  const [publicVideosInput, setPublicVideosInput] = useState(true);
+  const [publicFavoritesInput, setPublicFavoritesInput] = useState(false);
+  const [publicFollowingInput, setPublicFollowingInput] = useState(false);
+  const [publicFollowersInput, setPublicFollowersInput] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState("");
 
@@ -203,7 +216,12 @@ export function MePage() {
 
   useEffect(() => {
     setBioInput(currentUser?.bio ?? "");
-  }, [currentUser?.bio]);
+    setProfilePublicInput(currentUser?.profile_public ?? true);
+    setPublicVideosInput(currentUser?.public_videos ?? true);
+    setPublicFavoritesInput(currentUser?.public_favorites ?? false);
+    setPublicFollowingInput(currentUser?.public_following ?? false);
+    setPublicFollowersInput(currentUser?.public_followers ?? false);
+  }, [currentUser]);
 
   useEffect(() => {
     return () => {
@@ -212,6 +230,14 @@ export function MePage() {
       }
     };
   }, [avatarPreview]);
+
+  useEffect(() => {
+    return () => {
+      if (avatarCropSource) {
+        URL.revokeObjectURL(avatarCropSource);
+      }
+    };
+  }, [avatarCropSource]);
 
   const videosQuery = useInfiniteQuery({
     queryKey: ["me-videos"],
@@ -281,16 +307,34 @@ export function MePage() {
     getNextPageParam: (lastPage) => lastPage.next_cursor || undefined,
   });
 
-  const unfollowMutation = useMutation({
-    mutationFn: async (targetUserID: string) => {
+  const followersQuery = useInfiniteQuery({
+    queryKey: ["me-followers"],
+    initialPageParam: "",
+    enabled: !!session && activeTab === "followers",
+    queryFn: async ({ pageParam }) => {
+      const data = await meApi.listMyFollowers(request, {
+        cursor: typeof pageParam === "string" && pageParam ? pageParam : undefined,
+        limit: PAGE_LIMIT,
+      });
+      return {
+        items: (data.items ?? []).map(normalizeUserBrief),
+        next_cursor: data.next_cursor,
+      };
+    },
+    getNextPageParam: (lastPage) => lastPage.next_cursor || undefined,
+  });
+
+  const toggleFollowMutation = useMutation({
+    mutationFn: async ({ targetUserID, active }: { targetUserID: string; active: boolean }) => {
       await request<{ active: boolean }>(`/users/${targetUserID}/follow`, {
         method: "PUT",
         auth: true,
-        body: { active: false },
+        body: { active },
       });
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["me-following"] });
+      await queryClient.invalidateQueries({ queryKey: ["me-followers"] });
       await refreshUser();
       await meQuery.refetch();
     },
@@ -306,8 +350,8 @@ export function MePage() {
 
       let nextAvatarMediaID: string | undefined;
       if (avatarFile) {
-        if (!ALLOWED_AVATAR_TYPES.has(avatarFile.type)) {
-          throw new Error("头像仅支持 JPG/PNG/WEBP");
+        if (avatarFile.type !== "image/webp") {
+          throw new Error("头像请先裁剪后上传（WebP）");
         }
         if (avatarFile.size <= 0 || avatarFile.size > MAX_AVATAR_SIZE) {
           throw new Error("头像大小不能超过 10MB");
@@ -340,7 +384,15 @@ export function MePage() {
         nextAvatarMediaID = completed.media_object_id;
       }
 
-      const payload: { bio?: string; avatar_media_id?: string } = {};
+      const payload: {
+        bio?: string;
+        avatar_media_id?: string;
+        profile_public?: boolean;
+        public_videos?: boolean;
+        public_favorites?: boolean;
+        public_following?: boolean;
+        public_followers?: boolean;
+      } = {};
       const nextBio = bioInput.trim();
       if (nextBio !== (currentUser.bio ?? "")) {
         payload.bio = nextBio;
@@ -351,7 +403,30 @@ export function MePage() {
       if (nextAvatarMediaID) {
         payload.avatar_media_id = nextAvatarMediaID;
       }
-      if (!payload.bio && payload.avatar_media_id === undefined) {
+      if (profilePublicInput !== (currentUser.profile_public ?? true)) {
+        payload.profile_public = profilePublicInput;
+      }
+      if (publicVideosInput !== (currentUser.public_videos ?? true)) {
+        payload.public_videos = publicVideosInput;
+      }
+      if (publicFavoritesInput !== (currentUser.public_favorites ?? false)) {
+        payload.public_favorites = publicFavoritesInput;
+      }
+      if (publicFollowingInput !== (currentUser.public_following ?? false)) {
+        payload.public_following = publicFollowingInput;
+      }
+      if (publicFollowersInput !== (currentUser.public_followers ?? false)) {
+        payload.public_followers = publicFollowersInput;
+      }
+      if (
+        !payload.bio &&
+        payload.avatar_media_id === undefined &&
+        payload.profile_public === undefined &&
+        payload.public_videos === undefined &&
+        payload.public_favorites === undefined &&
+        payload.public_following === undefined &&
+        payload.public_followers === undefined
+      ) {
         return;
       }
 
@@ -387,6 +462,10 @@ export function MePage() {
   const following = useMemo(
     () => followingQuery.data?.pages.flatMap((page) => page.items ?? []) ?? [],
     [followingQuery.data?.pages],
+  );
+  const followers = useMemo(
+    () => followersQuery.data?.pages.flatMap((page) => page.items ?? []) ?? [],
+    [followersQuery.data?.pages],
   );
 
   if (!ready) {
@@ -568,7 +647,9 @@ export function MePage() {
                       )}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-slate-900">{item.username}</p>
+                      <Link href={`/users/${item.id}`} className="block truncate text-sm font-semibold text-slate-900 hover:text-primary">
+                        {item.username}
+                      </Link>
                       <p className="truncate text-xs text-slate-500">
                         {formatCount(item.followers_count ?? 0)} 粉丝 · {formatCount(item.following_count ?? 0)} 关注
                       </p>
@@ -581,8 +662,8 @@ export function MePage() {
                     <span className="text-xs text-slate-400">UID: {item.id.slice(0, 8)}</span>
                     <button
                       type="button"
-                      onClick={() => unfollowMutation.mutate(item.id)}
-                      disabled={unfollowMutation.isPending}
+                      onClick={() => toggleFollowMutation.mutate({ targetUserID: item.id, active: false })}
+                      disabled={toggleFollowMutation.isPending}
                       className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:border-primary/30 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       取消关注
@@ -600,6 +681,71 @@ export function MePage() {
               className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:border-primary/30 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
             >
               {followingQuery.isFetchingNextPage ? "加载中..." : "加载更多"}
+            </button>
+          ) : null}
+        </section>
+      ) : null}
+
+      {activeTab === "followers" ? (
+        <section className="space-y-4">
+          {followersQuery.isLoading ? <div className="text-sm text-slate-500">正在加载粉丝列表...</div> : null}
+          {followers.length === 0 && !followersQuery.isLoading ? (
+            <EmptyState title="暂无粉丝" description="继续创作优质内容，粉丝会越来越多。" />
+          ) : (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {followers.map((item) => (
+                <div key={item.id} className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
+                  <div className="flex items-center gap-3">
+                    <div className="h-12 w-12 overflow-hidden rounded-full bg-primary/10">
+                      {item.avatar_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={item.avatar_url} alt={item.username} className="h-full w-full object-cover" />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-sm font-bold text-primary">
+                          {item.username.slice(0, 1).toUpperCase()}
+                        </div>
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <Link href={`/users/${item.id}`} className="block truncate text-sm font-semibold text-slate-900 hover:text-primary">
+                        {item.username}
+                      </Link>
+                      <p className="truncate text-xs text-slate-500">
+                        {formatCount(item.followers_count ?? 0)} 粉丝 · {formatCount(item.following_count ?? 0)} 关注
+                      </p>
+                    </div>
+                  </div>
+
+                  <p className="mt-3 line-clamp-2 text-xs text-slate-500">{item.bio || "这个用户暂未填写简介。"}</p>
+
+                  <div className="mt-4 flex items-center justify-between">
+                    <span className="text-xs text-slate-400">UID: {item.id.slice(0, 8)}</span>
+                    <button
+                      type="button"
+                      onClick={() => toggleFollowMutation.mutate({ targetUserID: item.id, active: !item.followed })}
+                      disabled={toggleFollowMutation.isPending}
+                      className={cn(
+                        "rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+                        item.followed
+                          ? "border-slate-200 text-slate-700 hover:border-primary/30 hover:text-primary"
+                          : "border-primary/30 text-primary hover:bg-primary/10",
+                      )}
+                    >
+                      {item.followed ? "取消关注" : "关注"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {followersQuery.hasNextPage ? (
+            <button
+              type="button"
+              onClick={() => void followersQuery.fetchNextPage()}
+              disabled={followersQuery.isFetchingNextPage}
+              className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:border-primary/30 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {followersQuery.isFetchingNextPage ? "加载中..." : "加载更多"}
             </button>
           ) : null}
         </section>
@@ -636,11 +782,24 @@ export function MePage() {
                       className="hidden"
                       onChange={(event) => {
                         const file = event.target.files?.[0];
+                        event.currentTarget.value = "";
                         if (!file) {
                           return;
                         }
-                        setAvatarFile(file);
-                        setAvatarPreview(URL.createObjectURL(file));
+                        if (!ALLOWED_AVATAR_INPUT_TYPES.has(file.type)) {
+                          setSaveError("头像仅支持 JPG/PNG/WEBP");
+                          return;
+                        }
+                        if (file.size <= 0 || file.size > MAX_AVATAR_SIZE) {
+                          setSaveError("头像大小不能超过 10MB");
+                          return;
+                        }
+                        setSaveError("");
+                        if (avatarCropSource) {
+                          URL.revokeObjectURL(avatarCropSource);
+                        }
+                        setAvatarCropSource(URL.createObjectURL(file));
+                        setAvatarCropOpen(true);
                         setRemoveAvatar(false);
                       }}
                     />
@@ -658,7 +817,7 @@ export function MePage() {
                   </button>
                 </div>
               </div>
-              <p className="mt-2 text-xs text-slate-400">支持 JPG/PNG/WEBP，大小不超过 10MB。</p>
+              <p className="mt-2 text-xs text-slate-400">支持 JPG/PNG/WEBP，裁剪后统一保存为 512x512 WebP。</p>
             </div>
 
             <div>
@@ -671,6 +830,67 @@ export function MePage() {
                 placeholder="写点什么介绍你自己吧..."
               />
               <p className="mt-2 text-right text-xs text-slate-400">{bioInput.length}/500</p>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 lg:col-span-2">
+              <h3 className="text-sm font-semibold text-slate-800">隐私选项</h3>
+              <p className="mt-1 text-xs text-slate-500">你可以控制个人资料页以及分项内容的公开范围。</p>
+
+              <div className="mt-4 space-y-3">
+                <label className="flex items-center justify-between rounded-lg bg-white px-3 py-2">
+                  <span className="text-sm text-slate-700">公开个人资料</span>
+                  <input
+                    type="checkbox"
+                    checked={profilePublicInput}
+                    onChange={(event) => setProfilePublicInput(event.target.checked)}
+                    className="h-4 w-4 accent-primary"
+                  />
+                </label>
+
+                <label className="flex items-center justify-between rounded-lg bg-white px-3 py-2">
+                  <span className="text-sm text-slate-700">公开我的视频</span>
+                  <input
+                    type="checkbox"
+                    checked={publicVideosInput}
+                    onChange={(event) => setPublicVideosInput(event.target.checked)}
+                    disabled={!profilePublicInput}
+                    className="h-4 w-4 accent-primary"
+                  />
+                </label>
+
+                <label className="flex items-center justify-between rounded-lg bg-white px-3 py-2">
+                  <span className="text-sm text-slate-700">公开我的收藏</span>
+                  <input
+                    type="checkbox"
+                    checked={publicFavoritesInput}
+                    onChange={(event) => setPublicFavoritesInput(event.target.checked)}
+                    disabled={!profilePublicInput}
+                    className="h-4 w-4 accent-primary"
+                  />
+                </label>
+
+                <label className="flex items-center justify-between rounded-lg bg-white px-3 py-2">
+                  <span className="text-sm text-slate-700">公开我的关注</span>
+                  <input
+                    type="checkbox"
+                    checked={publicFollowingInput}
+                    onChange={(event) => setPublicFollowingInput(event.target.checked)}
+                    disabled={!profilePublicInput}
+                    className="h-4 w-4 accent-primary"
+                  />
+                </label>
+
+                <label className="flex items-center justify-between rounded-lg bg-white px-3 py-2">
+                  <span className="text-sm text-slate-700">公开我的粉丝</span>
+                  <input
+                    type="checkbox"
+                    checked={publicFollowersInput}
+                    onChange={(event) => setPublicFollowersInput(event.target.checked)}
+                    disabled={!profilePublicInput}
+                    className="h-4 w-4 accent-primary"
+                  />
+                </label>
+              </div>
             </div>
           </div>
 
@@ -689,6 +909,28 @@ export function MePage() {
           </div>
         </section>
       ) : null}
+
+      <AvatarCropDialog
+        open={avatarCropOpen}
+        source={avatarCropSource}
+        onOpenChange={(open) => {
+          setAvatarCropOpen(open);
+          if (!open && avatarCropSource) {
+            URL.revokeObjectURL(avatarCropSource);
+            setAvatarCropSource("");
+          }
+        }}
+        onConfirm={(file, previewURL) => {
+          setAvatarFile(file);
+          setAvatarPreview((prev) => {
+            if (prev) {
+              URL.revokeObjectURL(prev);
+            }
+            return previewURL;
+          });
+          setRemoveAvatar(false);
+        }}
+      />
     </div>
   );
 }

@@ -79,6 +79,17 @@ export type UserBrief = {
   followers_count?: number;
   following_count?: number;
   followed?: boolean;
+  profile_public?: boolean;
+  public_videos?: boolean;
+  public_favorites?: boolean;
+  public_following?: boolean;
+  public_followers?: boolean;
+};
+
+export type UserProfileData = {
+  user: UserBrief;
+  followed: boolean;
+  profile_accessible: boolean;
 };
 
 export type CommentItem = {
@@ -138,6 +149,11 @@ export type LoginOrRegisterData = {
     avatar_url?: string;
     followers_count?: number;
     following_count?: number;
+    profile_public?: boolean;
+    public_videos?: boolean;
+    public_favorites?: boolean;
+    public_following?: boolean;
+    public_followers?: boolean;
   };
   tokens: {
     access_token: string;
