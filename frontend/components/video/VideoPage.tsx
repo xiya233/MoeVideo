@@ -18,6 +18,12 @@ type VideoPageProps = {
   videoId: string;
 };
 
+type PlayerQualityItem = {
+  html: string;
+  url: string;
+  default?: boolean;
+};
+
 function commentAuthorName(comment: CommentItem): string {
   return comment.user.username || "匿名用户";
 }
@@ -150,6 +156,10 @@ export function VideoPage({ videoId }: VideoPageProps) {
   const lastPersistedSecRef = useRef(-1);
   const persistingProgressRef = useRef(false);
   const lastSessionTokenRef = useRef<string | null>(null);
+  const stableQualitiesRef = useRef<{ signature: string; items: PlayerQualityItem[] }>({
+    signature: "",
+    items: [],
+  });
 
   const fetchDetail = useCallback(async (): Promise<VideoDetail> => {
     const data = await request<VideoDetail>(`/videos/${videoId}`, { auth: true });
@@ -670,8 +680,9 @@ export function VideoPage({ videoId }: VideoPageProps) {
       return { type: "mp4" as const, url: mp4 };
     }
     return null;
-  }, [detail]);
-  const playerQualities = useMemo(() => {
+  }, [detail?.playback.type, detail?.playback.hls_master_url, detail?.playback.mp4_url, detail?.source_url]);
+
+  const rawPlayerQualities = useMemo<PlayerQualityItem[]>(() => {
     if (!detail || detail.playback.type !== "hls" || !detail.playback.hls_master_url) {
       return [];
     }
@@ -684,7 +695,25 @@ export function VideoPage({ videoId }: VideoPageProps) {
         default: false,
       }));
     return [{ html: "Auto", url: detail.playback.hls_master_url, default: true }, ...variants];
-  }, [detail]);
+  }, [detail?.playback.type, detail?.playback.hls_master_url, detail?.playback.variants]);
+
+  const playerQualitySignature = useMemo(() => {
+    if (rawPlayerQualities.length === 0) {
+      return "";
+    }
+    return rawPlayerQualities.map((item) => `${item.html}|${item.url}|${item.default ? "1" : "0"}`).join("||");
+  }, [rawPlayerQualities]);
+
+  const playerQualities = useMemo(() => {
+    if (stableQualitiesRef.current.signature === playerQualitySignature) {
+      return stableQualitiesRef.current.items;
+    }
+    stableQualitiesRef.current = {
+      signature: playerQualitySignature,
+      items: rawPlayerQualities,
+    };
+    return rawPlayerQualities;
+  }, [playerQualitySignature, rawPlayerQualities]);
 
   const handlePlayerTimeUpdate = useCallback((positionSec: number, durationSec: number) => {
     progressRef.current = {
@@ -775,6 +804,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
               sourceUrl={playerSource.url}
               poster={detail.video.cover_url}
               qualities={playerQualities}
+              qualitySignature={playerQualitySignature}
               startTimeSec={playerStartSec}
               onTimeUpdate={handlePlayerTimeUpdate}
               onPause={handlePlayerPause}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 const DEFAULT_PLAYER_THEME = "#3db8f5";
 
@@ -15,6 +15,7 @@ type ArtHlsPlayerProps = {
   sourceType: "m3u8" | "mp4";
   poster?: string;
   qualities?: PlayerQuality[];
+  qualitySignature?: string;
   startTimeSec?: number;
   onTimeUpdate?: (positionSec: number, durationSec: number) => void;
   onPause?: (positionSec: number, durationSec: number) => void;
@@ -35,6 +36,7 @@ export function ArtHlsPlayer({
   sourceType,
   poster,
   qualities = [],
+  qualitySignature,
   startTimeSec = 0,
   onTimeUpdate,
   onPause,
@@ -57,6 +59,16 @@ export function ArtHlsPlayer({
   useEffect(() => {
     onEndedRef.current = onEnded;
   }, [onEnded]);
+
+  const resolvedQualitySignature = useMemo(() => {
+    if (typeof qualitySignature === "string") {
+      return qualitySignature;
+    }
+    if (qualities.length === 0) {
+      return "";
+    }
+    return qualities.map((item) => `${item.html}|${item.url}|${item.default ? "1" : "0"}`).join("||");
+  }, [qualities, qualitySignature]);
 
   useEffect(() => {
     if (!containerRef.current || !sourceUrl) {
@@ -172,7 +184,7 @@ export function ArtHlsPlayer({
         artInstance.destroy(false);
       }
     };
-  }, [poster, qualities, sourceType, sourceUrl]);
+  }, [poster, resolvedQualitySignature, sourceType, sourceUrl]);
 
   useEffect(() => {
     const video = videoRef.current;
