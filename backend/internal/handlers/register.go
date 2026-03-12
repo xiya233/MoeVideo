@@ -2,17 +2,22 @@ package handlers
 
 import (
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/websocket/v2"
 
 	"moevideo/backend/internal/app"
 	"moevideo/backend/internal/middleware"
 )
 
 type Handler struct {
-	app *app.App
+	app        *app.App
+	danmakuHub *danmakuHub
 }
 
 func New(a *app.App) *Handler {
-	return &Handler{app: a}
+	return &Handler{
+		app:        a,
+		danmakuHub: newDanmakuHub(),
+	}
 }
 
 func RegisterRoutes(api fiber.Router, a *app.App) {
@@ -56,6 +61,16 @@ func RegisterRoutes(api fiber.Router, a *app.App) {
 
 	api.Get("/videos/:videoId/comments", middleware.OptionalAuth(a), h.ListComments)
 	api.Post("/videos/:videoId/comments", middleware.RequireAuth(a), h.CreateComment)
+	api.Get("/videos/:videoId/danmaku", middleware.OptionalAuth(a), h.ListVideoDanmaku)
+	api.Get("/videos/:videoId/danmaku/list", middleware.OptionalAuth(a), h.ListVideoDanmakuTimeline)
+	api.Post("/videos/:videoId/danmaku", middleware.RequireAuth(a), h.CreateVideoDanmaku)
+	api.Use("/videos/:videoId/danmaku/ws", func(c *fiber.Ctx) error {
+		if websocket.IsWebSocketUpgrade(c) {
+			return c.Next()
+		}
+		return fiber.ErrUpgradeRequired
+	})
+	api.Get("/videos/:videoId/danmaku/ws", websocket.New(h.SubscribeVideoDanmakuWS))
 	api.Put("/comments/:commentId/like", middleware.RequireAuth(a), h.ToggleCommentLike)
 	api.Delete("/comments/:commentId", middleware.RequireAuth(a), h.DeleteComment)
 

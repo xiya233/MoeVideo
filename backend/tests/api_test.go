@@ -1167,3 +1167,137 @@ func TestVideoDetailPlaybackModeCompat(t *testing.T) {
 		t.Fatalf("expected at least one hls variant url")
 	}
 }
+
+func TestDanmakuCreateAndList(t *testing.T) {
+	srv, container := newTestServer(t)
+	ownerID, ownerAccess, _ := registerUser(t, srv, "danmu-owner", "danmu-owner@example.com", "password123")
+	videoID := prepareVideoForUser(t, container, ownerID)
+
+	status, _ := doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/danmaku", map[string]interface{}{
+		"content":  "hello",
+		"time_sec": 3.5,
+		"mode":     0,
+		"color":    "#ffffff",
+	}, nil)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("anonymous create danmaku should return 401, got %d", status)
+	}
+
+	status, firstResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/danmaku", map[string]interface{}{
+		"content":  "first",
+		"time_sec": 8.2,
+		"mode":     0,
+		"color":    "#fff",
+	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
+	if status != http.StatusCreated {
+		t.Fatalf("create first danmaku should return 201, got %d (%s)", status, firstResp.Message)
+	}
+
+	status, secondResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/danmaku", map[string]interface{}{
+		"content":  "second",
+		"time_sec": 2.1,
+		"mode":     1,
+		"color":    "#00AAFF",
+	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
+	if status != http.StatusCreated {
+		t.Fatalf("create second danmaku should return 201, got %d (%s)", status, secondResp.Message)
+	}
+
+	var firstData struct {
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(firstResp.Data, &firstData); err != nil {
+		t.Fatalf("parse first danmaku response: %v", err)
+	}
+	var secondData struct {
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(secondResp.Data, &secondData); err != nil {
+		t.Fatalf("parse second danmaku response: %v", err)
+	}
+
+	status, loadResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+videoID+"/danmaku", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list danmaku should return 200, got %d", status)
+	}
+	var loadData struct {
+		Items []struct {
+			ID      string  `json:"id"`
+			TimeSec float64 `json:"time_sec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(loadResp.Data, &loadData); err != nil {
+		t.Fatalf("parse danmaku list response: %v", err)
+	}
+	if len(loadData.Items) != 2 {
+		t.Fatalf("expected 2 danmaku items, got %d", len(loadData.Items))
+	}
+	if loadData.Items[0].ID != secondData.Item.ID || loadData.Items[1].ID != firstData.Item.ID {
+		t.Fatalf("expected danmaku ordered by time asc")
+	}
+	if loadData.Items[0].TimeSec >= loadData.Items[1].TimeSec {
+		t.Fatalf("expected time_sec ascending order")
+	}
+
+	status, timelineResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+videoID+"/danmaku/list?limit=1", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list danmaku timeline should return 200, got %d", status)
+	}
+	var timelineData struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(timelineResp.Data, &timelineData); err != nil {
+		t.Fatalf("parse timeline response: %v", err)
+	}
+	if len(timelineData.Items) != 1 {
+		t.Fatalf("expected 1 timeline item, got %d", len(timelineData.Items))
+	}
+	if timelineData.NextCursor == "" {
+		t.Fatalf("expected timeline next_cursor when more data exists")
+	}
+}
+
+func TestDanmakuPrivateVideoAccessControl(t *testing.T) {
+	srv, container := newTestServer(t)
+	ownerID, ownerAccess, _ := registerUser(t, srv, "private-owner", "private-owner@example.com", "password123")
+	videoID := prepareVideoForUser(t, container, ownerID)
+	_, viewerAccess, _ := registerUser(t, srv, "private-viewer", "private-viewer@example.com", "password123")
+
+	if _, err := container.DB.Exec(`UPDATE videos SET visibility = 'private', updated_at = ? WHERE id = ?`, util.FormatTime(time.Now().UTC()), videoID); err != nil {
+		t.Fatalf("update video visibility: %v", err)
+	}
+
+	status, _ := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+videoID+"/danmaku", nil, map[string]string{
+		"Authorization": "Bearer " + viewerAccess,
+	})
+	if status != http.StatusNotFound {
+		t.Fatalf("viewer should not access private danmaku list, got %d", status)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/danmaku", map[string]interface{}{
+		"content":  "should fail",
+		"time_sec": 1,
+		"mode":     0,
+		"color":    "#FFFFFF",
+	}, map[string]string{"Authorization": "Bearer " + viewerAccess})
+	if status != http.StatusNotFound {
+		t.Fatalf("viewer should not post private danmaku, got %d", status)
+	}
+
+	status, ownerResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/danmaku", map[string]interface{}{
+		"content":  "owner allowed",
+		"time_sec": 1,
+		"mode":     0,
+		"color":    "#FFFFFF",
+	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
+	if status != http.StatusCreated {
+		t.Fatalf("owner should create private danmaku, got %d (%s)", status, ownerResp.Message)
+	}
+}

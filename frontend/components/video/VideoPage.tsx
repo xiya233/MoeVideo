@@ -9,10 +9,18 @@ import { AuthorInline } from "@/components/common/AuthorInline";
 import { EmptyState } from "@/components/common/EmptyState";
 import { LoadingSkeleton } from "@/components/common/LoadingSkeleton";
 import { ArtHlsPlayer } from "@/components/video/ArtHlsPlayer";
-import type { CommentItem, CommentsData, VideoCard, VideoDetail } from "@/lib/dto";
-import { mapCommentsData, mapVideoCard, mapVideoDetail } from "@/lib/dto/mappers";
+import type {
+  CommentItem,
+  CommentsData,
+  DanmakuData,
+  DanmakuItem,
+  DanmakuListData,
+  VideoCard,
+  VideoDetail,
+} from "@/lib/dto";
+import { mapCommentsData, mapDanmakuData, mapDanmakuItem, mapDanmakuListData, mapVideoCard, mapVideoDetail } from "@/lib/dto/mappers";
 import { cn } from "@/lib/utils/cn";
-import { formatCount, formatDate } from "@/lib/utils/format";
+import { formatCount, formatDate, formatDateMinute } from "@/lib/utils/format";
 
 type VideoPageProps = {
   videoId: string;
@@ -23,6 +31,13 @@ type PlayerQualityItem = {
   url: string;
   default?: boolean;
 };
+
+type DanmakuWSPayload = {
+  event?: string;
+  data?: unknown;
+};
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080/api/v1";
 
 function commentAuthorName(comment: CommentItem): string {
   return comment.user.username || "匿名用户";
@@ -40,6 +55,30 @@ function formatDurationLabel(duration: number): string {
 }
 
 const PROGRESS_KEY_PREFIX = "moevideo.progress.v1:";
+
+function resolveDanmakuWSURL(videoId: string, accessToken?: string): string {
+  const base = API_BASE.trim();
+  let wsBase = base;
+  if (base.startsWith("http://")) {
+    wsBase = `ws://${base.slice("http://".length)}`;
+  } else if (base.startsWith("https://")) {
+    wsBase = `wss://${base.slice("https://".length)}`;
+  } else if (typeof window !== "undefined") {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    if (base.startsWith("/")) {
+      wsBase = `${protocol}//${window.location.host}${base}`;
+    } else {
+      wsBase = `${protocol}//${base.replace(/^\/+/, "")}`;
+    }
+  }
+
+  const normalizedBase = wsBase.replace(/\/+$/, "");
+  const url = new URL(`${normalizedBase}/videos/${videoId}/danmaku/ws`);
+  if (accessToken) {
+    url.searchParams.set("access_token", accessToken);
+  }
+  return url.toString();
+}
 
 function progressStorageKey(videoId: string): string {
   return `${PROGRESS_KEY_PREFIX}${videoId}`;
@@ -150,6 +189,15 @@ export function VideoPage({ videoId }: VideoPageProps) {
   const [resumePromptOpen, setResumePromptOpen] = useState(false);
   const [resumePositionSec, setResumePositionSec] = useState(0);
   const [playerStartSec, setPlayerStartSec] = useState(0);
+  const [initialDanmaku, setInitialDanmaku] = useState<DanmakuItem[]>([]);
+  const [latestDanmaku, setLatestDanmaku] = useState<DanmakuItem | null>(null);
+  const [danmakuPanelOpen, setDanmakuPanelOpen] = useState(false);
+  const [danmakuListItems, setDanmakuListItems] = useState<DanmakuItem[]>([]);
+  const [danmakuNextCursor, setDanmakuNextCursor] = useState<string>("");
+  const [danmakuListLoaded, setDanmakuListLoaded] = useState(false);
+  const [danmakuListLoading, setDanmakuListLoading] = useState(false);
+  const [danmakuListLoadingMore, setDanmakuListLoadingMore] = useState(false);
+  const [danmakuListError, setDanmakuListError] = useState("");
 
   const hasTrackedView = useRef(false);
   const progressRef = useRef<{ positionSec: number; durationSec: number }>({ positionSec: 0, durationSec: 0 });
@@ -160,6 +208,10 @@ export function VideoPage({ videoId }: VideoPageProps) {
     signature: "",
     items: [],
   });
+  const seenDanmakuIDsRef = useRef<Set<string>>(new Set());
+  const wsRef = useRef<WebSocket | null>(null);
+  const wsReconnectTimerRef = useRef<number | null>(null);
+  const wsConnectedRef = useRef(false);
 
   const fetchDetail = useCallback(async (): Promise<VideoDetail> => {
     const data = await request<VideoDetail>(`/videos/${videoId}`, { auth: true });
@@ -176,9 +228,96 @@ export function VideoPage({ videoId }: VideoPageProps) {
     setRecommendations((data.items ?? []).map(mapVideoCard));
   }, [request, videoId]);
 
+  const ingestDanmaku = useCallback((item: DanmakuItem): boolean => {
+    if (!item.id) {
+      return false;
+    }
+    if (seenDanmakuIDsRef.current.has(item.id)) {
+      return false;
+    }
+    seenDanmakuIDsRef.current.add(item.id);
+    setLatestDanmaku(item);
+    setDanmakuListItems((prev) => {
+      if (prev.some((existing) => existing.id === item.id)) {
+        return prev;
+      }
+      return [item, ...prev];
+    });
+    return true;
+  }, []);
+
+  const fetchDanmakuBootstrap = useCallback(async () => {
+    try {
+      const data = await request<DanmakuData>(`/videos/${videoId}/danmaku?limit=5000`, { auth: true });
+      const mapped = mapDanmakuData(data).items;
+      seenDanmakuIDsRef.current = new Set(mapped.map((item) => item.id).filter(Boolean));
+      setInitialDanmaku(mapped);
+      setLatestDanmaku(null);
+    } catch {
+      setInitialDanmaku([]);
+      setLatestDanmaku(null);
+    }
+  }, [request, videoId]);
+
+  const fetchDanmakuList = useCallback(
+    async ({ cursor = "", append = false }: { cursor?: string; append?: boolean } = {}) => {
+      if (append) {
+        setDanmakuListLoadingMore(true);
+      } else {
+        setDanmakuListLoading(true);
+        setDanmakuListError("");
+      }
+
+      try {
+        const params = new URLSearchParams();
+        params.set("limit", "30");
+        if (cursor) {
+          params.set("cursor", cursor);
+        }
+        const data = await request<DanmakuListData>(`/videos/${videoId}/danmaku/list?${params.toString()}`, { auth: true });
+        const mapped = mapDanmakuListData(data);
+        for (const item of mapped.items) {
+          if (item.id) {
+            seenDanmakuIDsRef.current.add(item.id);
+          }
+        }
+        setDanmakuListItems((prev) => {
+          if (!append) {
+            return mapped.items;
+          }
+          const existing = new Set(prev.map((item) => item.id));
+          const merged = [...prev];
+          for (const item of mapped.items) {
+            if (!item.id || existing.has(item.id)) {
+              continue;
+            }
+            existing.add(item.id);
+            merged.push(item);
+          }
+          return merged;
+        });
+        setDanmakuNextCursor(mapped.next_cursor ?? "");
+        if (!append) {
+          setDanmakuListLoaded(true);
+        }
+      } catch (err) {
+        if (!append) {
+          setDanmakuListError(err instanceof Error ? err.message : "弹幕列表加载失败");
+        }
+      } finally {
+        if (append) {
+          setDanmakuListLoadingMore(false);
+        } else {
+          setDanmakuListLoading(false);
+        }
+      }
+    },
+    [request, videoId],
+  );
+
   const fetchPublishedExtras = useCallback(async () => {
-    await Promise.all([fetchRecommendations(), fetchComments()]);
-  }, [fetchComments, fetchRecommendations]);
+    await Promise.all([fetchRecommendations(), fetchComments(), fetchDanmakuBootstrap()]);
+  }, [fetchComments, fetchDanmakuBootstrap, fetchRecommendations]);
 
   const fetchPageData = useCallback(async () => {
     setLoading(true);
@@ -192,12 +331,26 @@ export function VideoPage({ videoId }: VideoPageProps) {
       } else {
         setRecommendations([]);
         setComments([]);
+        setInitialDanmaku([]);
+        setLatestDanmaku(null);
+        setDanmakuPanelOpen(false);
+        setDanmakuListItems([]);
+        setDanmakuNextCursor("");
+        setDanmakuListLoaded(false);
+        setDanmakuListError("");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载播放页失败");
       setDetail(null);
       setRecommendations([]);
       setComments([]);
+      setInitialDanmaku([]);
+      setLatestDanmaku(null);
+      setDanmakuPanelOpen(false);
+      setDanmakuListItems([]);
+      setDanmakuNextCursor("");
+      setDanmakuListLoaded(false);
+      setDanmakuListError("");
     } finally {
       setLoading(false);
     }
@@ -209,6 +362,13 @@ export function VideoPage({ videoId }: VideoPageProps) {
       setDetail(nextDetail);
       if (nextDetail.status === "published") {
         await fetchPublishedExtras();
+      } else {
+        setInitialDanmaku([]);
+        setLatestDanmaku(null);
+        setDanmakuPanelOpen(false);
+        setDanmakuListItems([]);
+        setDanmakuNextCursor("");
+        setDanmakuListLoaded(false);
       }
     } catch {
       // Keep the current UI state; periodic refresh should not break playback page.
@@ -223,6 +383,18 @@ export function VideoPage({ videoId }: VideoPageProps) {
       // Ignore sync errors; optimistic state will remain until next refresh.
     }
   }, [fetchDetail]);
+
+  useEffect(() => {
+    seenDanmakuIDsRef.current = new Set();
+    setInitialDanmaku([]);
+    setLatestDanmaku(null);
+    setDanmakuPanelOpen(false);
+    setDanmakuListItems([]);
+    setDanmakuNextCursor("");
+    setDanmakuListLoaded(false);
+    setDanmakuListError("");
+    wsConnectedRef.current = false;
+  }, [videoId]);
 
   useEffect(() => {
     if (!ready) {
@@ -271,6 +443,91 @@ export function VideoPage({ videoId }: VideoPageProps) {
       window.clearInterval(timer);
     };
   }, [detail, refreshDetailStatus]);
+
+  useEffect(() => {
+    if (!detail || detail.status !== "published" || !danmakuPanelOpen) {
+      return;
+    }
+    if (danmakuListLoaded || danmakuListLoading) {
+      return;
+    }
+    void fetchDanmakuList();
+  }, [danmakuListLoaded, danmakuListLoading, danmakuPanelOpen, detail, fetchDanmakuList]);
+
+  useEffect(() => {
+    if (!detail || detail.status !== "published") {
+      if (wsReconnectTimerRef.current !== null) {
+        window.clearTimeout(wsReconnectTimerRef.current);
+        wsReconnectTimerRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      wsConnectedRef.current = false;
+      return;
+    }
+
+    let disposed = false;
+
+    const connect = () => {
+      if (disposed) {
+        return;
+      }
+      const accessToken = session?.tokens.accessToken ?? "";
+      const socket = new WebSocket(resolveDanmakuWSURL(videoId, accessToken || undefined));
+      wsRef.current = socket;
+
+      socket.onopen = () => {
+        wsConnectedRef.current = true;
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data as string) as DanmakuWSPayload;
+          if (payload.event !== "danmaku_created") {
+            return;
+          }
+          const item = mapDanmakuItem(payload.data);
+          ingestDanmaku(item);
+        } catch {
+          // Ignore malformed WS payloads.
+        }
+      };
+
+      socket.onclose = () => {
+        wsConnectedRef.current = false;
+        if (disposed) {
+          return;
+        }
+        if (wsReconnectTimerRef.current !== null) {
+          window.clearTimeout(wsReconnectTimerRef.current);
+        }
+        wsReconnectTimerRef.current = window.setTimeout(() => {
+          connect();
+        }, 2000);
+      };
+
+      socket.onerror = () => {
+        wsConnectedRef.current = false;
+      };
+    };
+
+    connect();
+
+    return () => {
+      disposed = true;
+      wsConnectedRef.current = false;
+      if (wsReconnectTimerRef.current !== null) {
+        window.clearTimeout(wsReconnectTimerRef.current);
+        wsReconnectTimerRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, [detail?.status, ingestDanmaku, session?.tokens.accessToken, videoId]);
 
   useEffect(() => {
     if (!detail || detail.status !== "published" || hasTrackedView.current) {
@@ -667,6 +924,41 @@ export function VideoPage({ videoId }: VideoPageProps) {
     }
   };
 
+  const emitDanmaku = useCallback(
+    async (payload: { content: string; time_sec: number; mode: 0 | 1 | 2; color: string }): Promise<boolean> => {
+      if (!detail || detail.status !== "published") {
+        return false;
+      }
+      if (!session) {
+        openAuthDialog("login");
+        return false;
+      }
+
+      try {
+        const data = await request<{ item: unknown }>(`/videos/${videoId}/danmaku`, {
+          method: "POST",
+          auth: true,
+          body: payload,
+        });
+        const created = mapDanmakuItem(data.item);
+        if (!wsConnectedRef.current) {
+          ingestDanmaku(created);
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [detail, ingestDanmaku, openAuthDialog, request, session, videoId],
+  );
+
+  const loadMoreDanmaku = useCallback(async () => {
+    if (!danmakuNextCursor || danmakuListLoadingMore) {
+      return;
+    }
+    await fetchDanmakuList({ cursor: danmakuNextCursor, append: true });
+  }, [danmakuListLoadingMore, danmakuNextCursor, fetchDanmakuList]);
+
   const recommendationCards = useMemo(() => recommendations.slice(0, 8), [recommendations]);
   const playerSource = useMemo(() => {
     if (!detail) {
@@ -806,6 +1098,10 @@ export function VideoPage({ videoId }: VideoPageProps) {
               qualities={playerQualities}
               qualitySignature={playerQualitySignature}
               startTimeSec={playerStartSec}
+              danmakuItems={initialDanmaku}
+              latestDanmaku={latestDanmaku}
+              canEmitDanmaku={Boolean(session)}
+              onEmitDanmaku={emitDanmaku}
               onTimeUpdate={handlePlayerTimeUpdate}
               onPause={handlePlayerPause}
               onEnded={handlePlayerEnded}
@@ -1151,6 +1447,62 @@ export function VideoPage({ videoId }: VideoPageProps) {
             <EmptyState title="暂无推荐视频" description="稍后再试试看。" />
           ) : null}
         </div>
+
+        <section className="rounded-xl border border-primary/10 bg-white/80 shadow-sm">
+          <button
+            type="button"
+            onClick={() => setDanmakuPanelOpen((prev) => !prev)}
+            className="flex w-full items-center justify-between px-4 py-3 text-left"
+          >
+            <span className="text-sm font-semibold text-slate-800">弹幕列表</span>
+            <span className="text-xs font-medium text-primary">{danmakuPanelOpen ? "收起" : "展开"}</span>
+          </button>
+          {danmakuPanelOpen ? (
+            <div className="space-y-3 border-t border-primary/10 px-3 pb-3 pt-2">
+              <div className="grid grid-cols-[56px_1fr_112px] gap-2 px-1 text-[11px] font-semibold text-slate-500">
+                <span>视频时间</span>
+                <span>弹幕内容</span>
+                <span className="text-right">发送时间</span>
+              </div>
+
+              {danmakuListLoading ? (
+                <div className="space-y-2">
+                  <LoadingSkeleton className="h-8" />
+                  <LoadingSkeleton className="h-8" />
+                  <LoadingSkeleton className="h-8" />
+                </div>
+              ) : danmakuListError ? (
+                <EmptyState title="弹幕加载失败" description={danmakuListError} />
+              ) : danmakuListItems.length === 0 ? (
+                <EmptyState title="暂无弹幕" description="成为第一个发送弹幕的人吧。" />
+              ) : (
+                <div className="space-y-1">
+                  {danmakuListItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className="grid grid-cols-[56px_1fr_112px] items-start gap-2 rounded-lg px-1 py-1.5 text-[11px] text-slate-700 hover:bg-primary/5"
+                    >
+                      <span className="font-mono text-slate-500">{formatDurationLabel(item.time_sec)}</span>
+                      <span className="line-clamp-1 break-all">{item.content}</span>
+                      <span className="text-right text-slate-400">{formatDateMinute(item.created_at)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {danmakuNextCursor ? (
+                <button
+                  type="button"
+                  onClick={() => void loadMoreDanmaku()}
+                  disabled={danmakuListLoadingMore}
+                  className="w-full rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {danmakuListLoadingMore ? "加载中..." : "加载更多"}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
       </aside>
     </div>
   );

@@ -37,3 +37,21 @@ export function formatDate(iso: string): string {
     day: "2-digit",
   });
 }
+
+export function formatDateMinute(iso: string): string {
+  if (!iso) {
+    return "";
+  }
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) {
+    return iso;
+  }
+  return parsed.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}

@@ -131,6 +131,26 @@ export type SaveProgressData = {
   position_sec: number;
 };
 
+export type DanmakuItem = {
+  id: string;
+  video_id: string;
+  user_id: string;
+  content: string;
+  time_sec: number;
+  mode: 0 | 1 | 2;
+  color: string;
+  created_at: string;
+};
+
+export type DanmakuData = {
+  items: DanmakuItem[];
+};
+
+export type DanmakuListData = {
+  items: DanmakuItem[];
+  next_cursor?: string;
+};
+
 export type ContinueWatchingItem = {
   video: VideoCard;
   position_sec: number;

@@ -9,6 +9,7 @@
         "@radix-ui/react-select": "^2.2.6",
         "@tanstack/react-query": "^5.90.21",
         "artplayer": "^5.3.0",
+        "artplayer-plugin-danmuku": "^5.2.0",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "hls.js": "^1.6.15",
@@ -221,6 +222,8 @@
     "aria-hidden": ["aria-hidden@1.2.6", "", { "dependencies": { "tslib": "^2.0.0" } }, "sha512-ik3ZgC9dY/lYVVM++OISsaYDeg1tb0VtP5uL3ouh1koGOaUMDPpbFIei4JkFimWUFPn90sbMNMXQAIVOlnYKJA=="],
 
     "artplayer": ["artplayer@5.3.0", "", { "dependencies": { "option-validator": "^2.0.6" } }, "sha512-yExO39MpEg4P+bxgChxx1eJfiUPE4q1QQRLCmqGhlsj+ANuaoEkR8hF93LdI5ZyrAcIbJkuEndxEiUoKobifDw=="],
+
+    "artplayer-plugin-danmuku": ["artplayer-plugin-danmuku@5.2.0", "", {}, "sha512-iHHSGEc0J+gl7imX4nmLqqC7LXmv8xeGf2lUevhhyUCoiCRZplecpKQICHjErVb1Yqyp1xCy6Sp8eYN+EpFWFw=="],
 
     "baseline-browser-mapping": ["baseline-browser-mapping@2.10.0", "", { "bin": { "baseline-browser-mapping": "dist/cli.cjs" } }, "sha512-lIyg0szRfYbiy67j9KN8IyeD7q7hcmqnJ1ddWmNt19ItGpNN64mnllmxUNFIOdOm6by97jlL6wfpTTJrmnjWAA=="],
 

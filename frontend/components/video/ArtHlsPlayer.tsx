@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef } from "react";
+import type { Danmu, Result as DanmakuPluginResult } from "artplayer-plugin-danmuku";
+
+import type { DanmakuItem } from "@/lib/dto";
 
 const DEFAULT_PLAYER_THEME = "#3db8f5";
 
@@ -10,6 +13,13 @@ type PlayerQuality = {
   default?: boolean;
 };
 
+type EmitDanmakuPayload = {
+  content: string;
+  time_sec: number;
+  mode: 0 | 1 | 2;
+  color: string;
+};
+
 type ArtHlsPlayerProps = {
   sourceUrl: string;
   sourceType: "m3u8" | "mp4";
@@ -17,9 +27,22 @@ type ArtHlsPlayerProps = {
   qualities?: PlayerQuality[];
   qualitySignature?: string;
   startTimeSec?: number;
+  danmakuItems?: DanmakuItem[];
+  latestDanmaku?: DanmakuItem | null;
+  canEmitDanmaku?: boolean;
+  onEmitDanmaku?: (payload: EmitDanmakuPayload) => Promise<boolean>;
   onTimeUpdate?: (positionSec: number, durationSec: number) => void;
   onPause?: (positionSec: number, durationSec: number) => void;
   onEnded?: (durationSec: number) => void;
+};
+
+type ArtplayerInstance = {
+  destroy: (removeHtml?: boolean) => void;
+  on?: (eventName: string, callback: () => void) => void;
+  video?: HTMLVideoElement;
+  plugins?: {
+    artplayerPluginDanmuku?: DanmakuPluginResult;
+  };
 };
 
 function resolvePlayerThemeColor(): string {
@@ -31,6 +54,30 @@ function resolvePlayerThemeColor(): string {
   return color || DEFAULT_PLAYER_THEME;
 }
 
+function toPluginDanmu(item: DanmakuItem): Danmu {
+  return {
+    text: item.content,
+    time: Math.max(0, item.time_sec || 0),
+    mode: item.mode,
+    color: item.color || "#FFFFFF",
+  };
+}
+
+function normalizeMode(raw: unknown): 0 | 1 | 2 {
+  if (raw === 1 || raw === 2) {
+    return raw;
+  }
+  return 0;
+}
+
+function normalizeColor(raw: unknown): string {
+  if (typeof raw !== "string") {
+    return "#FFFFFF";
+  }
+  const color = raw.trim();
+  return color || "#FFFFFF";
+}
+
 export function ArtHlsPlayer({
   sourceUrl,
   sourceType,
@@ -38,15 +85,25 @@ export function ArtHlsPlayer({
   qualities = [],
   qualitySignature,
   startTimeSec = 0,
+  danmakuItems = [],
+  latestDanmaku,
+  canEmitDanmaku = false,
+  onEmitDanmaku,
   onTimeUpdate,
   onPause,
   onEnded,
 }: ArtHlsPlayerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const danmakuPluginRef = useRef<DanmakuPluginResult | null>(null);
+  const loadedDanmakuSignatureRef = useRef("");
+  const latestDanmakuIDRef = useRef("");
+  const danmakuItemsRef = useRef(danmakuItems);
+  const canEmitDanmakuRef = useRef(canEmitDanmaku);
   const onTimeUpdateRef = useRef(onTimeUpdate);
   const onPauseRef = useRef(onPause);
   const onEndedRef = useRef(onEnded);
+  const onEmitDanmakuRef = useRef(onEmitDanmaku);
 
   useEffect(() => {
     onTimeUpdateRef.current = onTimeUpdate;
@@ -60,6 +117,18 @@ export function ArtHlsPlayer({
     onEndedRef.current = onEnded;
   }, [onEnded]);
 
+  useEffect(() => {
+    onEmitDanmakuRef.current = onEmitDanmaku;
+  }, [onEmitDanmaku]);
+
+  useEffect(() => {
+    danmakuItemsRef.current = danmakuItems;
+  }, [danmakuItems]);
+
+  useEffect(() => {
+    canEmitDanmakuRef.current = canEmitDanmaku;
+  }, [canEmitDanmaku]);
+
   const resolvedQualitySignature = useMemo(() => {
     if (typeof qualitySignature === "string") {
       return qualitySignature;
@@ -70,19 +139,25 @@ export function ArtHlsPlayer({
     return qualities.map((item) => `${item.html}|${item.url}|${item.default ? "1" : "0"}`).join("||");
   }, [qualities, qualitySignature]);
 
+  const danmakuSignature = useMemo(() => {
+    if (danmakuItems.length === 0) {
+      return "";
+    }
+    return danmakuItems.map((item) => item.id).join("|");
+  }, [danmakuItems]);
+
+  useEffect(() => {
+    loadedDanmakuSignatureRef.current = "";
+    latestDanmakuIDRef.current = "";
+  }, [sourceUrl]);
+
   useEffect(() => {
     if (!containerRef.current || !sourceUrl) {
       return;
     }
 
     let disposed = false;
-    let artInstance:
-      | {
-          destroy: (removeHtml?: boolean) => void;
-          on?: (eventName: string, callback: () => void) => void;
-          video?: HTMLVideoElement;
-        }
-      | null = null;
+    let artInstance: ArtplayerInstance | null = null;
     let hlsInstance:
       | {
           destroy: () => void;
@@ -92,7 +167,11 @@ export function ArtHlsPlayer({
       | null = null;
 
     void (async () => {
-      const [{ default: Artplayer }, { default: Hls }] = await Promise.all([import("artplayer"), import("hls.js")]);
+      const [{ default: Artplayer }, { default: Hls }, { default: artplayerPluginDanmuku }] = await Promise.all([
+        import("artplayer"),
+        import("hls.js"),
+        import("artplayer-plugin-danmuku"),
+      ]);
       if (disposed || !containerRef.current) {
         return;
       }
@@ -140,12 +219,44 @@ export function ArtHlsPlayer({
         setting: true,
         // ArtPlayer mutates quality items by defining internal props; clone to avoid redefine errors on re-init.
         quality: sourceType === "m3u8" ? qualities.map((item) => ({ ...item })) : [],
+        plugins: [
+          artplayerPluginDanmuku({
+            danmuku: danmakuItemsRef.current.map(toPluginDanmu),
+            emitter: canEmitDanmakuRef.current,
+            maxLength: 200,
+            lockTime: 5,
+            beforeEmit: async (danmu) => {
+              const content = (danmu.text || "").trim();
+              if (!content) {
+                return false;
+              }
+              if (!onEmitDanmakuRef.current) {
+                return true;
+              }
+              try {
+                await onEmitDanmakuRef.current({
+                  content,
+                  time_sec: Math.max(0, Number(danmu.time) || 0),
+                  mode: normalizeMode(danmu.mode),
+                  color: normalizeColor(danmu.color),
+                });
+              } catch {
+                // Keep emitter stable; failed sends are handled by caller.
+              }
+              // Sending result comes from WS replay to avoid duplicate render.
+              return false;
+            },
+          }),
+        ],
         moreVideoAttr: {
           crossOrigin: "anonymous",
         },
         pip: true,
         mutex: true,
-      });
+      }) as ArtplayerInstance;
+
+      danmakuPluginRef.current = artInstance.plugins?.artplayerPluginDanmuku ?? null;
+      loadedDanmakuSignatureRef.current = danmakuItemsRef.current.map((item) => item.id).join("|");
 
       const video = artInstance.video as HTMLVideoElement;
       videoRef.current = video;
@@ -177,6 +288,7 @@ export function ArtHlsPlayer({
     return () => {
       disposed = true;
       videoRef.current = null;
+      danmakuPluginRef.current = null;
       if (hlsInstance) {
         hlsInstance.destroy();
       }
@@ -185,6 +297,41 @@ export function ArtHlsPlayer({
       }
     };
   }, [poster, resolvedQualitySignature, sourceType, sourceUrl]);
+
+  useEffect(() => {
+    const plugin = danmakuPluginRef.current;
+    if (!plugin) {
+      return;
+    }
+    if (loadedDanmakuSignatureRef.current === danmakuSignature) {
+      return;
+    }
+    loadedDanmakuSignatureRef.current = danmakuSignature;
+    void plugin.load(danmakuItems.map(toPluginDanmu));
+  }, [danmakuItems, danmakuSignature]);
+
+  useEffect(() => {
+    const plugin = danmakuPluginRef.current;
+    if (!plugin) {
+      return;
+    }
+    plugin.config({
+      ...plugin.option,
+      emitter: canEmitDanmaku,
+    });
+  }, [canEmitDanmaku]);
+
+  useEffect(() => {
+    const plugin = danmakuPluginRef.current;
+    if (!plugin || !latestDanmaku || !latestDanmaku.id) {
+      return;
+    }
+    if (latestDanmakuIDRef.current === latestDanmaku.id) {
+      return;
+    }
+    latestDanmakuIDRef.current = latestDanmaku.id;
+    plugin.emit(toPluginDanmu(latestDanmaku));
+  }, [latestDanmaku]);
 
   useEffect(() => {
     const video = videoRef.current;

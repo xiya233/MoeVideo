@@ -3,6 +3,9 @@ import type {
   Category,
   CommentItem,
   CommentsData,
+  DanmakuData,
+  DanmakuItem,
+  DanmakuListData,
   ContinueWatchingItem,
   HomeData,
   LoginOrRegisterData,
@@ -229,6 +232,37 @@ export function mapUploadCompleteData(value: unknown): UploadCompleteData {
     media_object_id: str(src.media_object_id),
     object_key: str(src.object_key),
     url: str(src.url),
+  };
+}
+
+export function mapDanmakuItem(value: unknown): DanmakuItem {
+  const src = obj(value);
+  const modeRaw = num(src.mode);
+  const mode: DanmakuItem["mode"] = modeRaw === 1 || modeRaw === 2 ? modeRaw : 0;
+  return {
+    id: str(src.id),
+    video_id: str(src.video_id),
+    user_id: str(src.user_id),
+    content: str(src.content),
+    time_sec: num(src.time_sec),
+    mode,
+    color: str(src.color, "#FFFFFF"),
+    created_at: str(src.created_at),
+  };
+}
+
+export function mapDanmakuData(value: unknown): DanmakuData {
+  const src = obj(value);
+  return {
+    items: arr(src.items).map(mapDanmakuItem),
+  };
+}
+
+export function mapDanmakuListData(value: unknown): DanmakuListData {
+  const src = obj(value);
+  return {
+    items: arr(src.items).map(mapDanmakuItem),
+    next_cursor: str(src.next_cursor) || undefined,
   };
 }
 
