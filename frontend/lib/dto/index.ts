@@ -87,6 +87,7 @@ export type CommentItem = {
   user: UserBrief;
   content: string;
   like_count: number;
+  liked: boolean;
   created_at: string;
   parent_comment_id?: string | null;
   replies: CommentItem[];

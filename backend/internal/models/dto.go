@@ -81,6 +81,7 @@ type CommentItem struct {
 	User            UserBrief     `json:"user"`
 	Content         string        `json:"content"`
 	LikeCount       int64         `json:"like_count"`
+	Liked           bool          `json:"liked"`
 	CreatedAt       string        `json:"created_at"`
 	ParentCommentID *string       `json:"parent_comment_id,omitempty"`
 	Replies         []CommentItem `json:"replies,omitempty"`

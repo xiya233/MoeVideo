@@ -172,6 +172,7 @@ function mapCommentItem(value: unknown): CommentItem {
     video_id: str(src.video_id),
     content: str(src.content),
     like_count: num(src.like_count),
+    liked: bool(src.liked),
     created_at: str(src.created_at),
     parent_comment_id: str(src.parent_comment_id) || null,
     user: mapUserBrief(src.user),

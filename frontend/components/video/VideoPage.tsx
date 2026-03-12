@@ -98,8 +98,32 @@ function actionButtonClass(active: boolean): string {
   );
 }
 
+function applyCommentLikeState(items: CommentItem[], commentId: string, nextLiked: boolean): CommentItem[] {
+  let changed = false;
+  const nextItems = items.map((item) => {
+    if (item.id === commentId) {
+      changed = true;
+      return {
+        ...item,
+        liked: nextLiked,
+        like_count: Math.max(0, item.like_count + (nextLiked ? 1 : -1)),
+      };
+    }
+    if (!item.replies.length) {
+      return item;
+    }
+    const nextReplies = applyCommentLikeState(item.replies, commentId, nextLiked);
+    if (nextReplies !== item.replies) {
+      changed = true;
+      return { ...item, replies: nextReplies };
+    }
+    return item;
+  });
+  return changed ? nextItems : items;
+}
+
 export function VideoPage({ videoId }: VideoPageProps) {
-  const { request, user, session, openAuthDialog } = useAuth();
+  const { ready, request, user, session, openAuthDialog } = useAuth();
 
   const [detail, setDetail] = useState<VideoDetail | null>(null);
   const [recommendations, setRecommendations] = useState<VideoCard[]>([]);
@@ -115,6 +139,8 @@ export function VideoPage({ videoId }: VideoPageProps) {
   const [pendingFavorite, setPendingFavorite] = useState(false);
   const [pendingFollow, setPendingFollow] = useState(false);
   const [pendingComment, setPendingComment] = useState(false);
+  const [pendingCommentLikes, setPendingCommentLikes] = useState<Record<string, boolean>>({});
+  const [followHint, setFollowHint] = useState("");
   const [resumePromptOpen, setResumePromptOpen] = useState(false);
   const [resumePositionSec, setResumePositionSec] = useState(0);
   const [playerStartSec, setPlayerStartSec] = useState(0);
@@ -123,6 +149,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
   const progressRef = useRef<{ positionSec: number; durationSec: number }>({ positionSec: 0, durationSec: 0 });
   const lastPersistedSecRef = useRef(-1);
   const persistingProgressRef = useRef(false);
+  const lastSessionTokenRef = useRef<string | null>(null);
 
   const fetchDetail = useCallback(async (): Promise<VideoDetail> => {
     const data = await request<VideoDetail>(`/videos/${videoId}`, { auth: true });
@@ -130,7 +157,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
   }, [request, videoId]);
 
   const fetchComments = useCallback(async () => {
-    const data = await request<CommentsData>(`/videos/${videoId}/comments?limit=20`, { auth: false });
+    const data = await request<CommentsData>(`/videos/${videoId}/comments?limit=20`, { auth: true });
     setComments(mapCommentsData(data).items ?? []);
   }, [request, videoId]);
 
@@ -178,10 +205,50 @@ export function VideoPage({ videoId }: VideoPageProps) {
     }
   }, [fetchDetail, fetchPublishedExtras]);
 
+  const syncDetail = useCallback(async () => {
+    try {
+      const nextDetail = await fetchDetail();
+      setDetail(nextDetail);
+    } catch {
+      // Ignore sync errors; optimistic state will remain until next refresh.
+    }
+  }, [fetchDetail]);
+
   useEffect(() => {
+    if (!ready) {
+      return;
+    }
     hasTrackedView.current = false;
     void fetchPageData();
-  }, [fetchPageData]);
+  }, [fetchPageData, ready]);
+
+  useEffect(() => {
+    if (!ready) {
+      return;
+    }
+    const token = session?.tokens.accessToken ?? "";
+    if (lastSessionTokenRef.current === null) {
+      lastSessionTokenRef.current = token;
+      return;
+    }
+    if (lastSessionTokenRef.current === token) {
+      return;
+    }
+    lastSessionTokenRef.current = token;
+    void refreshDetailStatus();
+  }, [ready, refreshDetailStatus, session?.tokens.accessToken]);
+
+  useEffect(() => {
+    if (!followHint) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setFollowHint("");
+    }, 2200);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [followHint]);
 
   useEffect(() => {
     if (!detail || detail.status !== "processing") {
@@ -362,6 +429,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
         body: { active: nextActive },
         auth: true,
       });
+      void syncDetail();
     } catch {
       setDetail(prev);
     } finally {
@@ -396,6 +464,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
         body: { active: nextActive },
         auth: true,
       });
+      void syncDetail();
     } catch {
       setDetail(prev);
     } finally {
@@ -408,6 +477,11 @@ export function VideoPage({ videoId }: VideoPageProps) {
       return;
     }
     if (!requireAuth()) {
+      return;
+    }
+    const viewerID = user?.id || session?.user.id;
+    if (viewerID && viewerID === detail.uploader.id) {
+      setFollowHint("你不能关注自己。");
       return;
     }
 
@@ -443,6 +517,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
         body: { active: nextActive },
         auth: true,
       });
+      void syncDetail();
     } catch {
       setDetail(prev);
     } finally {
@@ -497,6 +572,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
       video_id: videoId,
       content,
       like_count: 0,
+      liked: false,
       created_at: new Date().toISOString(),
       parent_comment_id: payload.parent_comment_id ?? null,
       user: {
@@ -547,6 +623,37 @@ export function VideoPage({ videoId }: VideoPageProps) {
       setComments(snapshot);
     } finally {
       setPendingComment(false);
+    }
+  };
+
+  const toggleCommentLike = async (commentId: string, liked: boolean) => {
+    if (!detail || detail.status !== "published" || pendingCommentLikes[commentId]) {
+      return;
+    }
+    if (!requireAuth()) {
+      return;
+    }
+
+    const nextLiked = !liked;
+    const snapshot = comments;
+
+    setPendingCommentLikes((prev) => ({ ...prev, [commentId]: true }));
+    setComments((prev) => applyCommentLikeState(prev, commentId, nextLiked));
+
+    try {
+      await request<{ active: boolean }>(`/comments/${commentId}/like`, {
+        method: "PUT",
+        auth: true,
+        body: { active: nextLiked },
+      });
+    } catch {
+      setComments(snapshot);
+    } finally {
+      setPendingCommentLikes((prev) => {
+        const next = { ...prev };
+        delete next[commentId];
+        return next;
+      });
     }
   };
 
@@ -748,42 +855,45 @@ export function VideoPage({ videoId }: VideoPageProps) {
           </div>
         </section>
 
-        <section className="flex items-center justify-between rounded-xl border border-primary/10 bg-primary/5 p-4">
-          <div className="flex items-center gap-4">
-            <div className="relative">
-              <div className="h-14 w-14 overflow-hidden rounded-full border-2 border-primary">
-                {detail.uploader.avatar_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={detail.uploader.avatar_url} alt={detail.uploader.username} className="h-full w-full object-cover" />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center bg-primary/20 text-sm font-bold text-primary">
-                    {detail.uploader.username.slice(0, 1).toUpperCase()}
-                  </div>
-                )}
+        <section className="space-y-2">
+          <div className="flex items-center justify-between rounded-xl border border-primary/10 bg-primary/5 p-4">
+            <div className="flex items-center gap-4">
+              <div className="relative">
+                <div className="h-14 w-14 overflow-hidden rounded-full border-2 border-primary">
+                  {detail.uploader.avatar_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={detail.uploader.avatar_url} alt={detail.uploader.username} className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center bg-primary/20 text-sm font-bold text-primary">
+                      {detail.uploader.username.slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
+                </div>
+                <div className="absolute -bottom-1 -right-1 rounded-full border-2 border-white bg-yellow-400 p-0.5 text-white">
+                  <AppIcon name="verified" size={10} className="block" />
+                </div>
               </div>
-              <div className="absolute -bottom-1 -right-1 rounded-full border-2 border-white bg-yellow-400 p-0.5 text-white">
-                <AppIcon name="verified" size={10} className="block" />
+              <div>
+                <h3 className="text-lg font-bold">{detail.uploader.username}</h3>
+                <p className="text-sm text-slate-500">{formatCount(detail.uploader.followers_count)} 粉丝</p>
               </div>
             </div>
-            <div>
-              <h3 className="text-lg font-bold">{detail.uploader.username}</h3>
-              <p className="text-sm text-slate-500">{formatCount(detail.uploader.followers_count)} 粉丝</p>
-            </div>
-          </div>
 
-          <button
-            type="button"
-            onClick={toggleFollow}
-            disabled={pendingFollow}
-            className={cn(
-              "rounded-xl px-6 py-2 text-sm font-bold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
-              detail.viewer_actions.following_uploader
-                ? "border border-slate-200 bg-white text-slate-700 hover:border-primary/30 hover:text-primary"
-                : "bg-primary text-white hover:shadow-lg hover:shadow-primary/30",
-            )}
-          >
-            {detail.viewer_actions.following_uploader ? "已关注" : "+ 关注"}
-          </button>
+            <button
+              type="button"
+              onClick={toggleFollow}
+              disabled={pendingFollow}
+              className={cn(
+                "rounded-xl px-6 py-2 text-sm font-bold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
+                detail.viewer_actions.following_uploader
+                  ? "border border-slate-200 bg-white text-slate-700 hover:border-primary/30 hover:text-primary"
+                  : "bg-primary text-white hover:shadow-lg hover:shadow-primary/30",
+              )}
+            >
+              {detail.viewer_actions.following_uploader ? "已关注" : "+ 关注"}
+            </button>
+          </div>
+          {followHint ? <p className="px-1 text-xs font-medium text-amber-600">{followHint}</p> : null}
         </section>
 
         <section className="rounded-xl bg-primary/5 p-4">
@@ -850,7 +960,16 @@ export function VideoPage({ videoId }: VideoPageProps) {
                       </div>
                       <p className="text-sm text-slate-800">{item.content}</p>
                       <div className="flex items-center gap-4 pt-2">
-                        <button className="flex items-center gap-1 text-xs text-slate-400 transition-colors hover:text-primary" type="button">
+                        <button
+                          className={cn(
+                            "flex items-center gap-1 text-xs transition-colors",
+                            item.liked ? "text-primary" : "text-slate-400 hover:text-primary",
+                            pendingCommentLikes[item.id] ? "cursor-not-allowed opacity-60" : "",
+                          )}
+                          type="button"
+                          onClick={() => void toggleCommentLike(item.id, item.liked)}
+                          disabled={Boolean(pendingCommentLikes[item.id])}
+                        >
                           <AppIcon name="thumb_up" size={14} />
                           {formatCount(item.like_count)}
                         </button>
@@ -916,6 +1035,21 @@ export function VideoPage({ videoId }: VideoPageProps) {
                               <span className="text-xs text-slate-400">{formatDate(reply.created_at)}</span>
                             </div>
                             <p className="text-sm text-slate-700">{reply.content}</p>
+                            <div className="pt-1">
+                              <button
+                                type="button"
+                                onClick={() => void toggleCommentLike(reply.id, reply.liked)}
+                                disabled={Boolean(pendingCommentLikes[reply.id])}
+                                className={cn(
+                                  "flex items-center gap-1 text-xs transition-colors",
+                                  reply.liked ? "text-primary" : "text-slate-400 hover:text-primary",
+                                  pendingCommentLikes[reply.id] ? "cursor-not-allowed opacity-60" : "",
+                                )}
+                              >
+                                <AppIcon name="thumb_up" size={13} />
+                                {formatCount(reply.like_count)}
+                              </button>
+                            </div>
                           </div>
                         </div>
                       ))}

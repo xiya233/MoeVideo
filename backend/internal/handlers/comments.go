@@ -21,19 +21,23 @@ func (h *Handler) ListComments(c *fiber.Ctx) error {
 	if videoID == "" {
 		return response.Error(c, fiber.StatusBadRequest, "videoId is required")
 	}
+	viewerID := currentUserID(c)
 	limit := pagination.ClampLimit(c.Query("limit"), defaultLimit, maxLimit)
 	cursor := c.Query("cursor")
 
 	query := `
 SELECT cm.id, cm.video_id, cm.user_id, cm.parent_comment_id, cm.content, cm.like_count, cm.created_at,
        u.username, u.bio,
-       COALESCE(am.provider, ''), COALESCE(am.bucket, ''), COALESCE(am.object_key, '')
+       COALESCE(am.provider, ''), COALESCE(am.bucket, ''), COALESCE(am.object_key, ''),
+       CASE WHEN ? <> '' THEN EXISTS(
+         SELECT 1 FROM comment_likes cl WHERE cl.user_id = ? AND cl.comment_id = cm.id
+       ) ELSE 0 END AS liked
 FROM comments cm
 JOIN users u ON u.id = cm.user_id
 LEFT JOIN media_objects am ON am.id = u.avatar_media_id
 WHERE cm.video_id = ? AND cm.parent_comment_id IS NULL
 `
-	args := []interface{}{videoID}
+	args := []interface{}{viewerID, viewerID, videoID}
 
 	var cur listCursor
 	if cursor != "" {
@@ -58,6 +62,7 @@ WHERE cm.video_id = ? AND cm.parent_comment_id IS NULL
 			id, rowVideoID, userID, content, createdAt string
 			parentID                                   sql.NullString
 			likeCount                                  int64
+			likedInt                                   int64
 			username, bio                              string
 			avatarProvider, avatarBucket, avatarObject string
 		)
@@ -74,11 +79,12 @@ WHERE cm.video_id = ? AND cm.parent_comment_id IS NULL
 			&avatarProvider,
 			&avatarBucket,
 			&avatarObject,
+			&likedInt,
 		); err != nil {
 			return response.Error(c, fiber.StatusInternalServerError, "failed to parse comments")
 		}
 
-		replies, err := h.fetchReplies(c, id)
+		replies, err := h.fetchReplies(c, id, viewerID)
 		if err != nil {
 			return response.Error(c, fiber.StatusInternalServerError, "failed to fetch comment replies")
 		}
@@ -89,6 +95,7 @@ WHERE cm.video_id = ? AND cm.parent_comment_id IS NULL
 			"user":              map[string]interface{}{"id": userID, "username": username, "bio": bio, "avatar_url": mediaURL(h.app.Storage, avatarProvider, avatarBucket, avatarObject)},
 			"content":           content,
 			"like_count":        likeCount,
+			"liked":             likedInt > 0,
 			"created_at":        createdAt,
 			"parent_comment_id": maybeStringPtr(parentID),
 			"replies":           replies,
@@ -112,16 +119,19 @@ WHERE cm.video_id = ? AND cm.parent_comment_id IS NULL
 	return response.OK(c, fiber.Map{"items": items, "next_cursor": nextCursor})
 }
 
-func (h *Handler) fetchReplies(c *fiber.Ctx, parentCommentID string) ([]map[string]interface{}, error) {
+func (h *Handler) fetchReplies(c *fiber.Ctx, parentCommentID, viewerID string) ([]map[string]interface{}, error) {
 	rows, err := h.app.DB.QueryContext(c.UserContext(), `
 SELECT cm.id, cm.video_id, cm.user_id, cm.parent_comment_id, cm.content, cm.like_count, cm.created_at,
        u.username, u.bio,
-       COALESCE(am.provider, ''), COALESCE(am.bucket, ''), COALESCE(am.object_key, '')
+       COALESCE(am.provider, ''), COALESCE(am.bucket, ''), COALESCE(am.object_key, ''),
+       CASE WHEN ? <> '' THEN EXISTS(
+         SELECT 1 FROM comment_likes cl WHERE cl.user_id = ? AND cl.comment_id = cm.id
+       ) ELSE 0 END AS liked
 FROM comments cm
 JOIN users u ON u.id = cm.user_id
 LEFT JOIN media_objects am ON am.id = u.avatar_media_id
 WHERE cm.parent_comment_id = ?
-ORDER BY cm.created_at ASC, cm.id ASC`, parentCommentID)
+ORDER BY cm.created_at ASC, cm.id ASC`, viewerID, viewerID, parentCommentID)
 	if err != nil {
 		return nil, err
 	}
@@ -133,6 +143,7 @@ ORDER BY cm.created_at ASC, cm.id ASC`, parentCommentID)
 			id, videoID, userID, content, createdAt    string
 			parentID                                   sql.NullString
 			likeCount                                  int64
+			likedInt                                   int64
 			username, bio                              string
 			avatarProvider, avatarBucket, avatarObject string
 		)
@@ -149,6 +160,7 @@ ORDER BY cm.created_at ASC, cm.id ASC`, parentCommentID)
 			&avatarProvider,
 			&avatarBucket,
 			&avatarObject,
+			&likedInt,
 		); err != nil {
 			return nil, err
 		}
@@ -158,6 +170,7 @@ ORDER BY cm.created_at ASC, cm.id ASC`, parentCommentID)
 			"user":              map[string]interface{}{"id": userID, "username": username, "bio": bio, "avatar_url": mediaURL(h.app.Storage, avatarProvider, avatarBucket, avatarObject)},
 			"content":           content,
 			"like_count":        likeCount,
+			"liked":             likedInt > 0,
 			"created_at":        createdAt,
 			"parent_comment_id": maybeStringPtr(parentID),
 			"replies":           []map[string]interface{}{},

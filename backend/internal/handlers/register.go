@@ -49,7 +49,7 @@ func RegisterRoutes(api fiber.Router, a *app.App) {
 	api.Post("/videos", middleware.RequireAuth(a), h.CreateVideo)
 	api.Delete("/videos/:videoId", middleware.RequireAuth(a), h.DeleteVideo)
 
-	api.Get("/videos/:videoId/comments", h.ListComments)
+	api.Get("/videos/:videoId/comments", middleware.OptionalAuth(a), h.ListComments)
 	api.Post("/videos/:videoId/comments", middleware.RequireAuth(a), h.CreateComment)
 	api.Put("/comments/:commentId/like", middleware.RequireAuth(a), h.ToggleCommentLike)
 	api.Delete("/comments/:commentId", middleware.RequireAuth(a), h.DeleteComment)

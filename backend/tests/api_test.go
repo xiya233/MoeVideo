@@ -351,6 +351,134 @@ func TestCommentNestedReplyRejected(t *testing.T) {
 	}
 }
 
+func TestListCommentsIncludesLikedForAuthenticatedViewer(t *testing.T) {
+	srv, container := newTestServer(t)
+
+	ownerID, ownerAccess, _ := registerUser(t, srv, "luna", "luna@example.com", "password123")
+	videoID := prepareVideoForUser(t, container, ownerID)
+
+	status, topResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/comments", map[string]interface{}{
+		"content": "top comment",
+	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
+	if status != http.StatusCreated {
+		t.Fatalf("create top comment should succeed, got %d", status)
+	}
+	var topData struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(topResp.Data, &topData); err != nil {
+		t.Fatalf("parse top comment response: %v", err)
+	}
+
+	status, replyResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/comments", map[string]interface{}{
+		"content":           "reply comment",
+		"parent_comment_id": topData.ID,
+	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
+	if status != http.StatusCreated {
+		t.Fatalf("create reply comment should succeed, got %d", status)
+	}
+	var replyData struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(replyResp.Data, &replyData); err != nil {
+		t.Fatalf("parse reply comment response: %v", err)
+	}
+
+	_, viewerAccess, _ := registerUser(t, srv, "mike", "mike@example.com", "password123")
+
+	status, _ = doJSONRequest(t, srv, http.MethodPut, "/api/v1/comments/"+topData.ID+"/like", map[string]interface{}{
+		"active": true,
+	}, map[string]string{"Authorization": "Bearer " + viewerAccess})
+	if status != http.StatusOK {
+		t.Fatalf("viewer like top comment should succeed, got %d", status)
+	}
+	status, _ = doJSONRequest(t, srv, http.MethodPut, "/api/v1/comments/"+replyData.ID+"/like", map[string]interface{}{
+		"active": true,
+	}, map[string]string{"Authorization": "Bearer " + viewerAccess})
+	if status != http.StatusOK {
+		t.Fatalf("viewer like reply comment should succeed, got %d", status)
+	}
+
+	status, viewerCommentsResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+videoID+"/comments?limit=20", nil, map[string]string{
+		"Authorization": "Bearer " + viewerAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("viewer comments list should succeed, got %d", status)
+	}
+	var viewerComments struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Liked   bool   `json:"liked"`
+			Replies []struct {
+				ID    string `json:"id"`
+				Liked bool   `json:"liked"`
+			} `json:"replies"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(viewerCommentsResp.Data, &viewerComments); err != nil {
+		t.Fatalf("parse viewer comments response: %v", err)
+	}
+
+	foundTop := false
+	foundReply := false
+	for _, item := range viewerComments.Items {
+		if item.ID != topData.ID {
+			continue
+		}
+		foundTop = true
+		if !item.Liked {
+			t.Fatalf("expected top comment liked=true for authenticated viewer")
+		}
+		for _, reply := range item.Replies {
+			if reply.ID != replyData.ID {
+				continue
+			}
+			foundReply = true
+			if !reply.Liked {
+				t.Fatalf("expected reply liked=true for authenticated viewer")
+			}
+		}
+	}
+	if !foundTop {
+		t.Fatalf("expected top comment %s in viewer list", topData.ID)
+	}
+	if !foundReply {
+		t.Fatalf("expected reply comment %s in viewer list", replyData.ID)
+	}
+
+	status, anonCommentsResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+videoID+"/comments?limit=20", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("anonymous comments list should succeed, got %d", status)
+	}
+	var anonComments struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Liked   bool   `json:"liked"`
+			Replies []struct {
+				ID    string `json:"id"`
+				Liked bool   `json:"liked"`
+			} `json:"replies"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(anonCommentsResp.Data, &anonComments); err != nil {
+		t.Fatalf("parse anonymous comments response: %v", err)
+	}
+
+	for _, item := range anonComments.Items {
+		if item.ID != topData.ID {
+			continue
+		}
+		if item.Liked {
+			t.Fatalf("expected top comment liked=false for anonymous viewer")
+		}
+		for _, reply := range item.Replies {
+			if reply.ID == replyData.ID && reply.Liked {
+				t.Fatalf("expected reply liked=false for anonymous viewer")
+			}
+		}
+	}
+}
+
 func TestVideoLikeIdempotent(t *testing.T) {
 	srv, container := newTestServer(t)
 	userID, access, _ := registerUser(t, srv, "carol", "carol@example.com", "password123")
