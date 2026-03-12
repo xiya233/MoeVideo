@@ -37,6 +37,65 @@ type sqlExecutor interface {
 	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
 }
 
+type adminAuditSchema struct {
+	actorCol        string
+	resourceTypeCol string
+	resourceIDCol   string
+	hasIP           bool
+	hasUserAgent    bool
+}
+
+func (h *Handler) loadAdminAuditSchema(ctx context.Context) (adminAuditSchema, error) {
+	schema := adminAuditSchema{
+		actorCol:        "admin_user_id",
+		resourceTypeCol: "resource_type",
+		resourceIDCol:   "resource_id",
+		hasIP:           true,
+		hasUserAgent:    true,
+	}
+
+	rows, err := h.app.DB.QueryContext(ctx, `PRAGMA table_info(admin_audit_logs)`)
+	if err != nil {
+		return schema, err
+	}
+	defer rows.Close()
+
+	cols := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid        int64
+			name       string
+			colType    string
+			notNull    int64
+			defaultVal sql.NullString
+			pk         int64
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultVal, &pk); err != nil {
+			return schema, err
+		}
+		cols[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return schema, err
+	}
+	if len(cols) == 0 {
+		return schema, nil
+	}
+
+	if !cols["admin_user_id"] && cols["actor_user_id"] {
+		schema.actorCol = "actor_user_id"
+	}
+	if !cols["resource_type"] && cols["target_type"] {
+		schema.resourceTypeCol = "target_type"
+	}
+	if !cols["resource_id"] && cols["target_id"] {
+		schema.resourceIDCol = "target_id"
+	}
+	schema.hasIP = cols["ip"]
+	schema.hasUserAgent = cols["user_agent"]
+	return schema, nil
+}
+
 func (h *Handler) RegisterAdminRoutes(admin fiber.Router) {
 	admin.Get("/overview", h.AdminOverview)
 	admin.Get("/videos", h.AdminListVideos)
@@ -53,6 +112,10 @@ func (h *Handler) RegisterAdminRoutes(admin fiber.Router) {
 
 func (h *Handler) AdminOverview(c *fiber.Ctx) error {
 	ctx := c.UserContext()
+	auditSchema, err := h.loadAdminAuditSchema(ctx)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to load overview")
+	}
 
 	var videosTotal, videosProcessing, transcodeFailed, usersTotal, usersActive int64
 	var uploadsToday, usersToday int64
@@ -105,12 +168,13 @@ LIMIT 5`)
 	}
 
 	actionItems := make([]fiber.Map, 0)
-	actionRows, err := h.app.DB.QueryContext(ctx, `
-SELECT l.id, l.action, l.resource_type, l.resource_id, l.created_at, u.id, u.username
+	actionQuery := fmt.Sprintf(`
+SELECT l.id, l.action, l.%s, l.%s, l.created_at, u.id, u.username
 FROM admin_audit_logs l
-JOIN users u ON u.id = l.admin_user_id
+JOIN users u ON u.id = l.%s
 ORDER BY l.created_at DESC, l.id DESC
-LIMIT 10`)
+LIMIT 10`, auditSchema.resourceTypeCol, auditSchema.resourceIDCol, auditSchema.actorCol)
+	actionRows, err := h.app.DB.QueryContext(ctx, actionQuery)
 	if err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to load overview")
 	}
@@ -1102,6 +1166,10 @@ func (h *Handler) AdminPatchUser(c *fiber.Ctx) error {
 
 func (h *Handler) AdminListAuditLogs(c *fiber.Ctx) error {
 	ctx := c.UserContext()
+	auditSchema, err := h.loadAdminAuditSchema(ctx)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to list audit logs")
+	}
 	limit := pagination.ClampLimit(c.Query("limit"), defaultLimit, maxLimit)
 	cursorRaw := strings.TrimSpace(c.Query("cursor"))
 	actorID := strings.TrimSpace(c.Query("actor_id"))
@@ -1110,16 +1178,32 @@ func (h *Handler) AdminListAuditLogs(c *fiber.Ctx) error {
 	from := strings.TrimSpace(c.Query("from"))
 	to := strings.TrimSpace(c.Query("to"))
 
-	query := `
-SELECT l.id, l.admin_user_id, u.username, l.action, l.resource_type, l.resource_id,
-       l.payload_json, l.ip, l.user_agent, l.created_at
+	ipSelect := "''"
+	if auditSchema.hasIP {
+		ipSelect = "COALESCE(l.ip, '')"
+	}
+	userAgentSelect := "''"
+	if auditSchema.hasUserAgent {
+		userAgentSelect = "COALESCE(l.user_agent, '')"
+	}
+
+	query := fmt.Sprintf(`
+SELECT l.id, l.%s, u.username, l.action, l.%s, l.%s,
+       l.payload_json, %s, %s, l.created_at
 FROM admin_audit_logs l
-JOIN users u ON u.id = l.admin_user_id
-WHERE 1=1`
+JOIN users u ON u.id = l.%s
+WHERE 1=1`,
+		auditSchema.actorCol,
+		auditSchema.resourceTypeCol,
+		auditSchema.resourceIDCol,
+		ipSelect,
+		userAgentSelect,
+		auditSchema.actorCol,
+	)
 	args := make([]interface{}, 0)
 
 	if actorID != "" {
-		query += ` AND l.admin_user_id = ?`
+		query += fmt.Sprintf(` AND l.%s = ?`, auditSchema.actorCol)
 		args = append(args, actorID)
 	}
 	if action != "" {
@@ -1127,7 +1211,7 @@ WHERE 1=1`
 		args = append(args, action)
 	}
 	if resourceType != "" {
-		query += ` AND l.resource_type = ?`
+		query += fmt.Sprintf(` AND l.%s = ?`, auditSchema.resourceTypeCol)
 		args = append(args, resourceType)
 	}
 	if from != "" {
@@ -1220,20 +1304,33 @@ func (h *Handler) writeAdminAudit(ctx context.Context, exec sqlExecutor, c *fibe
 		payloadJSON = string(b)
 	}
 
-	_, err := exec.ExecContext(ctx, `
-INSERT INTO admin_audit_logs (
-    id, admin_user_id, action, resource_type, resource_id, payload_json, ip, user_agent, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	auditSchema, err := h.loadAdminAuditSchema(ctx)
+	if err != nil {
+		return fmt.Errorf("load audit schema: %w", err)
+	}
+
+	cols := []string{"id", auditSchema.actorCol, "action", auditSchema.resourceTypeCol, auditSchema.resourceIDCol, "payload_json", "created_at"}
+	args := []interface{}{
 		newID(),
 		currentUserID(c),
 		action,
 		resourceType,
 		resourceID,
 		payloadJSON,
-		strings.TrimSpace(c.IP()),
-		strings.TrimSpace(c.Get("User-Agent")),
 		nowString(),
-	)
+	}
+	if auditSchema.hasIP {
+		cols = append(cols, "ip")
+		args = append(args, strings.TrimSpace(c.IP()))
+	}
+	if auditSchema.hasUserAgent {
+		cols = append(cols, "user_agent")
+		args = append(args, strings.TrimSpace(c.Get("User-Agent")))
+	}
+	placeholder := strings.TrimRight(strings.Repeat("?,", len(cols)), ",")
+	query := fmt.Sprintf(`INSERT INTO admin_audit_logs (%s) VALUES (%s)`, strings.Join(cols, ", "), placeholder)
+
+	_, err = exec.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("insert audit log: %w", err)
 	}
