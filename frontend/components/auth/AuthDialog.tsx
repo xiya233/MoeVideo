@@ -168,36 +168,32 @@ export function AuthDialog() {
 
   const renderCaptcha = (scene: "login" | "register") => (
     <div className="space-y-2">
-      <label className="block">
-        <span className="mb-1 block text-xs font-semibold text-slate-600">验证码</span>
-        <div className="flex gap-2">
-          <input
-            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/60"
-            placeholder="输入验证码"
-            value={captchaCode}
-            onChange={(event) => setCaptchaCode(event.target.value)}
-            autoComplete="off"
-          />
-          <button
-            type="button"
-            disabled={captchaLoading}
-            onClick={() => void loadCaptcha(scene)}
-            className="inline-flex h-[42px] w-[42px] items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-primary/30 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
-            title="刷新验证码"
-          >
-            <AppIcon name="autorenew" size={16} className={cn(captchaLoading && "animate-spin")} />
-          </button>
-        </div>
-      </label>
-      <div className="h-12 overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
-        {captchaImage ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={captchaImage} alt="验证码" className="h-full w-full object-cover" />
-        ) : (
-          <div className="flex h-full items-center justify-center text-xs text-slate-500">
-            {captchaLoading ? "验证码加载中..." : "验证码加载失败，请刷新"}
-          </div>
-        )}
+      <span className="block text-xs font-semibold text-slate-600">验证码</span>
+      <div className="flex items-center gap-2">
+        <input
+          className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/60"
+          placeholder="输入验证码"
+          value={captchaCode}
+          onChange={(event) => setCaptchaCode(event.target.value)}
+          autoComplete="off"
+        />
+        <button
+          type="button"
+          disabled={captchaLoading}
+          onClick={() => void loadCaptcha(scene)}
+          className="relative h-[42px] w-[140px] overflow-hidden rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-primary/30 disabled:cursor-not-allowed disabled:opacity-60"
+          title="刷新验证码"
+          aria-label="刷新验证码"
+        >
+          {captchaImage ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={captchaImage} alt="验证码" className="h-full w-full object-contain" />
+          ) : (
+            <span className="flex h-full w-full items-center justify-center text-xs text-slate-500">
+              {captchaLoading ? "加载中..." : "点击刷新"}
+            </span>
+          )}
+        </button>
       </div>
     </div>
   );

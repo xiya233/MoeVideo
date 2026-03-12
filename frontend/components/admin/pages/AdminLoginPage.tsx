@@ -4,11 +4,9 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
-import { AppIcon } from "@/components/common/AppIcon";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils/cn";
 import { usePublicSiteSettings } from "@/lib/site-settings/public";
 
 type CaptchaData = {
@@ -123,26 +121,23 @@ export function AdminLoginPage() {
             </div>
             <div>
               <label className="mb-1 block text-xs font-semibold text-slate-500">验证码</label>
-              <div className="flex gap-2">
+              <div className="flex items-center gap-2">
                 <Input value={captchaCode} onChange={(e) => setCaptchaCode(e.target.value)} placeholder="输入验证码" />
-                <Button
+                <button
                   type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-10 w-10 px-0"
                   disabled={captchaLoading}
                   onClick={() => void loadCaptcha()}
+                  className="relative h-10 w-[140px] overflow-hidden rounded-md border border-slate-200 bg-white transition-colors hover:border-primary/30 disabled:cursor-not-allowed disabled:opacity-60"
+                  title="刷新验证码"
+                  aria-label="刷新验证码"
                 >
-                  <AppIcon name="autorenew" size={16} className={cn(captchaLoading && "animate-spin")} />
-                </Button>
-              </div>
-              <div className="mt-2 h-12 overflow-hidden rounded-md border border-slate-200 bg-slate-50">
-                {captchaImage ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={captchaImage} alt="验证码" className="h-full w-full object-cover" />
-                ) : (
-                  <div className="flex h-full items-center justify-center text-xs text-slate-500">验证码加载中...</div>
-                )}
+                  {captchaImage ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={captchaImage} alt="验证码" className="h-full w-full object-contain" />
+                  ) : (
+                    <span className="flex h-full w-full items-center justify-center text-xs text-slate-500">加载中...</span>
+                  )}
+                </button>
               </div>
             </div>
             {error ? <p className="text-xs text-rose-600">{error}</p> : null}
