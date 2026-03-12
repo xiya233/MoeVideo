@@ -3,6 +3,8 @@ import type {
   AdminAuditLog,
   AdminComment,
   AdminOverview,
+  AdminSiteCategory,
+  AdminSiteSettings,
   AdminTranscodeJob,
   AdminUser,
   AdminVideoItem,
@@ -26,6 +28,70 @@ function buildQuery(params: Record<string, string | number | undefined>): string
 export const adminApi = {
   getOverview(request: ApiRequest) {
     return request<AdminOverview>("/admin/overview", { auth: true });
+  },
+
+  getSiteSettings(request: ApiRequest) {
+    return request<AdminSiteSettings>("/admin/site-settings", { auth: true });
+  },
+
+  patchSiteSettings(
+    request: ApiRequest,
+    payload: {
+      site_title?: string;
+      site_description?: string;
+      site_logo_media_id?: string;
+      register_enabled?: boolean;
+    },
+  ) {
+    return request<AdminSiteSettings>("/admin/site-settings", {
+      method: "PATCH",
+      auth: true,
+      body: payload,
+    });
+  },
+
+  listSiteCategories(request: ApiRequest) {
+    return request<{ items: AdminSiteCategory[] }>("/admin/site-settings/categories", { auth: true });
+  },
+
+  createSiteCategory(
+    request: ApiRequest,
+    payload: {
+      slug: string;
+      name: string;
+      sort_order?: number;
+      is_active?: boolean;
+    },
+  ) {
+    return request<AdminSiteCategory>("/admin/site-settings/categories", {
+      method: "POST",
+      auth: true,
+      body: payload,
+    });
+  },
+
+  patchSiteCategory(
+    request: ApiRequest,
+    id: number,
+    payload: {
+      slug?: string;
+      name?: string;
+      sort_order?: number;
+      is_active?: boolean;
+    },
+  ) {
+    return request<AdminSiteCategory>(`/admin/site-settings/categories/${id}`, {
+      method: "PATCH",
+      auth: true,
+      body: payload,
+    });
+  },
+
+  deleteSiteCategory(request: ApiRequest, id: number) {
+    return request<{ deleted: boolean; id: number }>(`/admin/site-settings/categories/${id}`, {
+      method: "DELETE",
+      auth: true,
+    });
   },
 
   listVideos(

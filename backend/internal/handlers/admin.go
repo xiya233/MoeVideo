@@ -98,6 +98,12 @@ func (h *Handler) loadAdminAuditSchema(ctx context.Context) (adminAuditSchema, e
 
 func (h *Handler) RegisterAdminRoutes(admin fiber.Router) {
 	admin.Get("/overview", h.AdminOverview)
+	admin.Get("/site-settings", h.AdminGetSiteSettings)
+	admin.Patch("/site-settings", h.AdminPatchSiteSettings)
+	admin.Get("/site-settings/categories", h.AdminListSiteCategories)
+	admin.Post("/site-settings/categories", h.AdminCreateSiteCategory)
+	admin.Patch("/site-settings/categories/:id", h.AdminPatchSiteCategory)
+	admin.Delete("/site-settings/categories/:id", h.AdminDeleteSiteCategory)
 	admin.Get("/videos", h.AdminListVideos)
 	admin.Get("/videos/:id", h.AdminGetVideo)
 	admin.Post("/videos/:id/actions", h.AdminVideoAction)

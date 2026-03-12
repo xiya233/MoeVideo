@@ -114,3 +114,21 @@ export type AdminAuditLog = {
     username: string;
   };
 };
+
+export type AdminSiteSettings = {
+  site_title: string;
+  site_description: string;
+  site_logo_media_id?: string | null;
+  site_logo_url?: string;
+  register_enabled: boolean;
+  updated_by?: string | null;
+  updated_at?: string;
+};
+
+export type AdminSiteCategory = {
+  id: number;
+  slug: string;
+  name: string;
+  sort_order: number;
+  is_active: boolean;
+};

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -18,11 +19,15 @@ type registerRequest struct {
 	Email           string `json:"email"`
 	Password        string `json:"password"`
 	PasswordConfirm string `json:"password_confirm"`
+	CaptchaID       string `json:"captcha_id"`
+	CaptchaCode     string `json:"captcha_code"`
 }
 
 type loginRequest struct {
-	Account  string `json:"account"`
-	Password string `json:"password"`
+	Account     string `json:"account"`
+	Password    string `json:"password"`
+	CaptchaID   string `json:"captcha_id"`
+	CaptchaCode string `json:"captcha_code"`
 }
 
 type refreshRequest struct {
@@ -49,6 +54,19 @@ func (h *Handler) Register(c *fiber.Ctx) error {
 	}
 	if len(req.Password) < 8 {
 		return response.Error(c, fiber.StatusBadRequest, "password must be at least 8 characters")
+	}
+	registerEnabled, err := h.isRegisterEnabled(c.UserContext())
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to check registration status")
+	}
+	if !registerEnabled {
+		return response.Error(c, fiber.StatusForbidden, "registration is disabled")
+	}
+	if err := h.consumeAuthCaptcha(c.UserContext(), "register", req.CaptchaID, req.CaptchaCode); err != nil {
+		if errors.Is(err, errCaptchaCheck) {
+			return response.Error(c, fiber.StatusInternalServerError, "failed to verify captcha")
+		}
+		return response.Error(c, fiber.StatusBadRequest, err.Error())
 	}
 
 	passwordHash, err := auth.HashPassword(req.Password)
@@ -99,6 +117,12 @@ func (h *Handler) Login(c *fiber.Ctx) error {
 	req.Account = strings.TrimSpace(req.Account)
 	if req.Account == "" || req.Password == "" {
 		return response.Error(c, fiber.StatusBadRequest, "account and password are required")
+	}
+	if err := h.consumeAuthCaptcha(c.UserContext(), "login", req.CaptchaID, req.CaptchaCode); err != nil {
+		if errors.Is(err, errCaptchaCheck) {
+			return response.Error(c, fiber.StatusInternalServerError, "failed to verify captcha")
+		}
+		return response.Error(c, fiber.StatusBadRequest, err.Error())
 	}
 
 	var userID, username, passwordHash, status string

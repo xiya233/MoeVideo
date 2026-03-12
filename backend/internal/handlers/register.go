@@ -18,6 +18,7 @@ func New(a *app.App) *Handler {
 func RegisterRoutes(api fiber.Router, a *app.App) {
 	h := New(a)
 
+	api.Get("/auth/captcha", h.GetAuthCaptcha)
 	api.Post("/auth/register", h.Register)
 	api.Post("/auth/login", h.Login)
 	api.Post("/auth/refresh", h.Refresh)
@@ -34,6 +35,7 @@ func RegisterRoutes(api fiber.Router, a *app.App) {
 
 	api.Get("/home", middleware.OptionalAuth(a), h.GetHome)
 	api.Get("/categories", h.ListCategories)
+	api.Get("/site-settings/public", h.GetPublicSiteSettings)
 	api.Get("/rankings/hot", h.GetHotRankings)
 
 	api.Get("/videos", middleware.OptionalAuth(a), h.ListVideos)

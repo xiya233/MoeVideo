@@ -27,12 +27,14 @@ type AuthContextValue = {
   authDialogMode: AuthDialogMode;
   openAuthDialog: (mode?: AuthDialogMode) => void;
   closeAuthDialog: () => void;
-  login: (payload: { account: string; password: string }) => Promise<void>;
+  login: (payload: { account: string; password: string; captcha_id: string; captcha_code: string }) => Promise<void>;
   register: (payload: {
     username: string;
     email: string;
     password: string;
     password_confirm: string;
+    captcha_id: string;
+    captcha_code: string;
   }) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -117,7 +119,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [ready, session?.tokens.accessToken, syncCurrentUser]);
 
   const login = useCallback(
-    async (payload: { account: string; password: string }) => {
+    async (payload: { account: string; password: string; captcha_id: string; captcha_code: string }) => {
       const data = await request<LoginOrRegisterData>("/auth/login", {
         method: "POST",
         body: payload,
@@ -144,6 +146,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email: string;
       password: string;
       password_confirm: string;
+      captcha_id: string;
+      captcha_code: string;
     }) => {
       const data = await request<LoginOrRegisterData>("/auth/register", {
         method: "POST",

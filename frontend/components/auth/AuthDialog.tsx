@@ -1,11 +1,18 @@
 "use client";
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { ApiError } from "@/lib/api/types";
 import { AppIcon } from "@/components/common/AppIcon";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { cn } from "@/lib/utils/cn";
+import { usePublicSiteSettings } from "@/lib/site-settings/public";
+
+type CaptchaData = {
+  captcha_id: string;
+  image_data: string;
+  expires_at: string;
+};
 
 function extractErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
@@ -18,14 +25,8 @@ function extractErrorMessage(error: unknown): string {
 }
 
 export function AuthDialog() {
-  const {
-    isAuthDialogOpen,
-    authDialogMode,
-    closeAuthDialog,
-    login,
-    register,
-    openAuthDialog,
-  } = useAuth();
+  const { isAuthDialogOpen, authDialogMode, closeAuthDialog, login, register, openAuthDialog, request } = useAuth();
+  const siteSettingsQuery = usePublicSiteSettings();
 
   const [isSubmitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -38,7 +39,50 @@ export function AuthDialog() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
-  const title = useMemo(() => (authDialogMode === "login" ? "欢迎回来" : "创建账号"), [authDialogMode]);
+  const [captchaID, setCaptchaID] = useState("");
+  const [captchaImage, setCaptchaImage] = useState("");
+  const [captchaCode, setCaptchaCode] = useState("");
+  const [captchaLoading, setCaptchaLoading] = useState(false);
+
+  const siteTitle = siteSettingsQuery.data?.site_title?.trim() || "MoeVideo";
+  const siteDescription = siteSettingsQuery.data?.site_description?.trim() || "欢迎来到 MoeVideo";
+  const registerEnabled = siteSettingsQuery.data?.register_enabled ?? true;
+  const activeScene = authDialogMode === "register" && registerEnabled ? "register" : "login";
+  const title = useMemo(
+    () => (activeScene === "register" ? `注册 ${siteTitle}` : `登录 ${siteTitle}`),
+    [activeScene, siteTitle],
+  );
+
+  const loadCaptcha = useCallback(
+    async (scene: "login" | "register") => {
+      setCaptchaLoading(true);
+      try {
+        const data = await request<CaptchaData>(`/auth/captcha?scene=${scene}`, { auth: false });
+        setCaptchaID(data.captcha_id);
+        setCaptchaImage(data.image_data);
+        setCaptchaCode("");
+      } catch {
+        setCaptchaID("");
+        setCaptchaImage("");
+      } finally {
+        setCaptchaLoading(false);
+      }
+    },
+    [request],
+  );
+
+  useEffect(() => {
+    if (isAuthDialogOpen && authDialogMode === "register" && !registerEnabled) {
+      openAuthDialog("login");
+    }
+  }, [authDialogMode, isAuthDialogOpen, openAuthDialog, registerEnabled]);
+
+  useEffect(() => {
+    if (!isAuthDialogOpen) {
+      return;
+    }
+    void loadCaptcha(activeScene);
+  }, [activeScene, isAuthDialogOpen, loadCaptcha]);
 
   if (!isAuthDialogOpen) {
     return null;
@@ -58,13 +102,23 @@ export function AuthDialog() {
       setError("请输入账号和密码");
       return;
     }
+    if (!captchaID || !captchaCode.trim()) {
+      setError("请输入验证码");
+      return;
+    }
 
     setSubmitting(true);
     setError("");
     try {
-      await login({ account: loginAccount.trim(), password: loginPassword });
+      await login({
+        account: loginAccount.trim(),
+        password: loginPassword,
+        captcha_id: captchaID,
+        captcha_code: captchaCode.trim(),
+      });
     } catch (err) {
       setError(extractErrorMessage(err));
+      await loadCaptcha("login");
     } finally {
       setSubmitting(false);
     }
@@ -72,6 +126,10 @@ export function AuthDialog() {
 
   const onSubmitRegister = async (event: FormEvent) => {
     event.preventDefault();
+    if (!registerEnabled) {
+      setError("当前站点已关闭注册");
+      return;
+    }
     if (!username.trim() || !email.trim() || !password || !confirmPassword) {
       setError("请填写完整信息");
       return;
@@ -84,6 +142,10 @@ export function AuthDialog() {
       setError("两次输入的密码不一致");
       return;
     }
+    if (!captchaID || !captchaCode.trim()) {
+      setError("请输入验证码");
+      return;
+    }
 
     setSubmitting(true);
     setError("");
@@ -93,13 +155,52 @@ export function AuthDialog() {
         email: email.trim(),
         password,
         password_confirm: confirmPassword,
+        captcha_id: captchaID,
+        captcha_code: captchaCode.trim(),
       });
     } catch (err) {
       setError(extractErrorMessage(err));
+      await loadCaptcha("register");
     } finally {
       setSubmitting(false);
     }
   };
+
+  const renderCaptcha = (scene: "login" | "register") => (
+    <div className="space-y-2">
+      <label className="block">
+        <span className="mb-1 block text-xs font-semibold text-slate-600">验证码</span>
+        <div className="flex gap-2">
+          <input
+            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/60"
+            placeholder="输入验证码"
+            value={captchaCode}
+            onChange={(event) => setCaptchaCode(event.target.value)}
+            autoComplete="off"
+          />
+          <button
+            type="button"
+            disabled={captchaLoading}
+            onClick={() => void loadCaptcha(scene)}
+            className="inline-flex h-[42px] w-[42px] items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-primary/30 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+            title="刷新验证码"
+          >
+            <AppIcon name="autorenew" size={16} className={cn(captchaLoading && "animate-spin")} />
+          </button>
+        </div>
+      </label>
+      <div className="h-12 overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+        {captchaImage ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={captchaImage} alt="验证码" className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full items-center justify-center text-xs text-slate-500">
+            {captchaLoading ? "验证码加载中..." : "验证码加载失败，请刷新"}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div
@@ -111,7 +212,10 @@ export function AuthDialog() {
         onClick={(event) => event.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-xl font-bold text-slate-900">{title}</h3>
+          <div>
+            <h3 className="text-xl font-bold text-slate-900">{title}</h3>
+            <p className="mt-1 text-xs text-slate-500">{siteDescription}</p>
+          </div>
           <button
             type="button"
             onClick={onClose}
@@ -126,25 +230,29 @@ export function AuthDialog() {
             type="button"
             className={cn(
               "flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-all",
-              authDialogMode === "login" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
+              activeScene === "login" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
             )}
             onClick={() => openAuthDialog("login")}
           >
             登录
           </button>
-          <button
-            type="button"
-            className={cn(
-              "flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-all",
-              authDialogMode === "register" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
-            )}
-            onClick={() => openAuthDialog("register")}
-          >
-            注册
-          </button>
+          {registerEnabled ? (
+            <button
+              type="button"
+              className={cn(
+                "flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-all",
+                activeScene === "register" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
+              )}
+              onClick={() => openAuthDialog("register")}
+            >
+              注册
+            </button>
+          ) : null}
         </div>
 
-        {authDialogMode === "login" ? (
+        {!registerEnabled ? <p className="mb-3 text-xs text-amber-600">站点当前已关闭注册，仅支持登录。</p> : null}
+
+        {activeScene === "login" ? (
           <form className="space-y-3" onSubmit={onSubmitLogin}>
             <label className="block">
               <span className="mb-1 block text-xs font-semibold text-slate-600">用户名或邮箱</span>
@@ -167,6 +275,9 @@ export function AuthDialog() {
                 autoComplete="current-password"
               />
             </label>
+
+            {renderCaptcha("login")}
+
             {error ? <p className="text-xs font-medium text-rose-500">{error}</p> : null}
             <button
               type="submit"
@@ -221,6 +332,9 @@ export function AuthDialog() {
                 autoComplete="new-password"
               />
             </label>
+
+            {renderCaptcha("register")}
+
             {error ? <p className="text-xs font-medium text-rose-500">{error}</p> : null}
             <button
               type="submit"

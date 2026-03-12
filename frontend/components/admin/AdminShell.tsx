@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, Clapperboard, FileText, MessageSquare, Repeat2, Shield, Users } from "lucide-react";
+import { BarChart3, Clapperboard, FileText, MessageSquare, Repeat2, Settings2, Shield, Users } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ const navItems = [
   { href: "/admin/transcode", label: "Transcode", icon: Repeat2 },
   { href: "/admin/comments", label: "Comments", icon: MessageSquare },
   { href: "/admin/users", label: "Users", icon: Users },
+  { href: "/admin/site-settings", label: "Site Settings", icon: Settings2 },
   { href: "/admin/audit-logs", label: "Audit Logs", icon: FileText },
 ];
 

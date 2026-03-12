@@ -136,14 +136,38 @@ func doJSONRequest(t *testing.T, srv *fiber.App, method, path string, body inter
 	return resp.StatusCode, out
 }
 
+func issueCaptcha(t *testing.T, srv *fiber.App, scene string) (captchaID, captchaCode string) {
+	t.Helper()
+
+	status, resp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/auth/captcha?scene="+url.QueryEscape(scene), nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("issue captcha should return 200, got %d (%s)", status, resp.Message)
+	}
+
+	var payload struct {
+		CaptchaID   string `json:"captcha_id"`
+		CaptchaCode string `json:"captcha_code"`
+	}
+	if err := json.Unmarshal(resp.Data, &payload); err != nil {
+		t.Fatalf("parse captcha response: %v", err)
+	}
+	if payload.CaptchaID == "" || payload.CaptchaCode == "" {
+		t.Fatalf("captcha response missing captcha_id/captcha_code")
+	}
+	return payload.CaptchaID, payload.CaptchaCode
+}
+
 func registerUser(t *testing.T, srv *fiber.App, username, email, password string) (userID, accessToken, refreshToken string) {
 	t.Helper()
 
+	captchaID, captchaCode := issueCaptcha(t, srv, "register")
 	status, resp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/register", map[string]interface{}{
 		"username":         username,
 		"email":            email,
 		"password":         password,
 		"password_confirm": password,
+		"captcha_id":       captchaID,
+		"captcha_code":     captchaCode,
 	}, nil)
 	if status != http.StatusCreated {
 		t.Fatalf("expected 201 register, got %d (%s)", status, resp.Message)
@@ -169,17 +193,23 @@ func TestAuthFlow(t *testing.T) {
 
 	_, _, refresh := registerUser(t, srv, "alice", "alice@example.com", "password123")
 
+	loginCaptchaID, loginCaptchaCode := issueCaptcha(t, srv, "login")
 	status, _ := doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{
-		"account":  "alice",
-		"password": "password123",
+		"account":      "alice",
+		"password":     "password123",
+		"captcha_id":   loginCaptchaID,
+		"captcha_code": loginCaptchaCode,
 	}, nil)
 	if status != http.StatusOK {
 		t.Fatalf("username login should succeed, got %d", status)
 	}
 
+	emailCaptchaID, emailCaptchaCode := issueCaptcha(t, srv, "login")
 	status, loginByEmail := doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{
-		"account":  "alice@example.com",
-		"password": "password123",
+		"account":      "alice@example.com",
+		"password":     "password123",
+		"captcha_id":   emailCaptchaID,
+		"captcha_code": emailCaptchaCode,
 	}, nil)
 	if status != http.StatusOK {
 		t.Fatalf("email login should succeed, got %d", status)
@@ -222,6 +252,27 @@ func TestAuthFlow(t *testing.T) {
 	}, nil)
 	if status != http.StatusUnauthorized {
 		t.Fatalf("revoked refresh should fail with 401, got %d", status)
+	}
+}
+
+func TestRegisterDisabled(t *testing.T) {
+	srv, container := newTestServer(t)
+
+	if _, err := container.DB.Exec(`UPDATE site_settings SET register_enabled = 0, updated_at = datetime('now') WHERE id = 1`); err != nil {
+		t.Fatalf("disable registration: %v", err)
+	}
+
+	captchaID, captchaCode := issueCaptcha(t, srv, "register")
+	status, resp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/register", map[string]interface{}{
+		"username":         "blocked",
+		"email":            "blocked@example.com",
+		"password":         "password123",
+		"password_confirm": "password123",
+		"captcha_id":       captchaID,
+		"captcha_code":     captchaCode,
+	}, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("register when disabled should return 403, got %d (%s)", status, resp.Message)
 	}
 }
 

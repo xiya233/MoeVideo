@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -89,5 +90,84 @@ func TestAdminWriteActionCreatesAuditLog(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected action user.patch in audit logs")
+	}
+}
+
+func TestAdminSiteSettingsAndCategoryFlow(t *testing.T) {
+	srv, container := newTestServer(t)
+	adminID, adminAccess, _ := registerUser(t, srv, "settings-admin", "settings-admin@example.com", "password123")
+	setUserRole(t, container.DB, adminID, "admin")
+
+	status, patchResp := doJSONRequest(t, srv, http.MethodPatch, "/api/v1/admin/site-settings", map[string]interface{}{
+		"site_title":       "MoeVideo Stage",
+		"site_description": "configurable site settings",
+		"register_enabled": false,
+	}, map[string]string{"Authorization": "Bearer " + adminAccess})
+	if status != http.StatusOK {
+		t.Fatalf("admin patch site settings should return 200, got %d (%s)", status, patchResp.Message)
+	}
+
+	status, publicResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/site-settings/public", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("public site settings should return 200, got %d", status)
+	}
+	var publicData struct {
+		SiteTitle       string `json:"site_title"`
+		SiteDescription string `json:"site_description"`
+		RegisterEnabled bool   `json:"register_enabled"`
+	}
+	if err := json.Unmarshal(publicResp.Data, &publicData); err != nil {
+		t.Fatalf("parse public site settings: %v", err)
+	}
+	if publicData.SiteTitle != "MoeVideo Stage" || publicData.SiteDescription != "configurable site settings" {
+		t.Fatalf("unexpected public site settings payload: %+v", publicData)
+	}
+	if publicData.RegisterEnabled {
+		t.Fatalf("register_enabled should be false")
+	}
+
+	status, catResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/admin/site-settings/categories", map[string]interface{}{
+		"slug":       "admin-created",
+		"name":       "管理分类",
+		"sort_order": 99,
+		"is_active":  true,
+	}, map[string]string{"Authorization": "Bearer " + adminAccess})
+	if status != http.StatusCreated {
+		t.Fatalf("create category should return 201, got %d (%s)", status, catResp.Message)
+	}
+
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(catResp.Data, &created); err != nil {
+		t.Fatalf("parse category create response: %v", err)
+	}
+	if created.ID <= 0 {
+		t.Fatalf("created category id should be > 0")
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodDelete, fmt.Sprintf("/api/v1/admin/site-settings/categories/%d", created.ID), nil, map[string]string{
+		"Authorization": "Bearer " + adminAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("delete unused category should return 200, got %d", status)
+	}
+
+	videoID := prepareVideoForUser(t, container, adminID)
+	var catID int64
+	if err := container.DB.QueryRow(`SELECT id FROM categories WHERE slug = 'animation' LIMIT 1`).Scan(&catID); err != nil {
+		t.Fatalf("query category id: %v", err)
+	}
+	if _, err := container.DB.Exec(`UPDATE videos SET category_id = ?, updated_at = datetime('now') WHERE id = ?`, catID, videoID); err != nil {
+		t.Fatalf("assign video category: %v", err)
+	}
+	status, conflictResp := doJSONRequest(t, srv, http.MethodDelete, fmt.Sprintf("/api/v1/admin/site-settings/categories/%d", catID), nil, map[string]string{
+		"Authorization": "Bearer " + adminAccess,
+	})
+	if status != http.StatusConflict {
+		t.Fatalf("delete used category should return 409, got %d (%s)", status, conflictResp.Message)
+	}
+	if !strings.Contains(strings.ToLower(conflictResp.Message), "in use") {
+		t.Fatalf("expected in-use message, got %q", conflictResp.Message)
 	}
 }
