@@ -128,3 +128,26 @@ Behavior:
 - upsert progress for current user
 - when `completed=true` or near video end, progress is cleared
 - response: `{ "saved": true, "position_sec": 120 }`
+
+## Admin (admin only)
+
+All admin routes require:
+
+- valid access token
+- current user `role=admin` and `status=active`
+
+Endpoints:
+
+- `GET /admin/overview`
+- `GET /admin/videos`
+- `GET /admin/videos/{id}`
+- `POST /admin/videos/{id}/actions` (`publish|hide|soft_delete|restore|retry_transcode`)
+- `GET /admin/transcode-jobs`
+- `POST /admin/transcode-jobs/{jobId}/retry`
+- `GET /admin/comments`
+- `POST /admin/comments/actions` (`delete|restore`)
+- `GET /admin/users`
+- `PATCH /admin/users/{id}` (`status`, `role`)
+- `GET /admin/audit-logs`
+
+All admin write operations are persisted into `admin_audit_logs`.

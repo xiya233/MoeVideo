@@ -11,6 +11,7 @@ type UserBrief struct {
 	ID             string `json:"id"`
 	Username       string `json:"username"`
 	Email          string `json:"email,omitempty"`
+	Role           string `json:"role,omitempty"`
 	Bio            string `json:"bio"`
 	AvatarURL      string `json:"avatar_url,omitempty"`
 	FollowersCount int64  `json:"followers_count"`

@@ -99,16 +99,17 @@ func mediaURL(s *storage.Service, provider, bucket, objectKey string) string {
 func fetchUserBrief(db *sql.DB, s *storage.Service, userID string, includeEmail bool) (models.UserBrief, error) {
 	var u models.UserBrief
 	var provider, bucket, objectKey sql.NullString
-	row := db.QueryRow(`SELECT u.id, u.username, u.email, u.bio, u.followers_count, u.following_count,
+	row := db.QueryRow(`SELECT u.id, u.username, u.email, COALESCE(u.role, 'user'), u.bio, u.followers_count, u.following_count,
 		COALESCE(m.provider,''), COALESCE(m.bucket,''), COALESCE(m.object_key,'')
 		FROM users u
 		LEFT JOIN media_objects m ON m.id = u.avatar_media_id
 		WHERE u.id = ?`, userID)
-	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.Bio, &u.FollowersCount, &u.FollowingCount, &provider, &bucket, &objectKey); err != nil {
+	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.Bio, &u.FollowersCount, &u.FollowingCount, &provider, &bucket, &objectKey); err != nil {
 		return models.UserBrief{}, err
 	}
 	if !includeEmail {
 		u.Email = ""
+		u.Role = ""
 	}
 	u.AvatarURL = mediaURL(s, maybeString(provider), maybeString(bucket), maybeString(objectKey))
 	return u, nil

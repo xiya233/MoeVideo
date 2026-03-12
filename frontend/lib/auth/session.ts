@@ -9,6 +9,7 @@ export type AuthUser = {
   id: string;
   username: string;
   email?: string;
+  role?: string;
   bio?: string;
   avatar_url?: string;
   followers_count?: number;

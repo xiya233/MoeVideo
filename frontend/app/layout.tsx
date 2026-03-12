@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
 import { AuthProvider } from "@/components/auth/AuthProvider";
-import { SiteShell } from "@/components/layout/SiteShell";
+import { QueryProvider } from "@/components/providers/QueryProvider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -21,9 +21,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <link href="https://unpkg.com/artplayer/dist/artplayer.css" rel="stylesheet" />
       </head>
       <body>
-        <AuthProvider>
-          <SiteShell>{children}</SiteShell>
-        </AuthProvider>
+        <QueryProvider>
+          <AuthProvider>{children}</AuthProvider>
+        </QueryProvider>
       </body>
     </html>
   );

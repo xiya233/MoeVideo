@@ -51,4 +51,7 @@ func RegisterRoutes(api fiber.Router, a *app.App) {
 	api.Post("/uploads/presign", middleware.RequireAuth(a), h.CreateUploadPresign)
 	api.Put("/uploads/local/:uploadToken", h.UploadToLocal)
 	api.Post("/uploads/:uploadId/complete", middleware.RequireAuth(a), h.CompleteUpload)
+
+	admin := api.Group("/admin", middleware.RequireAuth(a), middleware.RequireAdmin(a))
+	h.RegisterAdminRoutes(admin)
 }

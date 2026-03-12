@@ -24,6 +24,13 @@ mise run backend-dev
 
 Backend 默认地址：`http://localhost:8080`
 
+初始化管理员（一次性）：
+
+```bash
+cd backend
+go run ./cmd/admin bootstrap --email admin@example.com --username admin --password your-password
+```
+
 ### Frontend
 
 ```bash
@@ -33,6 +40,7 @@ mise run frontend-dev
 ```
 
 Frontend 默认地址：`http://localhost:3000`
+后台入口：`http://localhost:3000/admin/login`
 
 ## Verify
 

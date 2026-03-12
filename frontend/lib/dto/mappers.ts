@@ -215,6 +215,7 @@ export function mapLoginRegisterData(value: unknown): LoginOrRegisterData {
       id: str(user.id),
       username: str(user.username),
       email: str(user.email) || undefined,
+      role: str(user.role) || undefined,
       bio: str(user.bio) || undefined,
       avatar_url: str(user.avatar_url) || undefined,
       followers_count: num(user.followers_count),
