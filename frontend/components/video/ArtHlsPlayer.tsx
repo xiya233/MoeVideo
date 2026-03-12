@@ -39,6 +39,7 @@ type ArtHlsPlayerProps = {
 
 type ArtplayerInstance = {
   destroy: (removeHtml?: boolean) => void;
+  switchQuality?: (url: string) => Promise<void>;
   on?: (eventName: string, callback: () => void) => void;
   video?: HTMLVideoElement;
   plugins?: {
@@ -86,6 +87,13 @@ function normalizeColor(raw: unknown): string {
   }
   const color = raw.trim();
   return color || "#FFFFFF";
+}
+
+function qualityLabel(html: string | HTMLElement): string {
+  if (typeof html === "string") {
+    return html;
+  }
+  return html.textContent?.trim() || "";
 }
 
 export function ArtHlsPlayer({
@@ -211,6 +219,31 @@ export function ArtHlsPlayer({
             }
           : {};
 
+      const qualitySettings =
+        sourceType === "m3u8" && qualities.length > 0
+          ? [
+              {
+                name: "video-quality",
+                html: "清晰度",
+                tooltip: qualityLabel((qualities.find((item) => item.default) || qualities[0]).html),
+                selector: qualities.map((item) => ({
+                  html: item.html,
+                  url: item.url,
+                  default: Boolean(item.default),
+                })),
+                onSelect: async function (
+                  this: { switchQuality?: (url: string) => Promise<void> },
+                  item: { html: string | HTMLElement; url?: string },
+                ) {
+                  if (typeof item.url === "string" && item.url && typeof this.switchQuality === "function") {
+                    await this.switchQuality(item.url);
+                  }
+                  return qualityLabel(item.html);
+                },
+              },
+            ]
+          : [];
+
       artInstance = new Artplayer({
         container: containerRef.current,
         url: sourceUrl,
@@ -229,8 +262,7 @@ export function ArtHlsPlayer({
         playbackRate: true,
         screenshot: true,
         setting: true,
-        // ArtPlayer mutates quality items by defining internal props; clone to avoid redefine errors on re-init.
-        quality: sourceType === "m3u8" ? qualities.map((item) => ({ ...item })) : [],
+        settings: qualitySettings,
         plugins: [
           artplayerPluginDanmuku({
             danmuku: danmakuItemsRef.current.map(toPluginDanmu),
