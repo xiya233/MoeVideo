@@ -104,9 +104,20 @@ func main() {
 	workerCtx, cancelWorker := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancelWorker()
 	go transcode.NewWorker(appContainer).Run(workerCtx)
+	go func() {
+		<-workerCtx.Done()
+		log.Printf("shutdown signal received, stopping MoeVideo API...")
+		if err := server.Shutdown(); err != nil {
+			log.Printf("graceful shutdown failed: %v", err)
+		}
+	}()
 
 	log.Printf("MoeVideo API listening on %s", cfg.HTTPAddr)
 	if err := server.Listen(cfg.HTTPAddr); err != nil {
-		log.Fatalf("fiber listen: %v", err)
+		if workerCtx.Err() == nil {
+			log.Fatalf("fiber listen: %v", err)
+		}
+		log.Printf("fiber listen exited after shutdown signal: %v", err)
 	}
+	log.Printf("MoeVideo API stopped")
 }
