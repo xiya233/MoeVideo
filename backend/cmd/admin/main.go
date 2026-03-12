@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"flag"
 	"fmt"
@@ -77,7 +78,7 @@ func runBootstrap(args []string) error {
 	}
 	now := util.FormatTime(util.NowUTC())
 
-	tx, err := database.BeginTx(nil, nil)
+	tx, err := database.BeginTx(context.Background(), nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
