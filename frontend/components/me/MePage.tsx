@@ -100,6 +100,40 @@ function videoStatusClass(status?: string): string {
   return "bg-slate-100 text-slate-600";
 }
 
+type VideoVisibility = "public" | "unlisted" | "private";
+
+function normalizeVideoVisibility(value: string | undefined): VideoVisibility {
+  if (value === "private") {
+    return "private";
+  }
+  if (value === "unlisted") {
+    return "unlisted";
+  }
+  return "public";
+}
+
+function videoVisibilityLabel(value: string | undefined): string {
+  const visibility = normalizeVideoVisibility(value);
+  if (visibility === "private") {
+    return "私密";
+  }
+  if (visibility === "unlisted") {
+    return "非公开";
+  }
+  return "公开";
+}
+
+function videoVisibilityClass(value: string | undefined): string {
+  const visibility = normalizeVideoVisibility(value);
+  if (visibility === "private") {
+    return "bg-rose-100 text-rose-700";
+  }
+  if (visibility === "unlisted") {
+    return "bg-sky-100 text-sky-700";
+  }
+  return "bg-emerald-100 text-emerald-700";
+}
+
 function parseVideoTagsInput(input: string): string[] {
   const seen = new Set<string>();
   const tags: string[] = [];
@@ -165,11 +199,18 @@ function VideoGridCard({
         </div>
 
         {showStatus ? (
-          <div className="absolute left-2 top-2">
-            <span className={cn("rounded-full px-2 py-1 text-[10px] font-bold", videoStatusClass(video.status))}>
-              {videoStatusLabel(video.status)}
-            </span>
-          </div>
+          <>
+            <div className="absolute left-2 top-2">
+              <span className={cn("rounded-full px-2 py-1 text-[10px] font-bold", videoStatusClass(video.status))}>
+                {videoStatusLabel(video.status)}
+              </span>
+            </div>
+            <div className="absolute right-2 top-2">
+              <span className={cn("rounded-full px-2 py-1 text-[10px] font-bold", videoVisibilityClass(video.visibility))}>
+                {videoVisibilityLabel(video.visibility)}
+              </span>
+            </div>
+          </>
         ) : null}
       </Link>
 
@@ -243,6 +284,7 @@ export function MePage() {
   const [editingVideo, setEditingVideo] = useState<VideoCard | null>(null);
   const [editVideoTitle, setEditVideoTitle] = useState("");
   const [editVideoDescription, setEditVideoDescription] = useState("");
+  const [editVideoVisibility, setEditVideoVisibility] = useState<VideoVisibility>("public");
   const [editVideoTagsInput, setEditVideoTagsInput] = useState("");
   const [editVideoLoading, setEditVideoLoading] = useState(false);
   const [editVideoError, setEditVideoError] = useState("");
@@ -493,6 +535,7 @@ export function MePage() {
       setEditingVideo(video);
       setEditVideoTitle(video.title);
       setEditVideoDescription("");
+      setEditVideoVisibility(normalizeVideoVisibility(video.visibility));
       setEditVideoTagsInput("");
       setEditVideoError("");
       setEditVideoLoading(true);
@@ -501,6 +544,7 @@ export function MePage() {
         const detail = mapVideoDetail(detailRaw);
         setEditVideoTitle(detail.video.title || video.title);
         setEditVideoDescription(detail.description || "");
+        setEditVideoVisibility(normalizeVideoVisibility(detail.video.visibility || video.visibility));
         setEditVideoTagsInput((detail.tags ?? []).join(", "));
       } catch (error) {
         setEditVideoError(error instanceof Error ? error.message : "加载视频详情失败");
@@ -529,6 +573,7 @@ export function MePage() {
       await meApi.updateMyVideo(request, editingVideo.id, {
         title,
         description: editVideoDescription.trim(),
+        visibility: editVideoVisibility,
         tags: parseVideoTagsInput(editVideoTagsInput),
       });
     },
@@ -1030,6 +1075,19 @@ export function MePage() {
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
                 placeholder="请输入视频描述"
               />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">可见性</label>
+              <select
+                value={editVideoVisibility}
+                onChange={(event) => setEditVideoVisibility(event.target.value as VideoVisibility)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+              >
+                <option value="public">公开（所有人可见）</option>
+                <option value="unlisted">非公开列表（仅持链接可访问）</option>
+                <option value="private">私密（仅自己可见）</option>
+              </select>
             </div>
 
             <div>

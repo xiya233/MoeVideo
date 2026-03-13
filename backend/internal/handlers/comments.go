@@ -22,6 +22,16 @@ func (h *Handler) ListComments(c *fiber.Ctx) error {
 		return response.Error(c, fiber.StatusBadRequest, "videoId is required")
 	}
 	viewerID := currentUserID(c)
+	visible, err := h.loadVideoVisibility(c.UserContext(), videoID)
+	if err != nil {
+		if isNotFound(err) {
+			return response.Error(c, fiber.StatusNotFound, "video not found")
+		}
+		return response.Error(c, fiber.StatusInternalServerError, "failed to validate video")
+	}
+	if !canReadVideo(visible, viewerID) {
+		return response.Error(c, fiber.StatusNotFound, "video not found")
+	}
 	limit := pagination.ClampLimit(c.Query("limit"), defaultLimit, maxLimit)
 	cursor := c.Query("cursor")
 
@@ -185,6 +195,16 @@ func (h *Handler) CreateComment(c *fiber.Ctx) error {
 	if videoID == "" {
 		return response.Error(c, fiber.StatusBadRequest, "videoId is required")
 	}
+	visible, err := h.loadVideoVisibility(c.UserContext(), videoID)
+	if err != nil {
+		if isNotFound(err) {
+			return response.Error(c, fiber.StatusNotFound, "video not found")
+		}
+		return response.Error(c, fiber.StatusInternalServerError, "failed to validate video")
+	}
+	if !canReadVideo(visible, uid) {
+		return response.Error(c, fiber.StatusNotFound, "video not found")
+	}
 
 	var req createCommentRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -268,6 +288,22 @@ func (h *Handler) ToggleCommentLike(c *fiber.Ctx) error {
 	var req toggleRequest
 	if err := c.BodyParser(&req); err != nil {
 		return response.Error(c, fiber.StatusBadRequest, "invalid request body")
+	}
+
+	var visible videoVisibility
+	if err := h.app.DB.QueryRowContext(c.UserContext(), `
+SELECT v.uploader_id, v.status, COALESCE(v.visibility, 'public'), COALESCE(v.duration_sec, 0)
+FROM comments c
+JOIN videos v ON v.id = c.video_id
+WHERE c.id = ?
+LIMIT 1`, commentID).Scan(&visible.UploaderID, &visible.Status, &visible.Visibility, &visible.Duration); err != nil {
+		if isNotFound(err) {
+			return response.Error(c, fiber.StatusNotFound, "comment not found")
+		}
+		return response.Error(c, fiber.StatusInternalServerError, "failed to validate comment")
+	}
+	if !canReadVideo(visible, uid) {
+		return response.Error(c, fiber.StatusNotFound, "comment not found")
 	}
 
 	tx, err := h.app.DB.BeginTx(c.UserContext(), nil)

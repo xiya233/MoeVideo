@@ -30,6 +30,7 @@ type createVideoRequest struct {
 type updateVideoRequest struct {
 	Title       *string   `json:"title"`
 	Description *string   `json:"description"`
+	Visibility  *string   `json:"visibility"`
 	Tags        *[]string `json:"tags"`
 }
 
@@ -137,14 +138,13 @@ LIMIT 1`
 	}
 
 	viewerID := currentUserID(c)
-	isOwner := viewerID != "" && viewerID == uploaderID
-	if videoStatus == "deleted" {
-		return response.Error(c, fiber.StatusNotFound, "video not found")
+	visible := videoVisibility{
+		UploaderID: uploaderID,
+		Status:     videoStatus,
+		Visibility: visibility,
 	}
-	if !isOwner {
-		if videoStatus != "published" || visibility != "public" {
-			return response.Error(c, fiber.StatusNotFound, "video not found")
-		}
+	if !canReadVideo(visible, viewerID) {
+		return response.Error(c, fiber.StatusNotFound, "video not found")
 	}
 
 	tagRows, err := h.app.DB.QueryContext(c.UserContext(), `
@@ -241,6 +241,7 @@ ORDER BY t.name ASC`, videoID)
 			"title":            title,
 			"cover_url":        mediaURL(h.app.Storage, coverProvider, coverBucket, coverKey),
 			"preview_webp_url": mediaURL(h.app.Storage, previewProvider, previewBucket, previewKey),
+			"visibility":       visibility,
 			"duration_sec":     durationSec,
 			"views_count":      views,
 			"comments_count":   comments,
@@ -279,12 +280,21 @@ func (h *Handler) GetVideoRecommendations(c *fiber.Ctx) error {
 		return response.Error(c, fiber.StatusBadRequest, "videoId is required")
 	}
 	limit := pagination.ClampLimit(c.Query("limit"), 8, maxLimit)
+	viewerID := currentUserID(c)
 
-	var categoryID sql.NullInt64
-	if err := h.app.DB.QueryRowContext(c.UserContext(), `SELECT category_id FROM videos WHERE id = ? AND status = 'published'`, videoID).Scan(&categoryID); err != nil {
+	visible, err := h.loadVideoVisibility(c.UserContext(), videoID)
+	if err != nil {
 		if isNotFound(err) {
 			return response.Error(c, fiber.StatusNotFound, "video not found")
 		}
+		return response.Error(c, fiber.StatusInternalServerError, "failed to validate video")
+	}
+	if !canReadVideo(visible, viewerID) {
+		return response.Error(c, fiber.StatusNotFound, "video not found")
+	}
+
+	var categoryID sql.NullInt64
+	if err := h.app.DB.QueryRowContext(c.UserContext(), `SELECT category_id FROM videos WHERE id = ?`, videoID).Scan(&categoryID); err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to load video")
 	}
 
@@ -315,6 +325,18 @@ func (h *Handler) TrackVideoView(c *fiber.Ctx) error {
 	videoID := strings.TrimSpace(c.Params("videoId"))
 	if videoID == "" {
 		return response.Error(c, fiber.StatusBadRequest, "videoId is required")
+	}
+	viewerID := currentUserID(c)
+
+	visible, err := h.loadVideoVisibility(c.UserContext(), videoID)
+	if err != nil {
+		if isNotFound(err) {
+			return response.Error(c, fiber.StatusNotFound, "video not found")
+		}
+		return response.Error(c, fiber.StatusInternalServerError, "failed to validate video")
+	}
+	if !canReadVideo(visible, viewerID) || visible.Status != "published" {
+		return response.Error(c, fiber.StatusNotFound, "video not found")
 	}
 
 	viewerKey := clientViewerKey(c)
@@ -369,6 +391,17 @@ func (h *Handler) toggleVideoAction(c *fiber.Ctx, actionType, counterColumn stri
 		return response.Error(c, fiber.StatusBadRequest, "videoId is required")
 	}
 	uid := currentUserID(c)
+
+	visible, err := h.loadVideoVisibility(c.UserContext(), videoID)
+	if err != nil {
+		if isNotFound(err) {
+			return response.Error(c, fiber.StatusNotFound, "video not found")
+		}
+		return response.Error(c, fiber.StatusInternalServerError, "failed to validate video")
+	}
+	if !canReadVideo(visible, uid) || visible.Status != "published" {
+		return response.Error(c, fiber.StatusNotFound, "video not found")
+	}
 
 	var req toggleRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -428,6 +461,18 @@ func (h *Handler) TrackVideoShare(c *fiber.Ctx) error {
 	if videoID == "" {
 		return response.Error(c, fiber.StatusBadRequest, "videoId is required")
 	}
+	viewerID := currentUserID(c)
+
+	visible, err := h.loadVideoVisibility(c.UserContext(), videoID)
+	if err != nil {
+		if isNotFound(err) {
+			return response.Error(c, fiber.StatusNotFound, "video not found")
+		}
+		return response.Error(c, fiber.StatusInternalServerError, "failed to validate video")
+	}
+	if !canReadVideo(visible, viewerID) || visible.Status != "published" {
+		return response.Error(c, fiber.StatusNotFound, "video not found")
+	}
 
 	tx, err := h.app.DB.BeginTx(c.UserContext(), nil)
 	if err != nil {
@@ -476,33 +521,18 @@ func (h *Handler) UpdateVideoProgress(c *fiber.Ctx) error {
 		positionSec = durationSec
 	}
 
-	var (
-		uploaderID string
-		status     string
-		visibility string
-		videoDur   int64
-	)
-	err := h.app.DB.QueryRowContext(
-		c.UserContext(),
-		`SELECT uploader_id, status, COALESCE(visibility, 'public'), COALESCE(duration_sec, 0) FROM videos WHERE id = ? LIMIT 1`,
-		videoID,
-	).Scan(&uploaderID, &status, &visibility, &videoDur)
+	visible, err := h.loadVideoVisibility(c.UserContext(), videoID)
 	if err != nil {
 		if isNotFound(err) {
 			return response.Error(c, fiber.StatusNotFound, "video not found")
 		}
 		return response.Error(c, fiber.StatusInternalServerError, "failed to validate video")
 	}
-
-	isOwner := uid == uploaderID
-	if status == "deleted" {
-		return response.Error(c, fiber.StatusNotFound, "video not found")
-	}
-	if !isOwner && (status != "published" || visibility != "public") {
+	if !canReadVideo(visible, uid) {
 		return response.Error(c, fiber.StatusNotFound, "video not found")
 	}
 	if durationSec <= 0 {
-		durationSec = videoDur
+		durationSec = visible.Duration
 	}
 
 	shouldClear := req.Completed
@@ -665,7 +695,7 @@ func (h *Handler) UpdateVideo(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return response.Error(c, fiber.StatusBadRequest, "invalid request body")
 	}
-	if req.Title == nil && req.Description == nil && req.Tags == nil {
+	if req.Title == nil && req.Description == nil && req.Visibility == nil && req.Tags == nil {
 		return response.Error(c, fiber.StatusBadRequest, "at least one field is required")
 	}
 
@@ -706,6 +736,17 @@ func (h *Handler) UpdateVideo(c *fiber.Ctx) error {
 		description := strings.TrimSpace(*req.Description)
 		setClauses = append(setClauses, "description = ?")
 		args = append(args, description)
+	}
+	if req.Visibility != nil {
+		visibility := strings.TrimSpace(*req.Visibility)
+		if visibility == "" {
+			visibility = "public"
+		}
+		if visibility != "public" && visibility != "private" && visibility != "unlisted" {
+			return response.Error(c, fiber.StatusBadRequest, "invalid visibility")
+		}
+		setClauses = append(setClauses, "visibility = ?")
+		args = append(args, visibility)
 	}
 	now := nowString()
 	if len(setClauses) > 0 {

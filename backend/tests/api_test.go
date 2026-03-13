@@ -1548,6 +1548,7 @@ func TestUpdateVideoByOwner(t *testing.T) {
 	status, resp := doJSONRequest(t, srv, http.MethodPatch, "/api/v1/videos/"+videoID, map[string]interface{}{
 		"title":       "新的标题",
 		"description": "新的描述",
+		"visibility":  "private",
 		"tags":        []string{"anime", "clip", "anime"},
 	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
 	if status != http.StatusOK {
@@ -1557,8 +1558,9 @@ func TestUpdateVideoByOwner(t *testing.T) {
 	var (
 		title       string
 		description string
+		visibility  string
 	)
-	if err := container.DB.QueryRow(`SELECT title, description FROM videos WHERE id = ?`, videoID).Scan(&title, &description); err != nil {
+	if err := container.DB.QueryRow(`SELECT title, description, visibility FROM videos WHERE id = ?`, videoID).Scan(&title, &description, &visibility); err != nil {
 		t.Fatalf("query updated video: %v", err)
 	}
 	if title != "新的标题" {
@@ -1566,6 +1568,9 @@ func TestUpdateVideoByOwner(t *testing.T) {
 	}
 	if description != "新的描述" {
 		t.Fatalf("unexpected description: %s", description)
+	}
+	if visibility != "private" {
+		t.Fatalf("unexpected visibility: %s", visibility)
 	}
 
 	rows, err := container.DB.Query(
@@ -1627,5 +1632,119 @@ func TestUpdateVideoByOwner(t *testing.T) {
 	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
 	if status != http.StatusNotFound {
 		t.Fatalf("owner update deleted video should return 404, got %d", status)
+	}
+}
+
+func TestUnlistedVideoDetailAndCommentsAccessibleByLink(t *testing.T) {
+	srv, container := newTestServer(t)
+	ownerID, _, _ := registerUser(t, srv, "unlisted-owner", "unlisted-owner@example.com", "password123")
+	_, viewerAccess, _ := registerUser(t, srv, "unlisted-viewer", "unlisted-viewer@example.com", "password123")
+	videoID := prepareVideoForUser(t, container, ownerID)
+
+	if _, err := container.DB.Exec(
+		`UPDATE videos SET visibility = 'unlisted', updated_at = ? WHERE id = ?`,
+		util.FormatTime(time.Now().UTC()),
+		videoID,
+	); err != nil {
+		t.Fatalf("set unlisted visibility: %v", err)
+	}
+
+	status, _ := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+videoID, nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("anon should access unlisted detail by link, got %d", status)
+	}
+
+	status, videosResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list videos should return 200, got %d", status)
+	}
+	var videosData struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(videosResp.Data, &videosData); err != nil {
+		t.Fatalf("parse videos list payload: %v", err)
+	}
+	for _, item := range videosData.Items {
+		if item.ID == videoID {
+			t.Fatalf("unlisted video should not appear in public videos list")
+		}
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+videoID+"/comments", nil, map[string]string{
+		"Authorization": "Bearer " + viewerAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("viewer should access unlisted comments, got %d", status)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/comments", map[string]interface{}{
+		"content": "viewer comment",
+	}, map[string]string{"Authorization": "Bearer " + viewerAccess})
+	if status != http.StatusCreated {
+		t.Fatalf("viewer should post comment on unlisted video, got %d", status)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/share", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("anon should share unlisted video, got %d", status)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPut, "/api/v1/videos/"+videoID+"/like", map[string]interface{}{
+		"active": true,
+	}, map[string]string{"Authorization": "Bearer " + viewerAccess})
+	if status != http.StatusOK {
+		t.Fatalf("viewer should like unlisted video, got %d", status)
+	}
+}
+
+func TestPrivateVideoCommentsAndDetailBlockedForViewer(t *testing.T) {
+	srv, container := newTestServer(t)
+	ownerID, ownerAccess, _ := registerUser(t, srv, "private-comments-owner", "private-comments-owner@example.com", "password123")
+	_, viewerAccess, _ := registerUser(t, srv, "private-comments-viewer", "private-comments-viewer@example.com", "password123")
+	videoID := prepareVideoForUser(t, container, ownerID)
+
+	if _, err := container.DB.Exec(
+		`UPDATE videos SET visibility = 'private', updated_at = ? WHERE id = ?`,
+		util.FormatTime(time.Now().UTC()),
+		videoID,
+	); err != nil {
+		t.Fatalf("set private visibility: %v", err)
+	}
+
+	status, _ := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+videoID, nil, map[string]string{
+		"Authorization": "Bearer " + viewerAccess,
+	})
+	if status != http.StatusNotFound {
+		t.Fatalf("viewer should not access private detail, got %d", status)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+videoID, nil, map[string]string{
+		"Authorization": "Bearer " + ownerAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("owner should access private detail, got %d", status)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos/"+videoID+"/comments", nil, map[string]string{
+		"Authorization": "Bearer " + viewerAccess,
+	})
+	if status != http.StatusNotFound {
+		t.Fatalf("viewer should not access private comments, got %d", status)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/comments", map[string]interface{}{
+		"content": "should fail",
+	}, map[string]string{"Authorization": "Bearer " + viewerAccess})
+	if status != http.StatusNotFound {
+		t.Fatalf("viewer should not post private comments, got %d", status)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/comments", map[string]interface{}{
+		"content": "owner comment",
+	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
+	if status != http.StatusCreated {
+		t.Fatalf("owner should post private comments, got %d", status)
 	}
 }

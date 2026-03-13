@@ -72,6 +72,7 @@ export const meApi = {
     payload: {
       title?: string;
       description?: string;
+      visibility?: "public" | "unlisted" | "private";
       tags?: string[];
     },
   ) {

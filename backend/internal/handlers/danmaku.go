@@ -422,7 +422,10 @@ func canReadVideo(visible videoVisibility, viewerID string) bool {
 	if isOwner {
 		return true
 	}
-	return visible.Status == "published" && visible.Visibility == "public"
+	if visible.Status != "published" {
+		return false
+	}
+	return visible.Visibility == "public" || visible.Visibility == "unlisted" || visible.Visibility == ""
 }
 
 func parseDanmakuLoadLimit(raw string) int {

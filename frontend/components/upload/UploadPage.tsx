@@ -93,6 +93,7 @@ export function UploadPage() {
   const [tagInput, setTagInput] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   const [categoryId, setCategoryId] = useState("");
+  const [visibility, setVisibility] = useState<"public" | "unlisted" | "private">("public");
 
   const [submitting, setSubmitting] = useState(false);
   const [statusText, setStatusText] = useState("");
@@ -254,7 +255,7 @@ export function UploadPage() {
           cover_media_id: coverMedia?.media_object_id,
           source_media_id: videoMedia.media_object_id,
           tags,
-          visibility: "public",
+          visibility,
         },
       });
 
@@ -465,6 +466,19 @@ export function UploadPage() {
             {categoriesError ? <p className="mt-2 text-xs text-rose-500">{categoriesError}</p> : null}
           </div>
 
+          <div>
+            <span className="mb-2 ml-1 block text-sm font-bold text-slate-700">可见性</span>
+            <select
+              className={`${fieldClass} appearance-none`}
+              value={visibility}
+              onChange={(event) => setVisibility(event.target.value as "public" | "unlisted" | "private")}
+            >
+              <option value="public">公开（所有人可见）</option>
+              <option value="unlisted">非公开列表（仅持链接可访问）</option>
+              <option value="private">私密（仅自己可见）</option>
+            </select>
+          </div>
+
           <div className="rounded-xl border border-primary/10 bg-primary/5 p-4">
             <h4 className="mb-2 flex items-center gap-1 text-xs font-bold text-primary">
               <AppIcon name="info" size={12} />
@@ -492,6 +506,7 @@ export function UploadPage() {
             setTagInput("");
             setTags([]);
             setCategoryId("");
+            setVisibility("public");
             setErrorText("");
             setStatusText("");
           }}
