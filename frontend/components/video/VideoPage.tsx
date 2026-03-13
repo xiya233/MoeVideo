@@ -172,6 +172,8 @@ export function VideoPage({ videoId }: VideoPageProps) {
 
   const [detail, setDetail] = useState<VideoDetail | null>(null);
   const [recommendations, setRecommendations] = useState<VideoCard[]>([]);
+  const [recommendationLoading, setRecommendationLoading] = useState(false);
+  const [recommendationError, setRecommendationError] = useState("");
   const [comments, setComments] = useState<CommentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -223,10 +225,26 @@ export function VideoPage({ videoId }: VideoPageProps) {
     setComments(mapCommentsData(data).items ?? []);
   }, [request, videoId]);
 
-  const fetchRecommendations = useCallback(async () => {
-    const data = await request<{ items: VideoCard[] }>(`/videos/${videoId}/recommendations?limit=8`, { auth: false });
-    setRecommendations((data.items ?? []).map(mapVideoCard));
-  }, [request, videoId]);
+  const fetchRecommendations = useCallback(
+    async ({ withLoading = false }: { withLoading?: boolean } = {}) => {
+      if (withLoading) {
+        setRecommendationLoading(true);
+      }
+      setRecommendationError("");
+      try {
+        const data = await request<{ items: VideoCard[] }>(`/videos/${videoId}/recommendations?limit=8`, { auth: false });
+        setRecommendations((data.items ?? []).map(mapVideoCard));
+      } catch (err) {
+        setRecommendations([]);
+        setRecommendationError(err instanceof Error ? err.message : "推荐视频加载失败");
+      } finally {
+        if (withLoading) {
+          setRecommendationLoading(false);
+        }
+      }
+    },
+    [request, videoId],
+  );
 
   const ingestDanmaku = useCallback((item: DanmakuItem): boolean => {
     if (!item.id) {
@@ -330,6 +348,8 @@ export function VideoPage({ videoId }: VideoPageProps) {
         await fetchPublishedExtras();
       } else {
         setRecommendations([]);
+        setRecommendationError("");
+        setRecommendationLoading(false);
         setComments([]);
         setInitialDanmaku([]);
         setLatestDanmaku(null);
@@ -343,6 +363,8 @@ export function VideoPage({ videoId }: VideoPageProps) {
       setError(err instanceof Error ? err.message : "加载播放页失败");
       setDetail(null);
       setRecommendations([]);
+      setRecommendationError("");
+      setRecommendationLoading(false);
       setComments([]);
       setInitialDanmaku([]);
       setLatestDanmaku(null);
@@ -363,6 +385,9 @@ export function VideoPage({ videoId }: VideoPageProps) {
       if (nextDetail.status === "published") {
         await fetchPublishedExtras();
       } else {
+        setRecommendations([]);
+        setRecommendationError("");
+        setRecommendationLoading(false);
         setInitialDanmaku([]);
         setLatestDanmaku(null);
         setDanmakuPanelOpen(false);
@@ -957,6 +982,13 @@ export function VideoPage({ videoId }: VideoPageProps) {
     await fetchDanmakuList({ cursor: danmakuNextCursor, append: true });
   }, [danmakuListLoadingMore, danmakuNextCursor, fetchDanmakuList]);
 
+  const refreshRecommendationsOnly = useCallback(async () => {
+    if (!detail || detail.status !== "published" || recommendationLoading) {
+      return;
+    }
+    await fetchRecommendations({ withLoading: true });
+  }, [detail, fetchRecommendations, recommendationLoading]);
+
   const recommendationCards = useMemo(() => recommendations.slice(0, 8), [recommendations]);
   const playerSource = useMemo(() => {
     if (!detail) {
@@ -1399,11 +1431,17 @@ export function VideoPage({ videoId }: VideoPageProps) {
           <h3 className="text-lg font-bold">推荐视频</h3>
           <button
             type="button"
-            onClick={() => void fetchPageData()}
-            className="flex cursor-pointer items-center gap-2 text-xs font-medium text-primary transition-colors hover:opacity-80"
+            onClick={() => void refreshRecommendationsOnly()}
+            disabled={!detail || detail.status !== "published" || recommendationLoading}
+            className={cn(
+              "flex items-center gap-2 text-xs font-medium text-primary transition-colors",
+              !detail || detail.status !== "published" || recommendationLoading
+                ? "cursor-not-allowed opacity-60"
+                : "cursor-pointer hover:opacity-80",
+            )}
           >
-            <AppIcon name="autorenew" size={14} />
-            换一换
+            <AppIcon name="autorenew" size={14} className={recommendationLoading ? "animate-spin" : undefined} />
+            {recommendationLoading ? "刷新中..." : "换一换"}
           </button>
         </div>
 
@@ -1441,6 +1479,8 @@ export function VideoPage({ videoId }: VideoPageProps) {
 
           {detail.status !== "published" ? (
             <EmptyState title="推荐暂不可用" description="当前视频转码中，完成后会显示相关推荐。" />
+          ) : recommendationError ? (
+            <EmptyState title="推荐加载失败" description={recommendationError} />
           ) : recommendationCards.length === 0 ? (
             <EmptyState title="暂无推荐视频" description="稍后再试试看。" />
           ) : null}
