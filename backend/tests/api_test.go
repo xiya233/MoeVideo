@@ -2,6 +2,7 @@ package tests
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -1346,7 +1347,7 @@ func TestDanmakuPrivateVideoAccessControl(t *testing.T) {
 }
 
 func TestURLImportStartCreatesQueuedJob(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv, container := newTestServer(t)
 	_, accessToken, _ := registerUser(t, srv, "url-importer", "url-importer@example.com", "password123")
 
 	authHeader := map[string]string{"Authorization": "Bearer " + accessToken}
@@ -1359,9 +1360,11 @@ func TestURLImportStartCreatesQueuedJob(t *testing.T) {
 	}
 
 	status, startResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/imports/url/start", map[string]interface{}{
-		"url":        "https://example.com/video/123",
-		"visibility": "unlisted",
-		"tags":       []string{"import", "url"},
+		"url":         "https://example.com/video/123",
+		"title":       "URL 自定义标题",
+		"description": "URL 自定义描述",
+		"visibility":  "unlisted",
+		"tags":        []string{"import", "url"},
 	}, authHeader)
 	if status != http.StatusOK {
 		t.Fatalf("start url import should return 200, got %d (%s)", status, startResp.Message)
@@ -1437,5 +1440,192 @@ func TestURLImportStartCreatesQueuedJob(t *testing.T) {
 	}
 	if len(detailData.Items) != 1 || !detailData.Items[0].Selected {
 		t.Fatalf("expected one selected import item")
+	}
+
+	var (
+		customTitle       string
+		customTitlePrefix sql.NullString
+		customDescription string
+	)
+	if err := container.DB.QueryRow(
+		`SELECT COALESCE(custom_title, ''), custom_title_prefix, COALESCE(custom_description, '') FROM video_import_jobs WHERE id = ?`,
+		startData.JobID,
+	).Scan(&customTitle, &customTitlePrefix, &customDescription); err != nil {
+		t.Fatalf("query url import custom metadata: %v", err)
+	}
+	if customTitle != "URL 自定义标题" {
+		t.Fatalf("unexpected custom_title: %s", customTitle)
+	}
+	if customTitlePrefix.Valid {
+		t.Fatalf("url import custom_title_prefix should be NULL")
+	}
+	if customDescription != "URL 自定义描述" {
+		t.Fatalf("unexpected custom_description: %s", customDescription)
+	}
+}
+
+func TestStartTorrentImportPersistsCustomMetadata(t *testing.T) {
+	srv, container := newTestServer(t)
+	container.Config.ImportMaxFiles = 20
+	userID, accessToken, _ := registerUser(t, srv, "torrent-meta", "torrent-meta@example.com", "password123")
+	now := util.FormatTime(time.Now().UTC())
+	jobID := "import-job-" + uuid.NewString()
+	itemID := "import-item-" + uuid.NewString()
+
+	if _, err := container.DB.Exec(
+		`INSERT INTO video_import_jobs (
+			id, user_id, source_type, source_filename, info_hash, torrent_data, status,
+			category_id, tags_json, visibility, attempts, max_attempts,
+			total_files, selected_files, completed_files, failed_files, progress,
+			available_at, started_at, finished_at, expires_at, error_message,
+			created_at, updated_at
+		) VALUES (?, ?, 'torrent', 'sample.torrent', 'deadbeef', X'00', 'draft',
+			NULL, '[]', 'public', 0, 3,
+			1, 0, 0, 0, 0,
+			?, NULL, NULL, ?, NULL,
+			?, ?)`,
+		jobID,
+		userID,
+		now,
+		util.FormatTime(time.Now().UTC().Add(24*time.Hour)),
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert draft import job: %v", err)
+	}
+	if _, err := container.DB.Exec(
+		`INSERT INTO video_import_items (
+			id, job_id, file_index, file_path, file_size_bytes, selected, status,
+			error_message, media_object_id, video_id, created_at, updated_at
+		) VALUES (?, ?, 0, 'sample.mp4', 1024, 0, 'pending', NULL, NULL, NULL, ?, ?)`,
+		itemID,
+		jobID,
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert draft import item: %v", err)
+	}
+
+	status, resp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/imports/torrent/start", map[string]interface{}{
+		"job_id":                jobID,
+		"selected_file_indexes": []int{0},
+		"title":                 "单文件标题",
+		"title_prefix":          "批量前缀",
+		"description":           "统一描述",
+	}, map[string]string{"Authorization": "Bearer " + accessToken})
+	if status != http.StatusOK {
+		t.Fatalf("start torrent import should return 200, got %d (%s)", status, resp.Message)
+	}
+
+	var (
+		customTitle       sql.NullString
+		customTitlePrefix sql.NullString
+		customDescription string
+	)
+	if err := container.DB.QueryRow(
+		`SELECT custom_title, custom_title_prefix, COALESCE(custom_description, '') FROM video_import_jobs WHERE id = ?`,
+		jobID,
+	).Scan(&customTitle, &customTitlePrefix, &customDescription); err != nil {
+		t.Fatalf("query torrent import metadata: %v", err)
+	}
+	if !customTitle.Valid || customTitle.String != "单文件标题" {
+		t.Fatalf("unexpected custom_title: %+v", customTitle)
+	}
+	if !customTitlePrefix.Valid || customTitlePrefix.String != "批量前缀" {
+		t.Fatalf("unexpected custom_title_prefix: %+v", customTitlePrefix)
+	}
+	if customDescription != "统一描述" {
+		t.Fatalf("unexpected custom_description: %s", customDescription)
+	}
+}
+
+func TestUpdateVideoByOwner(t *testing.T) {
+	srv, container := newTestServer(t)
+	ownerID, ownerAccess, _ := registerUser(t, srv, "video-owner", "video-owner@example.com", "password123")
+	_, otherAccess, _ := registerUser(t, srv, "video-other", "video-other@example.com", "password123")
+	videoID := prepareVideoForUser(t, container, ownerID)
+
+	status, resp := doJSONRequest(t, srv, http.MethodPatch, "/api/v1/videos/"+videoID, map[string]interface{}{
+		"title":       "新的标题",
+		"description": "新的描述",
+		"tags":        []string{"anime", "clip", "anime"},
+	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
+	if status != http.StatusOK {
+		t.Fatalf("owner update video should return 200, got %d (%s)", status, resp.Message)
+	}
+
+	var (
+		title       string
+		description string
+	)
+	if err := container.DB.QueryRow(`SELECT title, description FROM videos WHERE id = ?`, videoID).Scan(&title, &description); err != nil {
+		t.Fatalf("query updated video: %v", err)
+	}
+	if title != "新的标题" {
+		t.Fatalf("unexpected title: %s", title)
+	}
+	if description != "新的描述" {
+		t.Fatalf("unexpected description: %s", description)
+	}
+
+	rows, err := container.DB.Query(
+		`SELECT t.name FROM video_tags vt JOIN tags t ON t.id = vt.tag_id WHERE vt.video_id = ? ORDER BY t.name ASC`,
+		videoID,
+	)
+	if err != nil {
+		t.Fatalf("query video tags: %v", err)
+	}
+	defer rows.Close()
+	var tags []string
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			t.Fatalf("scan video tag: %v", err)
+		}
+		tags = append(tags, tag)
+	}
+	if len(tags) != 2 || tags[0] != "anime" || tags[1] != "clip" {
+		t.Fatalf("unexpected tags after update: %+v", tags)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPatch, "/api/v1/videos/"+videoID, map[string]interface{}{
+		"tags": []string{},
+	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
+	if status != http.StatusOK {
+		t.Fatalf("owner clear tags should return 200, got %d", status)
+	}
+	var relCount int64
+	if err := container.DB.QueryRow(`SELECT COUNT(1) FROM video_tags WHERE video_id = ?`, videoID).Scan(&relCount); err != nil {
+		t.Fatalf("count video tags: %v", err)
+	}
+	if relCount != 0 {
+		t.Fatalf("expected tags cleared, got %d", relCount)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPatch, "/api/v1/videos/"+videoID, map[string]interface{}{
+		"title": "他人修改",
+	}, map[string]string{"Authorization": "Bearer " + otherAccess})
+	if status != http.StatusNotFound {
+		t.Fatalf("non-owner update should return 404, got %d", status)
+	}
+
+	if _, err := container.DB.Exec(`UPDATE videos SET status = 'processing', updated_at = ? WHERE id = ?`, util.FormatTime(time.Now().UTC()), videoID); err != nil {
+		t.Fatalf("set processing status: %v", err)
+	}
+	status, _ = doJSONRequest(t, srv, http.MethodPatch, "/api/v1/videos/"+videoID, map[string]interface{}{
+		"description": "processing 可编辑",
+	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
+	if status != http.StatusOK {
+		t.Fatalf("owner update processing video should return 200, got %d", status)
+	}
+
+	if _, err := container.DB.Exec(`UPDATE videos SET status = 'deleted', updated_at = ? WHERE id = ?`, util.FormatTime(time.Now().UTC()), videoID); err != nil {
+		t.Fatalf("set deleted status: %v", err)
+	}
+	status, _ = doJSONRequest(t, srv, http.MethodPatch, "/api/v1/videos/"+videoID, map[string]interface{}{
+		"title": "deleted 不可编辑",
+	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
+	if status != http.StatusNotFound {
+		t.Fatalf("owner update deleted video should return 404, got %d", status)
 	}
 }

@@ -32,6 +32,9 @@ export const importsApi = {
       category_id?: number;
       tags?: string[];
       visibility?: "public" | "private" | "unlisted";
+      title?: string;
+      title_prefix?: string;
+      description?: string;
     },
   ) {
     return request<{ job_id: string; status: "queued"; selected_files: number }>("/imports/torrent/start", {
@@ -48,6 +51,8 @@ export const importsApi = {
       category_id?: number;
       tags?: string[];
       visibility?: "public" | "private" | "unlisted";
+      title?: string;
+      description?: string;
     },
   ) {
     return request<{ job_id: string; status: "queued"; selected_files: number }>("/imports/url/start", {

@@ -27,6 +27,12 @@ type createVideoRequest struct {
 	Visibility    string   `json:"visibility"`
 }
 
+type updateVideoRequest struct {
+	Title       *string   `json:"title"`
+	Description *string   `json:"description"`
+	Tags        *[]string `json:"tags"`
+}
+
 type updateProgressRequest struct {
 	PositionSec float64 `json:"position_sec"`
 	DurationSec float64 `json:"duration_sec"`
@@ -615,37 +621,8 @@ func (h *Handler) CreateVideo(c *fiber.Ctx) error {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to create video")
 	}
 
-	seen := map[string]struct{}{}
-	for _, raw := range req.Tags {
-		tag := strings.TrimSpace(raw)
-		if tag == "" {
-			continue
-		}
-		if len(tag) > 32 {
-			tag = tag[:32]
-		}
-		if _, ok := seen[tag]; ok {
-			continue
-		}
-		seen[tag] = struct{}{}
-
-		if _, err := tx.ExecContext(c.UserContext(), `INSERT INTO tags (name, use_count, created_at) VALUES (?, 0, ?) ON CONFLICT(name) DO NOTHING`, tag, now); err != nil {
-			return response.Error(c, fiber.StatusInternalServerError, "failed to upsert tags")
-		}
-		var tagID int64
-		if err := tx.QueryRowContext(c.UserContext(), `SELECT id FROM tags WHERE name = ?`, tag).Scan(&tagID); err != nil {
-			return response.Error(c, fiber.StatusInternalServerError, "failed to query tag")
-		}
-		res, err := tx.ExecContext(c.UserContext(), `INSERT OR IGNORE INTO video_tags (video_id, tag_id) VALUES (?, ?)`, videoID, tagID)
-		if err != nil {
-			return response.Error(c, fiber.StatusInternalServerError, "failed to attach tag")
-		}
-		affected, _ := res.RowsAffected()
-		if affected > 0 {
-			if _, err := tx.ExecContext(c.UserContext(), `UPDATE tags SET use_count = use_count + 1 WHERE id = ?`, tagID); err != nil {
-				return response.Error(c, fiber.StatusInternalServerError, "failed to update tag count")
-			}
-		}
+	if err := h.syncVideoTagsTx(c.UserContext(), tx, videoID, normalizeVideoTags(req.Tags), now); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to sync tags")
 	}
 
 	maxAttempts := h.app.Config.TranscodeMaxTry
@@ -675,6 +652,82 @@ func (h *Handler) CreateVideo(c *fiber.Ctx) error {
 	}
 
 	return response.Created(c, fiber.Map{"id": videoID, "status": "processing"})
+}
+
+func (h *Handler) UpdateVideo(c *fiber.Ctx) error {
+	uid := currentUserID(c)
+	videoID := strings.TrimSpace(c.Params("videoId"))
+	if videoID == "" {
+		return response.Error(c, fiber.StatusBadRequest, "videoId is required")
+	}
+
+	var req updateVideoRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.Error(c, fiber.StatusBadRequest, "invalid request body")
+	}
+	if req.Title == nil && req.Description == nil && req.Tags == nil {
+		return response.Error(c, fiber.StatusBadRequest, "at least one field is required")
+	}
+
+	tx, err := h.app.DB.BeginTx(c.UserContext(), nil)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to begin transaction")
+	}
+	defer tx.Rollback()
+
+	var uploaderID, status string
+	if err := tx.QueryRowContext(c.UserContext(),
+		`SELECT uploader_id, status FROM videos WHERE id = ? LIMIT 1`,
+		videoID,
+	).Scan(&uploaderID, &status); err != nil {
+		if isNotFound(err) {
+			return response.Error(c, fiber.StatusNotFound, "video not found")
+		}
+		return response.Error(c, fiber.StatusInternalServerError, "failed to query video")
+	}
+	if uploaderID != uid || status == "deleted" {
+		return response.Error(c, fiber.StatusNotFound, "video not found")
+	}
+
+	setClauses := make([]string, 0, 3)
+	args := make([]interface{}, 0, 4)
+	if req.Title != nil {
+		title := strings.TrimSpace(*req.Title)
+		if title == "" {
+			return response.Error(c, fiber.StatusBadRequest, "title is required")
+		}
+		if len([]rune(title)) > 120 {
+			return response.Error(c, fiber.StatusBadRequest, "title is too long")
+		}
+		setClauses = append(setClauses, "title = ?")
+		args = append(args, title)
+	}
+	if req.Description != nil {
+		description := strings.TrimSpace(*req.Description)
+		setClauses = append(setClauses, "description = ?")
+		args = append(args, description)
+	}
+	now := nowString()
+	if len(setClauses) > 0 {
+		setClauses = append(setClauses, "updated_at = ?")
+		args = append(args, now, videoID)
+		if _, err := tx.ExecContext(c.UserContext(),
+			`UPDATE videos SET `+strings.Join(setClauses, ", ")+` WHERE id = ?`,
+			args...,
+		); err != nil {
+			return response.Error(c, fiber.StatusInternalServerError, "failed to update video")
+		}
+	}
+	if req.Tags != nil {
+		if err := h.syncVideoTagsTx(c.UserContext(), tx, videoID, normalizeVideoTags(*req.Tags), now); err != nil {
+			return response.Error(c, fiber.StatusInternalServerError, "failed to sync tags")
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to commit video update")
+	}
+	return response.OK(c, fiber.Map{"updated": true})
 }
 
 func (h *Handler) DeleteVideo(c *fiber.Ctx) error {
@@ -713,6 +766,96 @@ func (h *Handler) recomputeHotScoreTx(ctx context.Context, tx *sql.Tx, videoID s
 	hot := computeHotScore(views, likes, favorites, comments, shares)
 	_, err := tx.ExecContext(ctx, `UPDATE videos SET hot_score = ?, updated_at = ? WHERE id = ?`, hot, nowString(), videoID)
 	return err
+}
+
+func normalizeVideoTags(raw []string) []string {
+	seen := make(map[string]struct{}, len(raw))
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		tag := strings.TrimSpace(item)
+		if tag == "" {
+			continue
+		}
+		if len(tag) > 32 {
+			tag = tag[:32]
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		out = append(out, tag)
+	}
+	return out
+}
+
+func (h *Handler) syncVideoTagsTx(ctx context.Context, tx *sql.Tx, videoID string, tags []string, now string) error {
+	existingTagIDs := make(map[int64]struct{})
+	rows, err := tx.QueryContext(ctx, `SELECT tag_id FROM video_tags WHERE video_id = ?`, videoID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var tagID int64
+		if err := rows.Scan(&tagID); err != nil {
+			return err
+		}
+		existingTagIDs[tagID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	nextTagIDs := make(map[int64]struct{}, len(tags))
+	for _, tag := range tags {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO tags (name, use_count, created_at) VALUES (?, 0, ?) ON CONFLICT(name) DO NOTHING`,
+			tag, now,
+		); err != nil {
+			return err
+		}
+		var tagID int64
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM tags WHERE name = ? LIMIT 1`, tag).Scan(&tagID); err != nil {
+			return err
+		}
+		nextTagIDs[tagID] = struct{}{}
+	}
+
+	for tagID := range existingTagIDs {
+		if _, keep := nextTagIDs[tagID]; keep {
+			continue
+		}
+		res, err := tx.ExecContext(ctx, `DELETE FROM video_tags WHERE video_id = ? AND tag_id = ?`, videoID, tagID)
+		if err != nil {
+			return err
+		}
+		affected, _ := res.RowsAffected()
+		if affected > 0 {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE tags SET use_count = CASE WHEN use_count > 0 THEN use_count - 1 ELSE 0 END WHERE id = ?`,
+				tagID,
+			); err != nil {
+				return err
+			}
+		}
+	}
+
+	for tagID := range nextTagIDs {
+		if _, exists := existingTagIDs[tagID]; exists {
+			continue
+		}
+		res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO video_tags (video_id, tag_id) VALUES (?, ?)`, videoID, tagID)
+		if err != nil {
+			return err
+		}
+		affected, _ := res.RowsAffected()
+		if affected > 0 {
+			if _, err := tx.ExecContext(ctx, `UPDATE tags SET use_count = use_count + 1 WHERE id = ?`, tagID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func nullableString(v string) interface{} {

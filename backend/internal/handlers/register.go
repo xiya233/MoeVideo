@@ -57,6 +57,7 @@ func RegisterRoutes(api fiber.Router, a *app.App) {
 	api.Post("/videos/:videoId/share", h.TrackVideoShare)
 	api.Put("/videos/:videoId/progress", middleware.RequireAuth(a), h.UpdateVideoProgress)
 	api.Post("/videos", middleware.RequireAuth(a), h.CreateVideo)
+	api.Patch("/videos/:videoId", middleware.RequireAuth(a), h.UpdateVideo)
 	api.Delete("/videos/:videoId", middleware.RequireAuth(a), h.DeleteVideo)
 
 	api.Post("/imports/torrent/inspect", middleware.RequireAuth(a), h.InspectTorrentImport)

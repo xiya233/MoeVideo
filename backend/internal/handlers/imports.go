@@ -38,13 +38,18 @@ type startTorrentImportRequest struct {
 	CategoryID          *int64   `json:"category_id"`
 	Tags                []string `json:"tags"`
 	Visibility          string   `json:"visibility"`
+	Title               string   `json:"title"`
+	TitlePrefix         string   `json:"title_prefix"`
+	Description         string   `json:"description"`
 }
 
 type startURLImportRequest struct {
-	URL        string   `json:"url"`
-	CategoryID *int64   `json:"category_id"`
-	Tags       []string `json:"tags"`
-	Visibility string   `json:"visibility"`
+	URL         string   `json:"url"`
+	CategoryID  *int64   `json:"category_id"`
+	Tags        []string `json:"tags"`
+	Visibility  string   `json:"visibility"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
 }
 
 func (h *Handler) InspectTorrentImport(c *fiber.Ctx) error {
@@ -235,6 +240,18 @@ func (h *Handler) StartTorrentImport(c *fiber.Ctx) error {
 	if visibility == "" {
 		return response.Error(c, fiber.StatusBadRequest, "invalid visibility")
 	}
+	customTitle, err := normalizeImportCustomTitle(req.Title)
+	if err != nil {
+		return response.Error(c, fiber.StatusBadRequest, err.Error())
+	}
+	customTitlePrefix, err := normalizeImportCustomTitlePrefix(req.TitlePrefix)
+	if err != nil {
+		return response.Error(c, fiber.StatusBadRequest, err.Error())
+	}
+	customDescription, err := normalizeImportCustomDescription(req.Description)
+	if err != nil {
+		return response.Error(c, fiber.StatusBadRequest, err.Error())
+	}
 
 	selectedSet := make(map[int]struct{}, len(req.SelectedFileIndexes))
 	for _, idx := range req.SelectedFileIndexes {
@@ -356,6 +373,9 @@ SET status = 'queued',
 	category_id = ?,
 	tags_json = ?,
 	visibility = ?,
+	custom_title = ?,
+	custom_title_prefix = ?,
+	custom_description = ?,
 	selected_files = ?,
 	completed_files = 0,
 	failed_files = 0,
@@ -367,7 +387,7 @@ SET status = 'queued',
 	started_at = NULL,
 	finished_at = NULL,
 	updated_at = ?
-WHERE id = ?`, req.CategoryID, string(tagsJSON), visibility, len(selectedIndexes), maxAttempts, now, now, req.JobID); err != nil {
+WHERE id = ?`, req.CategoryID, string(tagsJSON), visibility, nullableString(customTitle), nullableString(customTitlePrefix), customDescription, len(selectedIndexes), maxAttempts, now, now, req.JobID); err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to queue import job")
 	}
 
@@ -401,6 +421,14 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 	visibility := normalizeImportVisibility(req.Visibility)
 	if visibility == "" {
 		return response.Error(c, fiber.StatusBadRequest, "invalid visibility")
+	}
+	customTitle, err := normalizeImportCustomTitle(req.Title)
+	if err != nil {
+		return response.Error(c, fiber.StatusBadRequest, err.Error())
+	}
+	customDescription, err := normalizeImportCustomDescription(req.Description)
+	if err != nil {
+		return response.Error(c, fiber.StatusBadRequest, err.Error())
 	}
 
 	tags := normalizeImportTags(req.Tags)
@@ -447,6 +475,7 @@ INSERT INTO video_import_jobs (
 	id, user_id, source_type, source_filename, info_hash, torrent_data,
 	source_url, resolved_media_url, resolver_name, resolver_meta_json,
 	ytdlp_param_mode, ytdlp_metadata_args_json, ytdlp_download_args_json,
+	custom_title, custom_title_prefix, custom_description,
 	status, category_id, tags_json, visibility, attempts, max_attempts,
 	total_files, selected_files, completed_files, failed_files, progress,
 	available_at, started_at, finished_at, expires_at, error_message,
@@ -454,6 +483,7 @@ INSERT INTO video_import_jobs (
 ) VALUES (?, ?, 'url', ?, NULL, NULL,
 	?, NULL, NULL, NULL,
 	?, ?, ?,
+	?, NULL, ?,
 	'queued', ?, ?, ?, 0, ?,
 	1, 1, 0, 0, 0,
 	?, NULL, NULL, ?, NULL,
@@ -466,6 +496,8 @@ INSERT INTO video_import_jobs (
 		ytdlpMode,
 		ytdlpMetaArgsJSON,
 		ytdlpDownArgsJSON,
+		nullableString(customTitle),
+		customDescription,
 		req.CategoryID,
 		string(tagsJSON),
 		visibility,
@@ -1019,6 +1051,36 @@ func normalizeImportTags(raw []string) []string {
 		out = append(out, t)
 	}
 	return out
+}
+
+func normalizeImportCustomTitle(raw string) (string, error) {
+	title := strings.TrimSpace(raw)
+	if title == "" {
+		return "", nil
+	}
+	if len([]rune(title)) > 120 {
+		return "", fmt.Errorf("title is too long")
+	}
+	return title, nil
+}
+
+func normalizeImportCustomTitlePrefix(raw string) (string, error) {
+	prefix := strings.TrimSpace(raw)
+	if prefix == "" {
+		return "", nil
+	}
+	if len([]rune(prefix)) > 120 {
+		return "", fmt.Errorf("title_prefix is too long")
+	}
+	return prefix, nil
+}
+
+func normalizeImportCustomDescription(raw string) (string, error) {
+	description := strings.TrimSpace(raw)
+	if len([]rune(description)) > 5000 {
+		return "", fmt.Errorf("description is too long")
+	}
+	return description, nil
 }
 
 func parseImportTags(raw string) []string {

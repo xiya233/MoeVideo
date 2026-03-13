@@ -1,5 +1,5 @@
 import type { RequestOptions } from "@/lib/api/types";
-import type { ContinueWatchingItem, UserBrief, VideoCard } from "@/lib/dto";
+import type { ContinueWatchingItem, UserBrief, VideoCard, VideoDetail } from "@/lib/dto";
 
 export type ApiRequest = <T>(path: string, options?: RequestOptions) => Promise<T>;
 
@@ -56,6 +56,26 @@ export const meApi = {
     },
   ) {
     return request<{ user: UserBrief & { email?: string; role?: string } }>(`/users/me`, {
+      method: "PATCH",
+      auth: true,
+      body: payload,
+    });
+  },
+
+  getMyVideoDetail(request: ApiRequest, videoId: string) {
+    return request<VideoDetail>(`/videos/${videoId}`, { auth: true });
+  },
+
+  updateMyVideo(
+    request: ApiRequest,
+    videoId: string,
+    payload: {
+      title?: string;
+      description?: string;
+      tags?: string[];
+    },
+  ) {
+    return request<{ updated: boolean }>(`/videos/${videoId}`, {
       method: "PATCH",
       auth: true,
       body: payload,

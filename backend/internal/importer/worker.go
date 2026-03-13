@@ -194,26 +194,32 @@ type processResult struct {
 
 func (w *Worker) processJob(ctx context.Context, job claimedJob) (*processResult, error) {
 	var (
-		jobUserID   string
-		sourceType  string
-		torrentData []byte
-		sourceURL   sql.NullString
-		ytdlpMode   string
-		ytdlpMeta   string
-		ytdlpDown   string
-		categoryID  sql.NullInt64
-		tagsJSON    string
-		visibility  string
+		jobUserID         string
+		sourceType        string
+		torrentData       []byte
+		sourceURL         sql.NullString
+		ytdlpMode         string
+		ytdlpMeta         string
+		ytdlpDown         string
+		customTitle       string
+		customTitlePrefix string
+		customDescription string
+		categoryID        sql.NullInt64
+		tagsJSON          string
+		visibility        string
 	)
 	err := w.app.DB.QueryRowContext(ctx, `
-SELECT user_id, source_type, torrent_data, source_url,
-       COALESCE(ytdlp_param_mode, 'safe'),
-       COALESCE(ytdlp_metadata_args_json, '[]'),
-       COALESCE(ytdlp_download_args_json, '[]'),
-       category_id, tags_json, visibility
-FROM video_import_jobs
-WHERE id = ?
-LIMIT 1`, job.ID).Scan(&jobUserID, &sourceType, &torrentData, &sourceURL, &ytdlpMode, &ytdlpMeta, &ytdlpDown, &categoryID, &tagsJSON, &visibility)
+	SELECT user_id, source_type, torrent_data, source_url,
+	       COALESCE(ytdlp_param_mode, 'safe'),
+	       COALESCE(ytdlp_metadata_args_json, '[]'),
+	       COALESCE(ytdlp_download_args_json, '[]'),
+	       COALESCE(custom_title, ''),
+	       COALESCE(custom_title_prefix, ''),
+	       COALESCE(custom_description, ''),
+	       category_id, tags_json, visibility
+	FROM video_import_jobs
+	WHERE id = ?
+	LIMIT 1`, job.ID).Scan(&jobUserID, &sourceType, &torrentData, &sourceURL, &ytdlpMode, &ytdlpMeta, &ytdlpDown, &customTitle, &customTitlePrefix, &customDescription, &categoryID, &tagsJSON, &visibility)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, permanentError{err: fmt.Errorf("import job %s not found", job.ID)}
@@ -262,7 +268,7 @@ ORDER BY file_index ASC`, job.ID)
 		if parseErr != nil {
 			return nil, permanentError{err: fmt.Errorf("import.ytdlp.invalid_args: %v", parseErr)}
 		}
-		return w.processURLJob(ctx, job, selected, strings.TrimSpace(sourceURL.String), categoryPtr, tags, visibility, metaArgs, downArgs)
+		return w.processURLJob(ctx, job, selected, strings.TrimSpace(sourceURL.String), categoryPtr, tags, visibility, customTitle, customDescription, metaArgs, downArgs)
 	case "torrent":
 	default:
 		return nil, permanentError{err: fmt.Errorf("import job %s has unsupported source_type: %s", job.ID, sourceType)}
@@ -339,7 +345,7 @@ ORDER BY file_index ASC`, job.ID)
 		file := files[item.FileIndex]
 		file.Download()
 
-		importErr := w.importSelectedFile(ctx, job, item, file, categoryPtr, tags, visibility)
+		importErr := w.importSelectedFile(ctx, job, item, file, categoryPtr, tags, visibility, len(selected), customTitle, customTitlePrefix, customDescription)
 		if importErr != nil {
 			failedCount++
 			lastErr = truncateErr(importErr, 600)
@@ -402,6 +408,8 @@ func (w *Worker) processURLJob(
 	categoryID *int64,
 	tags []string,
 	visibility string,
+	customTitle string,
+	customDescription string,
 	metadataArgs []string,
 	downloadArgs []string,
 ) (*processResult, error) {
@@ -422,7 +430,7 @@ func (w *Worker) processURLJob(
 			return nil, fmt.Errorf("mark import item downloading: %w", err)
 		}
 
-		importErr := w.importURLItem(ctx, job, item, sourceURL, categoryID, tags, visibility, metadataArgs, downloadArgs)
+		importErr := w.importURLItem(ctx, job, item, sourceURL, categoryID, tags, visibility, customTitle, customDescription, metadataArgs, downloadArgs)
 		if importErr != nil {
 			failedCount++
 			lastErr = truncateErr(importErr, 600)
@@ -471,6 +479,8 @@ func (w *Worker) importURLItem(
 	categoryID *int64,
 	tags []string,
 	visibility string,
+	customTitle string,
+	customDescription string,
 	metadataArgs []string,
 	downloadArgs []string,
 ) error {
@@ -517,7 +527,9 @@ func (w *Worker) importURLItem(
 	}
 
 	sourceName := buildURLSourceName(meta.Title, localSourcePath)
-	if err := w.persistImportedVideo(ctx, job, item, localSourcePath, sourceName, categoryID, tags, visibility); err != nil {
+	autoTitle := buildImportVideoTitle(sourceName)
+	finalTitle := chooseURLImportTitle(customTitle, autoTitle)
+	if err := w.persistImportedVideo(ctx, job, item, localSourcePath, sourceName, finalTitle, strings.TrimSpace(customDescription), categoryID, tags, visibility); err != nil {
 		return err
 	}
 
@@ -642,6 +654,10 @@ func (w *Worker) importSelectedFile(
 	categoryID *int64,
 	tags []string,
 	visibility string,
+	selectedTotal int,
+	customTitle string,
+	customTitlePrefix string,
+	customDescription string,
 ) error {
 	tmpDir, err := os.MkdirTemp("", "moevideo-import-file-*")
 	if err != nil {
@@ -678,7 +694,9 @@ func (w *Worker) importSelectedFile(
 		return fmt.Errorf("close local source file: %w", err)
 	}
 
-	return w.persistImportedVideo(ctx, job, item, localSourcePath, item.FilePath, categoryID, tags, visibility)
+	autoTitle := buildImportVideoTitle(item.FilePath)
+	finalTitle := chooseTorrentImportTitle(autoTitle, selectedTotal, customTitle, customTitlePrefix)
+	return w.persistImportedVideo(ctx, job, item, localSourcePath, item.FilePath, finalTitle, strings.TrimSpace(customDescription), categoryID, tags, visibility)
 }
 
 func (w *Worker) persistImportedVideo(
@@ -687,6 +705,8 @@ func (w *Worker) persistImportedVideo(
 	item selectedItem,
 	localSourcePath string,
 	sourcePath string,
+	videoTitle string,
+	videoDescription string,
 	categoryID *int64,
 	tags []string,
 	visibility string,
@@ -725,7 +745,10 @@ func (w *Worker) persistImportedVideo(
 		bucket = w.app.Storage.Bucket()
 	}
 
-	videoTitle := buildImportVideoTitle(sourcePath)
+	if strings.TrimSpace(videoTitle) == "" {
+		videoTitle = buildImportVideoTitle(sourcePath)
+	}
+	videoDescription = strings.TrimSpace(videoDescription)
 	videoID := uuid.NewString()
 	mediaID := uuid.NewString()
 	transcodeJobID := uuid.NewString()
@@ -767,12 +790,13 @@ INSERT INTO videos (
 	id, uploader_id, title, description, category_id, cover_media_id, source_media_id,
 	status, visibility, duration_sec, published_at, views_count, likes_count,
 	favorites_count, comments_count, shares_count, hot_score, created_at, updated_at
-) VALUES (?, ?, ?, '', ?, NULL, ?,
+) VALUES (?, ?, ?, ?, ?, NULL, ?,
 	'processing', ?, ?, NULL, 0, 0,
 	0, 0, 0, 0, ?, ?)`,
 		videoID,
 		job.UserID,
 		videoTitle,
+		videoDescription,
 		categoryID,
 		mediaID,
 		visibility,
@@ -1098,6 +1122,38 @@ func buildImportObjectKey(userID, jobID, itemID, sourcePath string) string {
 
 func buildImportVideoTitle(sourcePath string) string {
 	title := strings.TrimSpace(strings.TrimSuffix(filepath.Base(sourcePath), filepath.Ext(sourcePath)))
+	if title == "" {
+		title = "导入视频"
+	}
+	if len(title) > 120 {
+		title = title[:120]
+	}
+	return title
+}
+
+func chooseURLImportTitle(customTitle string, fallback string) string {
+	title := strings.TrimSpace(customTitle)
+	if title == "" {
+		return fallback
+	}
+	if len(title) > 120 {
+		title = title[:120]
+	}
+	return title
+}
+
+func chooseTorrentImportTitle(autoTitle string, selectedTotal int, customTitle string, customTitlePrefix string) string {
+	title := autoTitle
+	trimmedCustomTitle := strings.TrimSpace(customTitle)
+	trimmedPrefix := strings.TrimSpace(customTitlePrefix)
+
+	switch {
+	case selectedTotal == 1 && trimmedCustomTitle != "":
+		title = trimmedCustomTitle
+	case selectedTotal > 1 && trimmedPrefix != "":
+		title = trimmedPrefix + " - " + autoTitle
+	}
+	title = strings.TrimSpace(title)
 	if title == "" {
 		title = "导入视频"
 	}

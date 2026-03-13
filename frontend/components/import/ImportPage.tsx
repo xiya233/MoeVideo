@@ -115,6 +115,9 @@ export function ImportPage() {
   const [categoryID, setCategoryID] = useState("");
   const [visibility, setVisibility] = useState<"public" | "private" | "unlisted">("public");
   const [tagInput, setTagInput] = useState("");
+  const [importTitle, setImportTitle] = useState("");
+  const [importTitlePrefix, setImportTitlePrefix] = useState("");
+  const [importDescription, setImportDescription] = useState("");
 
   const [inspectPending, setInspectPending] = useState(false);
   const [startPending, setStartPending] = useState(false);
@@ -279,6 +282,9 @@ export function ImportPage() {
         category_id: categoryID ? Number(categoryID) : undefined,
         tags: normalizeTags(tagInput),
         visibility,
+        title: importTitle.trim() || undefined,
+        title_prefix: importTitlePrefix.trim() || undefined,
+        description: importDescription.trim() || undefined,
       });
 
       setActiveJobID(inspectJob.id);
@@ -312,6 +318,8 @@ export function ImportPage() {
         category_id: categoryID ? Number(categoryID) : undefined,
         tags: normalizeTags(tagInput),
         visibility,
+        title: importTitle.trim() || undefined,
+        description: importDescription.trim() || undefined,
       });
       setActiveJobID(result.job_id);
       const detail = await loadJobDetail(result.job_id);
@@ -454,6 +462,28 @@ export function ImportPage() {
                 />
               </label>
 
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">标题（可选）</span>
+                  <input
+                    value={importTitle}
+                    onChange={(event) => setImportTitle(event.target.value)}
+                    placeholder="留空则自动生成标题"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">描述（可选）</span>
+                  <textarea
+                    value={importDescription}
+                    onChange={(event) => setImportDescription(event.target.value)}
+                    rows={3}
+                    placeholder="导入后写入视频描述"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                  />
+                </label>
+              </div>
+
               <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                 <label className="space-y-1">
                   <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">分类</span>
@@ -564,6 +594,44 @@ export function ImportPage() {
                 </tbody>
               </table>
             </div>
+
+            <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-3">
+              <label className="space-y-1 md:col-span-1">
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">单文件标题（可选）</span>
+                <input
+                  value={importTitle}
+                  onChange={(event) => setImportTitle(event.target.value)}
+                  placeholder="仅勾选 1 个文件时生效"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                />
+              </label>
+
+              <label className="space-y-1 md:col-span-1">
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">多文件标题前缀（可选）</span>
+                <input
+                  value={importTitlePrefix}
+                  onChange={(event) => setImportTitlePrefix(event.target.value)}
+                  placeholder="勾选多个时：前缀 - 文件名"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                />
+              </label>
+
+              <label className="space-y-1 md:col-span-1">
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">描述（可选）</span>
+                <input
+                  value={importDescription}
+                  onChange={(event) => setImportDescription(event.target.value)}
+                  placeholder="统一应用到所有勾选视频"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                />
+              </label>
+            </div>
+
+            <p className="mt-2 text-xs text-slate-500">
+              {selectedCount <= 1
+                ? "当前为单文件模式：若填写“单文件标题”会覆盖自动标题。"
+                : "当前为多文件模式：若填写“多文件标题前缀”，标题将按“前缀 - 文件名”生成。"}
+            </p>
 
             <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-3">
               <label className="space-y-1">

@@ -2,16 +2,18 @@
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
 import { AppIcon, type IconName } from "@/components/common/AppIcon";
 import { AuthorInline } from "@/components/common/AuthorInline";
 import { EmptyState } from "@/components/common/EmptyState";
 import { AvatarCropDialog } from "@/components/me/AvatarCropDialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { ContinueWatchingItem, UploadCompleteData, UploadTicket, UserBrief, VideoCard } from "@/lib/dto";
 import {
   mapContinueWatchingItem,
+  mapVideoDetail,
   mapUploadCompleteData,
   mapUploadTicket,
   mapUserBrief,
@@ -98,7 +100,29 @@ function videoStatusClass(status?: string): string {
   return "bg-slate-100 text-slate-600";
 }
 
-function VideoGridCard({ video, showStatus = false }: { video: VideoCard; showStatus?: boolean }) {
+function parseVideoTagsInput(input: string): string[] {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const raw of input.split(",")) {
+    const tag = raw.trim();
+    if (!tag || seen.has(tag)) {
+      continue;
+    }
+    seen.add(tag);
+    tags.push(tag.slice(0, 32));
+  }
+  return tags;
+}
+
+function VideoGridCard({
+  video,
+  showStatus = false,
+  onEdit,
+}: {
+  video: VideoCard;
+  showStatus?: boolean;
+  onEdit?: (video: VideoCard) => void;
+}) {
   return (
     <article className="group flex flex-col gap-3">
       <Link href={`/videos/${video.id}`} className="relative aspect-video overflow-hidden rounded-xl shadow-md">
@@ -161,6 +185,17 @@ function VideoGridCard({ video, showStatus = false }: { video: VideoCard; showSt
           />
           <span className="ml-auto text-[11px]">{video.category || "未分类"}</span>
         </div>
+        {onEdit ? (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => onEdit(video)}
+              className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 transition-colors hover:border-primary/30 hover:text-primary"
+            >
+              编辑视频信息
+            </button>
+          </div>
+        ) : null}
       </div>
     </article>
   );
@@ -205,6 +240,12 @@ export function MePage() {
   const [publicFollowersInput, setPublicFollowersInput] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState("");
+  const [editingVideo, setEditingVideo] = useState<VideoCard | null>(null);
+  const [editVideoTitle, setEditVideoTitle] = useState("");
+  const [editVideoDescription, setEditVideoDescription] = useState("");
+  const [editVideoTagsInput, setEditVideoTagsInput] = useState("");
+  const [editVideoLoading, setEditVideoLoading] = useState(false);
+  const [editVideoError, setEditVideoError] = useState("");
 
   const meQuery = useQuery({
     queryKey: ["me-profile"],
@@ -447,6 +488,59 @@ export function MePage() {
     },
   });
 
+  const openVideoEditDialog = useCallback(
+    async (video: VideoCard) => {
+      setEditingVideo(video);
+      setEditVideoTitle(video.title);
+      setEditVideoDescription("");
+      setEditVideoTagsInput("");
+      setEditVideoError("");
+      setEditVideoLoading(true);
+      try {
+        const detailRaw = await meApi.getMyVideoDetail(request, video.id);
+        const detail = mapVideoDetail(detailRaw);
+        setEditVideoTitle(detail.video.title || video.title);
+        setEditVideoDescription(detail.description || "");
+        setEditVideoTagsInput((detail.tags ?? []).join(", "));
+      } catch (error) {
+        setEditVideoError(error instanceof Error ? error.message : "加载视频详情失败");
+      } finally {
+        setEditVideoLoading(false);
+      }
+    },
+    [request],
+  );
+
+  const closeVideoEditDialog = useCallback(() => {
+    setEditingVideo(null);
+    setEditVideoError("");
+    setEditVideoLoading(false);
+  }, []);
+
+  const updateVideoMutation = useMutation({
+    mutationFn: async () => {
+      if (!editingVideo) {
+        return;
+      }
+      const title = editVideoTitle.trim();
+      if (!title) {
+        throw new Error("标题不能为空");
+      }
+      await meApi.updateMyVideo(request, editingVideo.id, {
+        title,
+        description: editVideoDescription.trim(),
+        tags: parseVideoTagsInput(editVideoTagsInput),
+      });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["me-videos"] });
+      closeVideoEditDialog();
+    },
+    onError: (error) => {
+      setEditVideoError(error instanceof Error ? error.message : "更新视频信息失败");
+    },
+  });
+
   const myVideos = useMemo(
     () => videosQuery.data?.pages.flatMap((page) => page.items ?? []) ?? [],
     [videosQuery.data?.pages],
@@ -559,7 +653,7 @@ export function MePage() {
           ) : (
             <div className="grid grid-cols-1 gap-x-6 gap-y-10 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
               {myVideos.map((video) => (
-                <VideoGridCard key={video.id} video={video} showStatus />
+                <VideoGridCard key={video.id} video={video} showStatus onEdit={(item) => void openVideoEditDialog(item)} />
               ))}
             </div>
           )}
@@ -909,6 +1003,68 @@ export function MePage() {
           </div>
         </section>
       ) : null}
+
+      <Dialog open={!!editingVideo} onOpenChange={(open) => (!open ? closeVideoEditDialog() : null)}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>编辑视频信息</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">标题</label>
+              <input
+                value={editVideoTitle}
+                onChange={(event) => setEditVideoTitle(event.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                placeholder="请输入视频标题"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">描述</label>
+              <textarea
+                value={editVideoDescription}
+                onChange={(event) => setEditVideoDescription(event.target.value)}
+                rows={5}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                placeholder="请输入视频描述"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">标签（逗号分隔）</label>
+              <input
+                value={editVideoTagsInput}
+                onChange={(event) => setEditVideoTagsInput(event.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                placeholder="例如：动漫,二创"
+              />
+            </div>
+
+            {editVideoLoading ? <p className="text-xs text-slate-500">正在加载当前视频详情...</p> : null}
+            {editVideoError ? <p className="text-xs text-rose-600">{editVideoError}</p> : null}
+          </div>
+
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => closeVideoEditDialog()}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:border-primary/30 hover:text-primary"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={() => updateVideoMutation.mutate()}
+              disabled={editVideoLoading || updateVideoMutation.isPending}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {updateVideoMutation.isPending ? "保存中..." : "保存"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AvatarCropDialog
         open={avatarCropOpen}
