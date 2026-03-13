@@ -61,6 +61,7 @@ func RegisterRoutes(api fiber.Router, a *app.App) {
 
 	api.Post("/imports/torrent/inspect", middleware.RequireAuth(a), h.InspectTorrentImport)
 	api.Post("/imports/torrent/start", middleware.RequireAuth(a), h.StartTorrentImport)
+	api.Post("/imports/url/start", middleware.RequireAuth(a), h.StartURLImport)
 	api.Get("/imports", middleware.RequireAuth(a), h.ListImportJobs)
 	api.Get("/imports/:jobId", middleware.RequireAuth(a), h.GetImportJobDetail)
 

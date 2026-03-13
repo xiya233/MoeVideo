@@ -313,6 +313,8 @@ export function mapContinueWatchingItem(value: unknown): ContinueWatchingItem {
 
 export function mapImportJob(value: unknown): ImportJob {
   const src = obj(value);
+  const sourceTypeRaw = str(src.source_type);
+  const sourceType: ImportJob["source_type"] = sourceTypeRaw === "url" ? "url" : "torrent";
   const statusRaw = str(src.status);
   const status: ImportJob["status"] =
     statusRaw === "queued" ||
@@ -328,9 +330,12 @@ export function mapImportJob(value: unknown): ImportJob {
 
   return {
     id: str(src.id),
-    source_type: "torrent",
-    source_filename: str(src.source_filename),
-    info_hash: str(src.info_hash),
+    source_type: sourceType,
+    source_filename: str(src.source_filename) || undefined,
+    info_hash: str(src.info_hash) || undefined,
+    source_url: str(src.source_url) || undefined,
+    resolved_media_url: str(src.resolved_media_url) || undefined,
+    resolver_name: str(src.resolver_name) || undefined,
     status,
     category_id: num(src.category_id) || undefined,
     tags: arr(src.tags).map((item) => str(item)).filter(Boolean),

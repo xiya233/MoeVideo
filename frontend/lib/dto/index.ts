@@ -156,9 +156,12 @@ export type ImportItemStatus = "pending" | "downloading" | "completed" | "failed
 
 export type ImportJob = {
   id: string;
-  source_type: "torrent";
-  source_filename: string;
-  info_hash: string;
+  source_type: "torrent" | "url";
+  source_filename?: string;
+  info_hash?: string;
+  source_url?: string;
+  resolved_media_url?: string;
+  resolver_name?: string;
   status: ImportJobStatus;
   category_id?: number;
   tags: string[];

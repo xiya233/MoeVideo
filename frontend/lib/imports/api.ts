@@ -41,6 +41,22 @@ export const importsApi = {
     });
   },
 
+  startURL(
+    request: ApiRequest,
+    payload: {
+      url: string;
+      category_id?: number;
+      tags?: string[];
+      visibility?: "public" | "private" | "unlisted";
+    },
+  ) {
+    return request<{ job_id: string; status: "queued"; selected_files: number }>("/imports/url/start", {
+      method: "POST",
+      auth: true,
+      body: payload,
+    });
+  },
+
   listJobs(request: ApiRequest, params: { cursor?: string; limit?: number }) {
     return request<ImportJobsData>(`/imports${buildQuery(params)}`, { auth: true });
   },

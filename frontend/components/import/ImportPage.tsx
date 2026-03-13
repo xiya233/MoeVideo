@@ -95,6 +95,10 @@ function itemStatusLabel(status: ImportItem["status"]): string {
   }
 }
 
+function importJobTitle(job: ImportJob): string {
+  return job.source_filename?.trim() || job.source_url?.trim() || "导入任务";
+}
+
 export function ImportPage() {
   const { ready, session, openAuthDialog, request } = useAuth();
 
@@ -102,6 +106,8 @@ export function ImportPage() {
   const [loadingCategories, setLoadingCategories] = useState(false);
 
   const [torrentFile, setTorrentFile] = useState<File | null>(null);
+  const [importMode, setImportMode] = useState<"torrent" | "url">("torrent");
+  const [urlInput, setURLInput] = useState("");
   const [inspectJob, setInspectJob] = useState<ImportJob | null>(null);
   const [inspectItems, setInspectItems] = useState<ImportItem[]>([]);
   const [selectedIndexes, setSelectedIndexes] = useState<Set<number>>(new Set());
@@ -112,8 +118,10 @@ export function ImportPage() {
 
   const [inspectPending, setInspectPending] = useState(false);
   const [startPending, setStartPending] = useState(false);
+  const [urlPending, setURLPending] = useState(false);
   const [inspectError, setInspectError] = useState("");
   const [startError, setStartError] = useState("");
+  const [urlError, setURLError] = useState("");
 
   const [activeJobID, setActiveJobID] = useState("");
   const [activeJobDetail, setActiveJobDetail] = useState<ImportJobDetailData | null>(null);
@@ -219,6 +227,7 @@ export function ImportPage() {
     setInspectPending(true);
     setInspectError("");
     setStartError("");
+    setURLError("");
 
     try {
       const base64 = await readFileAsBase64(torrentFile);
@@ -261,6 +270,7 @@ export function ImportPage() {
 
     setStartPending(true);
     setStartError("");
+    setURLError("");
 
     try {
       await importsApi.startTorrent(request, {
@@ -281,6 +291,40 @@ export function ImportPage() {
       setStartError(err instanceof Error ? err.message : "开始导入失败");
     } finally {
       setStartPending(false);
+    }
+  };
+
+  const onStartURLImport = async () => {
+    const trimmedURL = urlInput.trim();
+    if (!trimmedURL) {
+      setURLError("请输入视频页面 URL");
+      return;
+    }
+
+    setURLPending(true);
+    setURLError("");
+    setInspectError("");
+    setStartError("");
+
+    try {
+      const result = await importsApi.startURL(request, {
+        url: trimmedURL,
+        category_id: categoryID ? Number(categoryID) : undefined,
+        tags: normalizeTags(tagInput),
+        visibility,
+      });
+      setActiveJobID(result.job_id);
+      const detail = await loadJobDetail(result.job_id);
+      if (isJobActive(detail.job.status)) {
+        openPolling(result.job_id);
+      } else {
+        stopPolling();
+      }
+      await loadJobs();
+    } catch (err) {
+      setURLError(err instanceof Error ? err.message : "URL 导入失败");
+    } finally {
+      setURLPending(false);
     }
   };
 
@@ -321,7 +365,7 @@ export function ImportPage() {
   if (!session) {
     return (
       <div className="mx-auto w-full max-w-6xl rounded-xl border border-primary/10 bg-white p-10 shadow-sm">
-        <EmptyState title="请先登录后再导入" description="导入视频需要登录态，登录后可提交 BT 种子任务。" />
+        <EmptyState title="请先登录后再导入" description="导入视频需要登录态，登录后可提交 URL 或 BT 种子任务。" />
         <div className="mt-6 flex justify-center">
           <button
             type="button"
@@ -342,38 +386,134 @@ export function ImportPage() {
           <AppIcon name="input" className="text-primary" />
           <h1 className="text-xl font-bold text-slate-900">导入视频</h1>
         </div>
-        <p className="text-sm text-slate-500">上传 BT 种子后先解析文件列表，再勾选要导入的视频，系统会自动转码发布。</p>
+        <p className="text-sm text-slate-500">支持 URL 或 BT 种子导入，系统会自动下载后进入现有转码发布流程。</p>
 
-        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
-          <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-dashed border-primary/30 bg-primary/5 px-4 py-3 text-sm text-slate-700 transition hover:bg-primary/10">
-            <AppIcon name="upload" size={18} className="text-primary" />
-            <span className="truncate">{torrentFile ? torrentFile.name : "选择 .torrent 文件"}</span>
-            <input
-              type="file"
-              accept=".torrent,application/x-bittorrent"
-              className="hidden"
-              onChange={(event) => {
-                const file = event.target.files?.[0] ?? null;
-                setTorrentFile(file);
-                setInspectError("");
-              }}
-            />
-          </label>
-
+        <div className="mt-5 flex items-center gap-2">
           <button
             type="button"
-            onClick={() => void onInspectTorrent()}
-            disabled={inspectPending || !torrentFile}
-            className="rounded-xl bg-primary px-5 py-3 text-sm font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={() => setImportMode("url")}
+            className={cn(
+              "rounded-full px-4 py-1.5 text-xs font-semibold transition",
+              importMode === "url" ? "bg-primary text-white" : "bg-slate-100 text-slate-600 hover:text-slate-900",
+            )}
           >
-            {inspectPending ? "解析中..." : "解析种子"}
+            URL 导入
+          </button>
+          <button
+            type="button"
+            onClick={() => setImportMode("torrent")}
+            className={cn(
+              "rounded-full px-4 py-1.5 text-xs font-semibold transition",
+              importMode === "torrent" ? "bg-primary text-white" : "bg-slate-100 text-slate-600 hover:text-slate-900",
+            )}
+          >
+            BT 种子导入
           </button>
         </div>
 
-        {inspectError ? <p className="mt-3 text-sm text-rose-600">{inspectError}</p> : null}
+        {importMode === "torrent" ? (
+          <>
+            <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
+              <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-dashed border-primary/30 bg-primary/5 px-4 py-3 text-sm text-slate-700 transition hover:bg-primary/10">
+                <AppIcon name="upload" size={18} className="text-primary" />
+                <span className="truncate">{torrentFile ? torrentFile.name : "选择 .torrent 文件"}</span>
+                <input
+                  type="file"
+                  accept=".torrent,application/x-bittorrent"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null;
+                    setTorrentFile(file);
+                    setInspectError("");
+                  }}
+                />
+              </label>
+
+              <button
+                type="button"
+                onClick={() => void onInspectTorrent()}
+                disabled={inspectPending || !torrentFile}
+                className="rounded-xl bg-primary px-5 py-3 text-sm font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {inspectPending ? "解析中..." : "解析种子"}
+              </button>
+            </div>
+
+            {inspectError ? <p className="mt-3 text-sm text-rose-600">{inspectError}</p> : null}
+          </>
+        ) : (
+          <>
+            <div className="mt-6 space-y-4">
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">视频 URL</span>
+                <input
+                  value={urlInput}
+                  onChange={(event) => setURLInput(event.target.value)}
+                  placeholder="https://example.com/video/123"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                />
+              </label>
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">分类</span>
+                  <select
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                    value={categoryID}
+                    onChange={(event) => setCategoryID(event.target.value)}
+                    disabled={loadingCategories}
+                  >
+                    <option value="">不指定</option>
+                    {categories.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">可见性</span>
+                  <select
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                    value={visibility}
+                    onChange={(event) => setVisibility(event.target.value as "public" | "private" | "unlisted")}
+                  >
+                    <option value="public">公开</option>
+                    <option value="unlisted">非公开列表</option>
+                    <option value="private">仅自己可见</option>
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">标签（逗号分隔）</span>
+                  <input
+                    value={tagInput}
+                    onChange={(event) => setTagInput(event.target.value)}
+                    placeholder="例如：动漫,二创"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                  />
+                </label>
+              </div>
+
+              {urlError ? <p className="text-sm text-rose-600">{urlError}</p> : null}
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => void onStartURLImport()}
+                  disabled={urlPending}
+                  className="rounded-xl bg-primary px-5 py-2 text-sm font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {urlPending ? "提交中..." : "开始导入"}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </section>
 
-      <section className="rounded-2xl border border-primary/10 bg-white p-6 shadow-sm md:p-8">
+      {importMode === "torrent" ? (
+        <section className="rounded-2xl border border-primary/10 bg-white p-6 shadow-sm md:p-8">
         <div className="mb-4 flex items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-bold text-slate-900">Step 2. 勾选导入与发布设置</h2>
@@ -499,7 +639,8 @@ export function ImportPage() {
             </div>
           </>
         )}
-      </section>
+        </section>
+      ) : null}
 
       <section className="rounded-2xl border border-primary/10 bg-white p-6 shadow-sm md:p-8">
         <div className="mb-4 flex items-center justify-between gap-3">
@@ -529,8 +670,12 @@ export function ImportPage() {
         ) : (
           <>
             <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
-              <p className="text-sm font-medium text-slate-700">{activeDetail.job.source_filename}</p>
-              <p className="mt-1 text-xs text-slate-500">InfoHash: {activeDetail.job.info_hash}</p>
+              <p className="text-sm font-medium text-slate-700">{importJobTitle(activeDetail.job)}</p>
+              {activeDetail.job.source_type === "torrent" && activeDetail.job.info_hash ? (
+                <p className="mt-1 text-xs text-slate-500">InfoHash: {activeDetail.job.info_hash}</p>
+              ) : activeDetail.job.source_url ? (
+                <p className="mt-1 truncate text-xs text-slate-500">URL: {activeDetail.job.source_url}</p>
+              ) : null}
               <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200">
                 <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, Math.max(0, activeDetail.job.progress))}%` }} />
               </div>
@@ -596,7 +741,7 @@ export function ImportPage() {
                 }}
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-slate-800">{job.source_filename}</p>
+                  <p className="truncate text-sm font-medium text-slate-800">{importJobTitle(job)}</p>
                   <p className="mt-1 text-xs text-slate-500">
                     {job.completed_files}/{job.selected_files} 完成 · 失败 {job.failed_files}
                   </p>

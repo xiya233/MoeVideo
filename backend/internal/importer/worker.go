@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -194,16 +195,18 @@ type processResult struct {
 func (w *Worker) processJob(ctx context.Context, job claimedJob) (*processResult, error) {
 	var (
 		jobUserID   string
+		sourceType  string
 		torrentData []byte
+		sourceURL   sql.NullString
 		categoryID  sql.NullInt64
 		tagsJSON    string
 		visibility  string
 	)
 	err := w.app.DB.QueryRowContext(ctx, `
-SELECT user_id, torrent_data, category_id, tags_json, visibility
+SELECT user_id, source_type, torrent_data, source_url, category_id, tags_json, visibility
 FROM video_import_jobs
 WHERE id = ?
-LIMIT 1`, job.ID).Scan(&jobUserID, &torrentData, &categoryID, &tagsJSON, &visibility)
+LIMIT 1`, job.ID).Scan(&jobUserID, &sourceType, &torrentData, &sourceURL, &categoryID, &tagsJSON, &visibility)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, permanentError{err: fmt.Errorf("import job %s not found", job.ID)}
@@ -238,6 +241,24 @@ ORDER BY file_index ASC`, job.ID)
 	}
 	if len(selected) == 0 {
 		return nil, permanentError{err: fmt.Errorf("import job %s has no selected files", job.ID)}
+	}
+
+	var categoryPtr *int64
+	if categoryID.Valid {
+		v := categoryID.Int64
+		categoryPtr = &v
+	}
+
+	switch sourceType {
+	case "url":
+		return w.processURLJob(ctx, job, selected, strings.TrimSpace(sourceURL.String), categoryPtr, tags, visibility)
+	case "torrent":
+	default:
+		return nil, permanentError{err: fmt.Errorf("import job %s has unsupported source_type: %s", job.ID, sourceType)}
+	}
+
+	if len(torrentData) == 0 {
+		return nil, permanentError{err: fmt.Errorf("import job %s has empty torrent payload", job.ID)}
 	}
 
 	tmpDir, err := os.MkdirTemp("", "moevideo-import-*")
@@ -284,12 +305,6 @@ ORDER BY file_index ASC`, job.ID)
 	files := tor.Files()
 	if len(files) == 0 {
 		return nil, permanentError{err: fmt.Errorf("torrent has no files")}
-	}
-
-	var categoryPtr *int64
-	if categoryID.Valid {
-		v := categoryID.Int64
-		categoryPtr = &v
 	}
 
 	completedCount := 0
@@ -354,6 +369,253 @@ ORDER BY file_index ASC`, job.ID)
 	}, nil
 }
 
+type ytDLPMetadata struct {
+	Title              string  `json:"title"`
+	Duration           float64 `json:"duration"`
+	URL                string  `json:"url"`
+	WebpageURL         string  `json:"webpage_url"`
+	Extractor          string  `json:"extractor"`
+	ExtractorKey       string  `json:"extractor_key"`
+	Filesize           int64   `json:"filesize"`
+	FilesizeApprox     int64   `json:"filesize_approx"`
+	RequestedDownloads []struct {
+		URL string `json:"url"`
+	} `json:"requested_downloads"`
+}
+
+func (w *Worker) processURLJob(
+	ctx context.Context,
+	job claimedJob,
+	selected []selectedItem,
+	sourceURL string,
+	categoryID *int64,
+	tags []string,
+	visibility string,
+) (*processResult, error) {
+	if strings.TrimSpace(sourceURL) == "" && len(selected) > 0 {
+		sourceURL = strings.TrimSpace(selected[0].FilePath)
+	}
+	if strings.TrimSpace(sourceURL) == "" {
+		return nil, permanentError{err: fmt.Errorf("import job %s has empty source_url", job.ID)}
+	}
+
+	completedCount := 0
+	failedCount := 0
+	lastErr := ""
+	selectedTotal := len(selected)
+
+	for _, item := range selected {
+		if err := w.markItemStatus(ctx, item.ID, "downloading", "", "", ""); err != nil {
+			return nil, fmt.Errorf("mark import item downloading: %w", err)
+		}
+
+		importErr := w.importURLItem(ctx, job, item, sourceURL, categoryID, tags, visibility)
+		if importErr != nil {
+			failedCount++
+			lastErr = truncateErr(importErr, 600)
+			_ = w.markItemStatus(ctx, item.ID, "failed", lastErr, "", "")
+			_ = w.updateJobProgress(ctx, job.ID, completedCount, failedCount, selectedTotal)
+			continue
+		}
+
+		completedCount++
+		if err := w.updateJobProgress(ctx, job.ID, completedCount, failedCount, selectedTotal); err != nil {
+			return nil, fmt.Errorf("update import job progress: %w", err)
+		}
+	}
+
+	status := "failed"
+	switch {
+	case completedCount > 0 && failedCount == 0:
+		status = "succeeded"
+		lastErr = ""
+	case completedCount > 0 && failedCount > 0:
+		status = "partial"
+		if lastErr == "" {
+			lastErr = "some files failed to import"
+		}
+	default:
+		status = "failed"
+		if lastErr == "" {
+			lastErr = "all selected files failed to import"
+		}
+	}
+
+	return &processResult{
+		Status:        status,
+		Completed:     completedCount,
+		Failed:        failedCount,
+		SelectedTotal: selectedTotal,
+		ErrorMessage:  lastErr,
+	}, nil
+}
+
+func (w *Worker) importURLItem(
+	ctx context.Context,
+	job claimedJob,
+	item selectedItem,
+	sourceURL string,
+	categoryID *int64,
+	tags []string,
+	visibility string,
+) error {
+	sourceURL = strings.TrimSpace(sourceURL)
+	if sourceURL == "" {
+		return permanentError{err: fmt.Errorf("source_url is required")}
+	}
+
+	meta, err := w.extractURLMetadata(ctx, sourceURL)
+	if err != nil {
+		return err
+	}
+	if w.app.Config.ImportURLMaxDur > 0 && meta.Duration > 0 && int64(meta.Duration) > w.app.Config.ImportURLMaxDur {
+		return permanentError{err: fmt.Errorf("video duration exceeds limit (%ds)", w.app.Config.ImportURLMaxDur)}
+	}
+	metaSize := meta.Filesize
+	if metaSize <= 0 {
+		metaSize = meta.FilesizeApprox
+	}
+	if w.app.Config.ImportURLMaxFile > 0 && metaSize > 0 && metaSize > w.app.Config.ImportURLMaxFile {
+		return permanentError{err: fmt.Errorf("video file size exceeds limit (%d MB)", w.app.Config.ImportURLMaxFile/1024/1024)}
+	}
+
+	tmpDir, err := os.MkdirTemp("", "moevideo-import-url-*")
+	if err != nil {
+		return fmt.Errorf("create import temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	localSourcePath, err := w.downloadURLSource(ctx, sourceURL, tmpDir)
+	if err != nil {
+		return err
+	}
+
+	stat, err := os.Stat(localSourcePath)
+	if err != nil {
+		return fmt.Errorf("stat downloaded file: %w", err)
+	}
+	if stat.Size() <= 0 {
+		return permanentError{err: fmt.Errorf("downloaded file is empty")}
+	}
+	if w.app.Config.ImportURLMaxFile > 0 && stat.Size() > w.app.Config.ImportURLMaxFile {
+		return permanentError{err: fmt.Errorf("video file size exceeds limit (%d MB)", w.app.Config.ImportURLMaxFile/1024/1024)}
+	}
+
+	sourceName := buildURLSourceName(meta.Title, localSourcePath)
+	if err := w.persistImportedVideo(ctx, job, item, localSourcePath, sourceName, categoryID, tags, visibility); err != nil {
+		return err
+	}
+
+	resolvedMediaURL := strings.TrimSpace(meta.URL)
+	if resolvedMediaURL == "" && len(meta.RequestedDownloads) > 0 {
+		resolvedMediaURL = strings.TrimSpace(meta.RequestedDownloads[0].URL)
+	}
+	resolverName := strings.TrimSpace(meta.ExtractorKey)
+	if resolverName == "" {
+		resolverName = strings.TrimSpace(meta.Extractor)
+	}
+	resolverMetaJSON, _ := json.Marshal(map[string]interface{}{
+		"title":        strings.TrimSpace(meta.Title),
+		"duration_sec": int64(meta.Duration),
+		"webpage_url":  strings.TrimSpace(meta.WebpageURL),
+	})
+	if err := w.updateURLResolverFields(
+		ctx,
+		job.ID,
+		buildImportVideoTitle(sourceName),
+		resolvedMediaURL,
+		resolverName,
+		string(resolverMetaJSON),
+	); err != nil {
+		return fmt.Errorf("update url resolver fields: %w", err)
+	}
+	return nil
+}
+
+func (w *Worker) extractURLMetadata(ctx context.Context, sourceURL string) (ytDLPMetadata, error) {
+	timeout := w.app.Config.ImportURLTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(runCtx, w.app.Config.YTDLPBin, "--dump-single-json", "--no-playlist", "--no-warnings", sourceURL)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if runCtx.Err() == context.DeadlineExceeded {
+			return ytDLPMetadata{}, fmt.Errorf("yt-dlp metadata timeout")
+		}
+		return ytDLPMetadata{}, fmt.Errorf("yt-dlp metadata failed: %w: %s", err, truncateOutput(out, 400))
+	}
+
+	var meta ytDLPMetadata
+	if err := json.Unmarshal(out, &meta); err != nil {
+		return ytDLPMetadata{}, permanentError{err: fmt.Errorf("parse yt-dlp metadata: %w", err)}
+	}
+	return meta, nil
+}
+
+func (w *Worker) downloadURLSource(ctx context.Context, sourceURL, tmpDir string) (string, error) {
+	timeout := w.app.Config.ImportURLTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	outputTemplate := filepath.Join(tmpDir, "source.%(ext)s")
+	cmd := exec.CommandContext(
+		runCtx,
+		w.app.Config.YTDLPBin,
+		"--no-playlist",
+		"--no-progress",
+		"--no-warnings",
+		"--restrict-filenames",
+		"-o", outputTemplate,
+		sourceURL,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if runCtx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("yt-dlp download timeout")
+		}
+		return "", fmt.Errorf("yt-dlp download failed: %w: %s", err, truncateOutput(out, 400))
+	}
+
+	matches, err := filepath.Glob(filepath.Join(tmpDir, "source.*"))
+	if err != nil {
+		return "", fmt.Errorf("resolve downloaded file: %w", err)
+	}
+	var localSourcePath string
+	for _, candidate := range matches {
+		info, statErr := os.Stat(candidate)
+		if statErr != nil || info.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(candidate, ".part") || strings.HasSuffix(candidate, ".tmp") {
+			continue
+		}
+		if localSourcePath == "" {
+			localSourcePath = candidate
+			continue
+		}
+		prev, prevErr := os.Stat(localSourcePath)
+		if prevErr == nil && info.Size() > prev.Size() {
+			localSourcePath = candidate
+		}
+	}
+	if localSourcePath == "" {
+		return "", permanentError{err: fmt.Errorf("yt-dlp did not produce a media file")}
+	}
+
+	ext := strings.ToLower(filepath.Ext(localSourcePath))
+	if _, ok := allowedImportVideoExts[ext]; !ok {
+		return "", permanentError{err: fmt.Errorf("downloaded format is not supported: %s", ext)}
+	}
+	return localSourcePath, nil
+}
+
 func (w *Worker) importSelectedFile(
 	ctx context.Context,
 	job claimedJob,
@@ -398,15 +660,36 @@ func (w *Worker) importSelectedFile(
 		return fmt.Errorf("close local source file: %w", err)
 	}
 
+	return w.persistImportedVideo(ctx, job, item, localSourcePath, item.FilePath, categoryID, tags, visibility)
+}
+
+func (w *Worker) persistImportedVideo(
+	ctx context.Context,
+	job claimedJob,
+	item selectedItem,
+	localSourcePath string,
+	sourcePath string,
+	categoryID *int64,
+	tags []string,
+	visibility string,
+) error {
 	stat, err := os.Stat(localSourcePath)
 	if err != nil {
 		return fmt.Errorf("stat local source file: %w", err)
 	}
 	if stat.Size() <= 0 {
-		return fmt.Errorf("downloaded file is empty")
+		return permanentError{err: fmt.Errorf("downloaded file is empty")}
 	}
 
-	objectKey := buildImportObjectKey(job.UserID, job.ID, item.ID, item.FilePath)
+	ext := strings.ToLower(filepath.Ext(sourcePath))
+	if ext == "" {
+		ext = strings.ToLower(filepath.Ext(localSourcePath))
+	}
+	if ext == "" {
+		ext = ".mp4"
+	}
+
+	objectKey := buildImportObjectKey(job.UserID, job.ID, item.ID, sourcePath)
 	contentType := videoMIMEByExtension(ext)
 	if err := w.app.Storage.UploadFile(ctx, objectKey, contentType, localSourcePath); err != nil {
 		return fmt.Errorf("upload imported file: %w", err)
@@ -424,7 +707,7 @@ func (w *Worker) importSelectedFile(
 		bucket = w.app.Storage.Bucket()
 	}
 
-	videoTitle := buildImportVideoTitle(item.FilePath)
+	videoTitle := buildImportVideoTitle(sourcePath)
 	videoID := uuid.NewString()
 	mediaID := uuid.NewString()
 	transcodeJobID := uuid.NewString()
@@ -448,7 +731,7 @@ INSERT INTO media_objects (
 		provider,
 		nullableString(bucket),
 		objectKey,
-		filepath.Base(item.FilePath),
+		filepath.Base(sourcePath),
 		contentType,
 		stat.Size(),
 		durationSec,
@@ -506,11 +789,13 @@ INSERT INTO video_transcode_jobs (
 	_, err = tx.ExecContext(ctx, `
 UPDATE video_import_items
 SET status = 'completed',
+	file_path = ?,
+	file_size_bytes = ?,
 	error_message = NULL,
 	media_object_id = ?,
 	video_id = ?,
 	updated_at = ?
-WHERE id = ?`, mediaID, videoID, now, item.ID)
+WHERE id = ?`, sourcePath, stat.Size(), mediaID, videoID, now, item.ID)
 	if err != nil {
 		return fmt.Errorf("update import item completed: %w", err)
 	}
@@ -536,6 +821,25 @@ WHERE id = ?`,
 		nullableString(videoID),
 		nowString(),
 		itemID,
+	)
+	return err
+}
+
+func (w *Worker) updateURLResolverFields(ctx context.Context, jobID, sourceFilename, resolvedMediaURL, resolverName, resolverMetaJSON string) error {
+	_, err := w.app.DB.ExecContext(ctx, `
+UPDATE video_import_jobs
+SET source_filename = COALESCE(NULLIF(?, ''), source_filename),
+	resolved_media_url = COALESCE(NULLIF(?, ''), resolved_media_url),
+	resolver_name = COALESCE(NULLIF(?, ''), resolver_name),
+	resolver_meta_json = COALESCE(NULLIF(?, ''), resolver_meta_json),
+	updated_at = ?
+WHERE id = ?`,
+		sourceFilename,
+		resolvedMediaURL,
+		resolverName,
+		resolverMetaJSON,
+		nowString(),
+		jobID,
 	)
 	return err
 }
@@ -644,6 +948,19 @@ func (e permanentError) Unwrap() error {
 }
 
 var importUnsafeChars = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+var allowedImportVideoExts = map[string]struct{}{
+	".mp4":  {},
+	".mov":  {},
+	".avi":  {},
+	".webm": {},
+	".mkv":  {},
+	".flv":  {},
+	".mpeg": {},
+	".mpg":  {},
+	".3gp":  {},
+	".m4v":  {},
+	".ts":   {},
+}
 
 func buildImportObjectKey(userID, jobID, itemID, sourcePath string) string {
 	ext := strings.ToLower(filepath.Ext(sourcePath))
@@ -672,6 +989,29 @@ func buildImportVideoTitle(sourcePath string) string {
 		title = title[:120]
 	}
 	return title
+}
+
+func buildURLSourceName(title, localPath string) string {
+	ext := strings.ToLower(filepath.Ext(localPath))
+	if ext == "" {
+		ext = ".mp4"
+	}
+	base := strings.TrimSpace(title)
+	if base == "" {
+		base = strings.TrimSpace(strings.TrimSuffix(filepath.Base(localPath), filepath.Ext(localPath)))
+	}
+	if base == "" {
+		base = "导入视频"
+	}
+	base = importUnsafeChars.ReplaceAllString(base, "-")
+	base = strings.Trim(base, "-._")
+	if base == "" {
+		base = "video"
+	}
+	if len(base) > 120 {
+		base = base[:120]
+	}
+	return base + ext
 }
 
 func videoMIMEByExtension(ext string) string {
@@ -780,6 +1120,28 @@ func nowString() string {
 
 func truncateErr(err error, limit int) string {
 	msg := strings.TrimSpace(err.Error())
+	if limit <= 0 || len(msg) <= limit {
+		return msg
+	}
+	if limit < 120 {
+		return msg[len(msg)-limit:]
+	}
+	head := limit / 3
+	if head > 320 {
+		head = 320
+	}
+	tail := limit - head - 20
+	if tail < 80 {
+		tail = 80
+	}
+	if tail > len(msg) {
+		tail = len(msg)
+	}
+	return msg[:head] + "\n...[truncated]...\n" + msg[len(msg)-tail:]
+}
+
+func truncateOutput(out []byte, limit int) string {
+	msg := strings.TrimSpace(string(out))
 	if limit <= 0 || len(msg) <= limit {
 		return msg
 	}

@@ -22,12 +22,16 @@ type Config struct {
 	UploadURLExpires time.Duration
 	FFmpegBin        string
 	FFprobeBin       string
+	YTDLPBin         string
 	TranscodePoll    time.Duration
 	TranscodeMaxTry  int
 	ImportPoll       time.Duration
 	ImportMaxTry     int
 	ImportTorrentMax int64
 	ImportMaxFiles   int
+	ImportURLTimeout time.Duration
+	ImportURLMaxDur  int64
+	ImportURLMaxFile int64
 
 	S3Bucket          string
 	S3Region          string
@@ -57,6 +61,7 @@ func Load() (Config, error) {
 		S3PublicBaseURL:   strings.TrimRight(getEnv("S3_PUBLIC_BASE_URL", ""), "/"),
 		FFmpegBin:         getEnv("FFMPEG_BIN", "ffmpeg"),
 		FFprobeBin:        getEnv("FFPROBE_BIN", "ffprobe"),
+		YTDLPBin:          getEnv("YTDLP_BIN", "yt-dlp"),
 	}
 
 	accessTTL, err := time.ParseDuration(getEnv("ACCESS_TOKEN_TTL", "15m"))
@@ -124,6 +129,33 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("IMPORT_MAX_SELECTED_FILES must be positive")
 	}
 	cfg.ImportMaxFiles = importMaxFiles
+
+	importURLTimeoutSec, err := strconv.ParseInt(getEnv("IMPORT_URL_TIMEOUT_SEC", "600"), 10, 64)
+	if err != nil {
+		return cfg, fmt.Errorf("invalid IMPORT_URL_TIMEOUT_SEC: %w", err)
+	}
+	if importURLTimeoutSec <= 0 {
+		return cfg, fmt.Errorf("IMPORT_URL_TIMEOUT_SEC must be positive")
+	}
+	cfg.ImportURLTimeout = time.Duration(importURLTimeoutSec) * time.Second
+
+	importURLMaxDurSec, err := strconv.ParseInt(getEnv("IMPORT_URL_MAX_DURATION_SEC", "0"), 10, 64)
+	if err != nil {
+		return cfg, fmt.Errorf("invalid IMPORT_URL_MAX_DURATION_SEC: %w", err)
+	}
+	if importURLMaxDurSec < 0 {
+		return cfg, fmt.Errorf("IMPORT_URL_MAX_DURATION_SEC must be non-negative")
+	}
+	cfg.ImportURLMaxDur = importURLMaxDurSec
+
+	importURLMaxFileMB, err := strconv.ParseInt(getEnv("IMPORT_URL_MAX_FILE_MB", "0"), 10, 64)
+	if err != nil {
+		return cfg, fmt.Errorf("invalid IMPORT_URL_MAX_FILE_MB: %w", err)
+	}
+	if importURLMaxFileMB < 0 {
+		return cfg, fmt.Errorf("IMPORT_URL_MAX_FILE_MB must be non-negative")
+	}
+	cfg.ImportURLMaxFile = importURLMaxFileMB * 1024 * 1024
 
 	maxUploadMB, err := strconv.ParseInt(getEnv("MAX_UPLOAD_MB", "2048"), 10, 64)
 	if err != nil {

@@ -1344,3 +1344,98 @@ func TestDanmakuPrivateVideoAccessControl(t *testing.T) {
 		t.Fatalf("owner should create private danmaku, got %d (%s)", status, ownerResp.Message)
 	}
 }
+
+func TestURLImportStartCreatesQueuedJob(t *testing.T) {
+	srv, _ := newTestServer(t)
+	_, accessToken, _ := registerUser(t, srv, "url-importer", "url-importer@example.com", "password123")
+
+	authHeader := map[string]string{"Authorization": "Bearer " + accessToken}
+
+	status, _ := doJSONRequest(t, srv, http.MethodPost, "/api/v1/imports/url/start", map[string]interface{}{
+		"url": "ftp://example.com/video",
+	}, authHeader)
+	if status != http.StatusBadRequest {
+		t.Fatalf("invalid url should return 400, got %d", status)
+	}
+
+	status, startResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/imports/url/start", map[string]interface{}{
+		"url":        "https://example.com/video/123",
+		"visibility": "unlisted",
+		"tags":       []string{"import", "url"},
+	}, authHeader)
+	if status != http.StatusOK {
+		t.Fatalf("start url import should return 200, got %d (%s)", status, startResp.Message)
+	}
+
+	var startData struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(startResp.Data, &startData); err != nil {
+		t.Fatalf("parse start url import response: %v", err)
+	}
+	if startData.JobID == "" {
+		t.Fatalf("job_id should not be empty")
+	}
+
+	status, listResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/imports", nil, authHeader)
+	if status != http.StatusOK {
+		t.Fatalf("list imports should return 200, got %d (%s)", status, listResp.Message)
+	}
+	var listData struct {
+		Items []struct {
+			ID         string `json:"id"`
+			SourceType string `json:"source_type"`
+			SourceURL  string `json:"source_url"`
+			Status     string `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(listResp.Data, &listData); err != nil {
+		t.Fatalf("parse imports list response: %v", err)
+	}
+	if len(listData.Items) == 0 {
+		t.Fatalf("imports list should not be empty")
+	}
+	if listData.Items[0].ID != startData.JobID {
+		t.Fatalf("expected latest import job %s, got %s", startData.JobID, listData.Items[0].ID)
+	}
+	if listData.Items[0].SourceType != "url" {
+		t.Fatalf("expected source_type=url, got %s", listData.Items[0].SourceType)
+	}
+	if listData.Items[0].SourceURL != "https://example.com/video/123" {
+		t.Fatalf("unexpected source_url: %s", listData.Items[0].SourceURL)
+	}
+	if listData.Items[0].Status != "queued" {
+		t.Fatalf("expected queued status, got %s", listData.Items[0].Status)
+	}
+
+	status, detailResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/imports/"+startData.JobID, nil, authHeader)
+	if status != http.StatusOK {
+		t.Fatalf("get import detail should return 200, got %d (%s)", status, detailResp.Message)
+	}
+	var detailData struct {
+		Job struct {
+			ID         string `json:"id"`
+			SourceType string `json:"source_type"`
+			SourceURL  string `json:"source_url"`
+			Status     string `json:"status"`
+		} `json:"job"`
+		Items []struct {
+			Selected bool `json:"selected"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(detailResp.Data, &detailData); err != nil {
+		t.Fatalf("parse import detail response: %v", err)
+	}
+	if detailData.Job.ID != startData.JobID {
+		t.Fatalf("detail job id mismatch: expected %s got %s", startData.JobID, detailData.Job.ID)
+	}
+	if detailData.Job.SourceType != "url" {
+		t.Fatalf("expected detail source_type=url, got %s", detailData.Job.SourceType)
+	}
+	if detailData.Job.SourceURL != "https://example.com/video/123" {
+		t.Fatalf("unexpected detail source_url: %s", detailData.Job.SourceURL)
+	}
+	if len(detailData.Items) != 1 || !detailData.Items[0].Selected {
+		t.Fatalf("expected one selected import item")
+	}
+}

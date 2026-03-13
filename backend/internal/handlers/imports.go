@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	neturl "net/url"
 	"path"
 	"path/filepath"
 	"sort"
@@ -36,6 +37,13 @@ type startTorrentImportRequest struct {
 	CategoryID          *int64   `json:"category_id"`
 	Tags                []string `json:"tags"`
 	Visibility          string   `json:"visibility"`
+}
+
+type startURLImportRequest struct {
+	URL        string   `json:"url"`
+	CategoryID *int64   `json:"category_id"`
+	Tags       []string `json:"tags"`
+	Visibility string   `json:"visibility"`
 }
 
 func (h *Handler) InspectTorrentImport(c *fiber.Ctx) error {
@@ -373,13 +381,121 @@ WHERE id = ?`, req.CategoryID, string(tagsJSON), visibility, len(selectedIndexes
 	})
 }
 
+func (h *Handler) StartURLImport(c *fiber.Ctx) error {
+	uid := currentUserID(c)
+
+	var req startURLImportRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.Error(c, fiber.StatusBadRequest, "invalid request body")
+	}
+
+	req.URL = strings.TrimSpace(req.URL)
+	if req.URL == "" {
+		return response.Error(c, fiber.StatusBadRequest, "url is required")
+	}
+	if len(req.URL) > 2048 || !isValidImportURL(req.URL) {
+		return response.Error(c, fiber.StatusBadRequest, "url is invalid")
+	}
+
+	visibility := normalizeImportVisibility(req.Visibility)
+	if visibility == "" {
+		return response.Error(c, fiber.StatusBadRequest, "invalid visibility")
+	}
+
+	tags := normalizeImportTags(req.Tags)
+	tagsJSON, err := json.Marshal(tags)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to encode tags")
+	}
+
+	tx, err := h.app.DB.BeginTx(c.UserContext(), nil)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to begin transaction")
+	}
+	defer tx.Rollback()
+
+	if req.CategoryID != nil {
+		var exists int
+		if err := tx.QueryRowContext(c.UserContext(), `SELECT 1 FROM categories WHERE id = ? AND is_active = 1 LIMIT 1`, *req.CategoryID).Scan(&exists); err != nil {
+			if isNotFound(err) {
+				return response.Error(c, fiber.StatusBadRequest, "category_id is invalid")
+			}
+			return response.Error(c, fiber.StatusInternalServerError, "failed to validate category")
+		}
+	}
+
+	now := nowUTC()
+	nowStr := util.FormatTime(now)
+	expiresAt := util.FormatTime(now.Add(24 * time.Hour))
+	maxAttempts := h.app.Config.ImportMaxTry
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+
+	jobID := newID()
+	itemID := newID()
+	sourceFilename := buildImportSourceFilename(req.URL)
+
+	if _, err := tx.ExecContext(c.UserContext(), `
+INSERT INTO video_import_jobs (
+	id, user_id, source_type, source_filename, info_hash, torrent_data,
+	source_url, resolved_media_url, resolver_name, resolver_meta_json,
+	status, category_id, tags_json, visibility, attempts, max_attempts,
+	total_files, selected_files, completed_files, failed_files, progress,
+	available_at, started_at, finished_at, expires_at, error_message,
+	created_at, updated_at
+) VALUES (?, ?, 'url', ?, NULL, NULL,
+	?, NULL, NULL, NULL,
+	'queued', ?, ?, ?, 0, ?,
+	1, 1, 0, 0, 0,
+	?, NULL, NULL, ?, NULL,
+	?, ?)
+`,
+		jobID,
+		uid,
+		sourceFilename,
+		req.URL,
+		req.CategoryID,
+		string(tagsJSON),
+		visibility,
+		maxAttempts,
+		nowStr,
+		expiresAt,
+		nowStr,
+		nowStr,
+	); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to create import job")
+	}
+
+	if _, err := tx.ExecContext(c.UserContext(), `
+INSERT INTO video_import_items (
+	id, job_id, file_index, file_path, file_size_bytes,
+	selected, status, error_message, media_object_id, video_id,
+	created_at, updated_at
+) VALUES (?, ?, 0, ?, 0, 1, 'pending', NULL, NULL, NULL, ?, ?)
+`, itemID, jobID, req.URL, nowStr, nowStr); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to create import item")
+	}
+
+	if err := tx.Commit(); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to queue import job")
+	}
+
+	return response.OK(c, fiber.Map{
+		"job_id":         jobID,
+		"status":         "queued",
+		"selected_files": 1,
+	})
+}
+
 func (h *Handler) ListImportJobs(c *fiber.Ctx) error {
 	uid := currentUserID(c)
 	limit := pagination.ClampLimit(c.Query("limit"), defaultLimit, maxLimit)
 	cursorRaw := strings.TrimSpace(c.Query("cursor"))
 
 	query := `
-SELECT id, source_type, source_filename, info_hash, status,
+SELECT id, source_type, COALESCE(source_filename, ''), COALESCE(info_hash, ''), status,
+       COALESCE(source_url, ''), COALESCE(resolved_media_url, ''), COALESCE(resolver_name, ''),
        COALESCE(category_id, 0), tags_json, visibility,
        total_files, selected_files, completed_files, failed_files, progress,
        COALESCE(available_at, ''), COALESCE(started_at, ''), COALESCE(finished_at, ''),
@@ -415,6 +531,9 @@ WHERE user_id = ?`
 		SourceFile    string
 		InfoHash      string
 		Status        string
+		SourceURL     string
+		ResolvedURL   string
+		ResolverName  string
 		CategoryID    int64
 		TagsJSON      string
 		Visibility    string
@@ -441,6 +560,9 @@ WHERE user_id = ?`
 			&item.SourceFile,
 			&item.InfoHash,
 			&item.Status,
+			&item.SourceURL,
+			&item.ResolvedURL,
+			&item.ResolverName,
 			&item.CategoryID,
 			&item.TagsJSON,
 			&item.Visibility,
@@ -479,26 +601,29 @@ WHERE user_id = ?`
 	items := make([]fiber.Map, 0, len(jobs))
 	for _, job := range jobs {
 		items = append(items, fiber.Map{
-			"id":              job.ID,
-			"source_type":     job.SourceType,
-			"source_filename": job.SourceFile,
-			"info_hash":       job.InfoHash,
-			"status":          job.Status,
-			"category_id":     nullableCategory(job.CategoryID),
-			"tags":            parseImportTags(job.TagsJSON),
-			"visibility":      job.Visibility,
-			"total_files":     job.TotalFiles,
-			"selected_files":  job.SelectedFiles,
-			"completed_files": job.Completed,
-			"failed_files":    job.Failed,
-			"progress":        job.Progress,
-			"available_at":    job.AvailableAt,
-			"started_at":      job.StartedAt,
-			"finished_at":     job.FinishedAt,
-			"expires_at":      job.ExpiresAt,
-			"error_message":   job.ErrorMessage,
-			"created_at":      job.CreatedAt,
-			"updated_at":      job.UpdatedAt,
+			"id":                 job.ID,
+			"source_type":        job.SourceType,
+			"source_filename":    job.SourceFile,
+			"info_hash":          job.InfoHash,
+			"source_url":         job.SourceURL,
+			"resolved_media_url": job.ResolvedURL,
+			"resolver_name":      job.ResolverName,
+			"status":             job.Status,
+			"category_id":        nullableCategory(job.CategoryID),
+			"tags":               parseImportTags(job.TagsJSON),
+			"visibility":         job.Visibility,
+			"total_files":        job.TotalFiles,
+			"selected_files":     job.SelectedFiles,
+			"completed_files":    job.Completed,
+			"failed_files":       job.Failed,
+			"progress":           job.Progress,
+			"available_at":       job.AvailableAt,
+			"started_at":         job.StartedAt,
+			"finished_at":        job.FinishedAt,
+			"expires_at":         job.ExpiresAt,
+			"error_message":      job.ErrorMessage,
+			"created_at":         job.CreatedAt,
+			"updated_at":         job.UpdatedAt,
 		})
 	}
 
@@ -517,6 +642,9 @@ func (h *Handler) GetImportJobDetail(c *fiber.Ctx) error {
 		sourceType     string
 		sourceFilename string
 		infoHash       string
+		sourceURL      string
+		resolvedMedia  string
+		resolverName   string
 		status         string
 		categoryID     sql.NullInt64
 		tagsJSON       string
@@ -536,7 +664,9 @@ func (h *Handler) GetImportJobDetail(c *fiber.Ctx) error {
 	)
 
 	err := h.app.DB.QueryRowContext(c.UserContext(), `
-SELECT user_id, source_type, source_filename, info_hash, status,
+SELECT user_id, source_type, COALESCE(source_filename, ''), COALESCE(info_hash, ''),
+       COALESCE(source_url, ''), COALESCE(resolved_media_url, ''), COALESCE(resolver_name, ''),
+       status,
        category_id, tags_json, visibility,
        total_files, selected_files, completed_files, failed_files, progress,
        available_at, started_at, finished_at, expires_at, error_message,
@@ -548,6 +678,9 @@ LIMIT 1`, jobID).Scan(
 		&sourceType,
 		&sourceFilename,
 		&infoHash,
+		&sourceURL,
+		&resolvedMedia,
+		&resolverName,
 		&status,
 		&categoryID,
 		&tagsJSON,
@@ -641,26 +774,29 @@ ORDER BY file_index ASC`, jobID)
 
 	return response.OK(c, fiber.Map{
 		"job": fiber.Map{
-			"id":              jobID,
-			"source_type":     sourceType,
-			"source_filename": sourceFilename,
-			"info_hash":       infoHash,
-			"status":          status,
-			"category_id":     nullableCategoryFromNull(categoryID),
-			"tags":            parseImportTags(tagsJSON),
-			"visibility":      visibility,
-			"total_files":     totalFiles,
-			"selected_files":  selectedFiles,
-			"completed_files": completedFiles,
-			"failed_files":    failedFiles,
-			"progress":        progress,
-			"available_at":    maybeString(availableAt),
-			"started_at":      maybeString(startedAt),
-			"finished_at":     maybeString(finishedAt),
-			"expires_at":      maybeString(expiresAt),
-			"error_message":   maybeString(errorMessage),
-			"created_at":      createdAt,
-			"updated_at":      updatedAt,
+			"id":                 jobID,
+			"source_type":        sourceType,
+			"source_filename":    sourceFilename,
+			"info_hash":          infoHash,
+			"source_url":         sourceURL,
+			"resolved_media_url": resolvedMedia,
+			"resolver_name":      resolverName,
+			"status":             status,
+			"category_id":        nullableCategoryFromNull(categoryID),
+			"tags":               parseImportTags(tagsJSON),
+			"visibility":         visibility,
+			"total_files":        totalFiles,
+			"selected_files":     selectedFiles,
+			"completed_files":    completedFiles,
+			"failed_files":       failedFiles,
+			"progress":           progress,
+			"available_at":       maybeString(availableAt),
+			"started_at":         maybeString(startedAt),
+			"finished_at":        maybeString(finishedAt),
+			"expires_at":         maybeString(expiresAt),
+			"error_message":      maybeString(errorMessage),
+			"created_at":         createdAt,
+			"updated_at":         updatedAt,
 		},
 		"items":             items,
 		"created_video_ids": createdVideoIDs,
@@ -718,6 +854,40 @@ func cleanTorrentDisplayPath(raw string) string {
 		safe = append(safe, part)
 	}
 	return strings.Join(safe, "/")
+}
+
+func buildImportSourceFilename(rawURL string) string {
+	parsed, err := neturl.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return rawURL
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	pathPart := strings.TrimSpace(parsed.EscapedPath())
+	if host == "" {
+		return rawURL
+	}
+	if pathPart == "" || pathPart == "/" {
+		return host
+	}
+	out := host + pathPart
+	if len(out) > 200 {
+		out = out[:200]
+	}
+	return out
+}
+
+func isValidImportURL(raw string) bool {
+	parsed, err := neturl.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	if strings.TrimSpace(parsed.Hostname()) == "" {
+		return false
+	}
+	return true
 }
 
 func normalizeImportVisibility(raw string) string {
