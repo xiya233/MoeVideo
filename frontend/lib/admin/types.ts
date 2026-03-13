@@ -121,6 +121,17 @@ export type AdminSiteSettings = {
   site_logo_media_id?: string | null;
   site_logo_url?: string;
   register_enabled: boolean;
+  ytdlp_param_mode?: "safe" | "advanced";
+  ytdlp_safe?: {
+    format?: string;
+    extractor_args?: string;
+    user_agent?: string;
+    referer?: string;
+    headers?: Record<string, string>;
+    socket_timeout?: number;
+  };
+  ytdlp_metadata_args_raw?: string;
+  ytdlp_download_args_raw?: string;
   updated_by?: string | null;
   updated_at?: string;
 };

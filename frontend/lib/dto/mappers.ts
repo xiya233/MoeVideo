@@ -327,6 +327,8 @@ export function mapImportJob(value: unknown): ImportJob {
   const visibilityRaw = str(src.visibility);
   const visibility: ImportJob["visibility"] =
     visibilityRaw === "private" || visibilityRaw === "unlisted" ? visibilityRaw : "public";
+  const ytdlpModeRaw = str(src.ytdlp_param_mode);
+  const ytdlpMode: ImportJob["ytdlp_param_mode"] = ytdlpModeRaw === "advanced" ? "advanced" : "safe";
 
   return {
     id: str(src.id),
@@ -336,6 +338,7 @@ export function mapImportJob(value: unknown): ImportJob {
     source_url: str(src.source_url) || undefined,
     resolved_media_url: str(src.resolved_media_url) || undefined,
     resolver_name: str(src.resolver_name) || undefined,
+    ytdlp_param_mode: ytdlpMode,
     status,
     category_id: num(src.category_id) || undefined,
     tags: arr(src.tags).map((item) => str(item)).filter(Boolean),

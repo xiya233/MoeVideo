@@ -19,6 +19,36 @@ import { mapUploadCompleteData, mapUploadTicket } from "@/lib/dto/mappers";
 const MAX_LOGO_SIZE = 10 * 1024 * 1024;
 const ALLOWED_LOGO_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
+function headersToText(headers?: Record<string, string>): string {
+  if (!headers) {
+    return "";
+  }
+  return Object.entries(headers)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join("\n");
+}
+
+function parseHeadersText(input: string): Record<string, string> {
+  const map: Record<string, string> = {};
+  const lines = input
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (const line of lines) {
+    const sepIndex = line.indexOf(":");
+    if (sepIndex <= 0) {
+      throw new Error(`Header 格式错误: ${line}`);
+    }
+    const key = line.slice(0, sepIndex).trim();
+    const value = line.slice(sepIndex + 1).trim();
+    if (!key) {
+      throw new Error("Header key 不能为空");
+    }
+    map[key] = value;
+  }
+  return map;
+}
+
 export function AdminSiteSettingsPage() {
   const { request, uploadBinary } = useAuth();
   const queryClient = useQueryClient();
@@ -30,6 +60,15 @@ export function AdminSiteSettingsPage() {
   const [saveMessage, setSaveMessage] = useState("");
   const [saveError, setSaveError] = useState("");
   const [logoBusy, setLogoBusy] = useState(false);
+  const [ytdlpParamMode, setYTDLPParamMode] = useState<"safe" | "advanced">("safe");
+  const [ytdlpFormat, setYTDLPFormat] = useState("");
+  const [ytdlpExtractorArgs, setYTDLPExtractorArgs] = useState("");
+  const [ytdlpUserAgent, setYTDLPUserAgent] = useState("");
+  const [ytdlpReferer, setYTDLPReferer] = useState("");
+  const [ytdlpHeadersText, setYTDLPHeadersText] = useState("");
+  const [ytdlpSocketTimeout, setYTDLPSocketTimeout] = useState("");
+  const [ytdlpMetadataArgsRaw, setYTDLPMetadataArgsRaw] = useState("");
+  const [ytdlpDownloadArgsRaw, setYTDLPDownloadArgsRaw] = useState("");
 
   const [createSlug, setCreateSlug] = useState("");
   const [createName, setCreateName] = useState("");
@@ -60,10 +99,39 @@ export function AdminSiteSettingsPage() {
     setSiteDescription(settingsQuery.data.site_description ?? "");
     setRegisterEnabled(settingsQuery.data.register_enabled ?? true);
     setSiteLogoURL(settingsQuery.data.site_logo_url ?? "");
+    setYTDLPParamMode(settingsQuery.data.ytdlp_param_mode === "advanced" ? "advanced" : "safe");
+    setYTDLPFormat(settingsQuery.data.ytdlp_safe?.format ?? "");
+    setYTDLPExtractorArgs(settingsQuery.data.ytdlp_safe?.extractor_args ?? "");
+    setYTDLPUserAgent(settingsQuery.data.ytdlp_safe?.user_agent ?? "");
+    setYTDLPReferer(settingsQuery.data.ytdlp_safe?.referer ?? "");
+    setYTDLPHeadersText(headersToText(settingsQuery.data.ytdlp_safe?.headers));
+    setYTDLPSocketTimeout(
+      typeof settingsQuery.data.ytdlp_safe?.socket_timeout === "number" && settingsQuery.data.ytdlp_safe.socket_timeout > 0
+        ? String(settingsQuery.data.ytdlp_safe.socket_timeout)
+        : "",
+    );
+    setYTDLPMetadataArgsRaw(settingsQuery.data.ytdlp_metadata_args_raw ?? "");
+    setYTDLPDownloadArgsRaw(settingsQuery.data.ytdlp_download_args_raw ?? "");
   }, [settingsQuery.data]);
 
   const patchSettingsMutation = useMutation({
-    mutationFn: (payload: { site_title?: string; site_description?: string; register_enabled?: boolean; site_logo_media_id?: string }) =>
+    mutationFn: (payload: {
+      site_title?: string;
+      site_description?: string;
+      register_enabled?: boolean;
+      site_logo_media_id?: string;
+      ytdlp_param_mode?: "safe" | "advanced";
+      ytdlp_safe?: {
+        format?: string;
+        extractor_args?: string;
+        user_agent?: string;
+        referer?: string;
+        headers?: Record<string, string>;
+        socket_timeout?: number;
+      };
+      ytdlp_metadata_args_raw?: string;
+      ytdlp_download_args_raw?: string;
+    }) =>
       adminApi.patchSiteSettings(request, payload),
     onSuccess: async (data) => {
       setSaveMessage("站点设置已保存");
@@ -202,6 +270,52 @@ export function AdminSiteSettingsPage() {
     });
   };
 
+  const onSaveYTDLPSettings = async () => {
+    setSaveError("");
+    setSaveMessage("");
+    try {
+      const payload: {
+        ytdlp_param_mode: "safe" | "advanced";
+        ytdlp_safe?: {
+          format?: string;
+          extractor_args?: string;
+          user_agent?: string;
+          referer?: string;
+          headers?: Record<string, string>;
+          socket_timeout?: number;
+        };
+        ytdlp_metadata_args_raw?: string;
+        ytdlp_download_args_raw?: string;
+      } = {
+        ytdlp_param_mode: ytdlpParamMode,
+      };
+
+      if (ytdlpParamMode === "safe") {
+        const timeout = ytdlpSocketTimeout.trim();
+        const socketTimeout = timeout === "" ? 0 : Number(timeout);
+        if (!Number.isFinite(socketTimeout) || socketTimeout < 0) {
+          throw new Error("socket_timeout 必须是非负数字");
+        }
+        payload.ytdlp_safe = {
+          format: ytdlpFormat.trim(),
+          extractor_args: ytdlpExtractorArgs.trim(),
+          user_agent: ytdlpUserAgent.trim(),
+          referer: ytdlpReferer.trim(),
+          headers: parseHeadersText(ytdlpHeadersText),
+          socket_timeout: socketTimeout,
+        };
+      } else {
+        payload.ytdlp_metadata_args_raw = ytdlpMetadataArgsRaw.trim();
+        payload.ytdlp_download_args_raw = ytdlpDownloadArgsRaw.trim();
+      }
+
+      await patchSettingsMutation.mutateAsync(payload);
+      setSaveMessage("yt-dlp 参数已保存（仅新任务生效）");
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "保存 yt-dlp 参数失败");
+    }
+  };
+
   const openEditDialog = (item: AdminSiteCategory) => {
     setEditingCategory(item);
     setEditSlug(item.slug);
@@ -294,6 +408,87 @@ export function AdminSiteSettingsPage() {
           <div className="flex justify-end">
             <Button onClick={() => void onSaveBranding()} disabled={patchSettingsMutation.isPending || settingsQuery.isLoading}>
               {patchSettingsMutation.isPending ? "保存中..." : "保存设置"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Import / yt-dlp</CardTitle>
+          <CardDescription>配置 URL 导入使用的 yt-dlp 参数。仅对新建 URL 导入任务生效。</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">参数模式</label>
+            <Select value={ytdlpParamMode} onValueChange={(value) => setYTDLPParamMode(value === "advanced" ? "advanced" : "safe")}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="safe">安全模式（白名单字段）</SelectItem>
+                <SelectItem value="advanced">高级模式（原始参数）</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {ytdlpParamMode === "safe" ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">Format</label>
+                <Input value={ytdlpFormat} onChange={(event) => setYTDLPFormat(event.target.value)} placeholder="bestvideo+bestaudio/best" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">Extractor Args</label>
+                <Input value={ytdlpExtractorArgs} onChange={(event) => setYTDLPExtractorArgs(event.target.value)} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">User Agent</label>
+                <Input value={ytdlpUserAgent} onChange={(event) => setYTDLPUserAgent(event.target.value)} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">Referer</label>
+                <Input value={ytdlpReferer} onChange={(event) => setYTDLPReferer(event.target.value)} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">Socket Timeout（秒）</label>
+                <Input value={ytdlpSocketTimeout} onChange={(event) => setYTDLPSocketTimeout(event.target.value)} placeholder="0" type="number" />
+              </div>
+              <div className="md:col-span-2">
+                <label className="mb-1 block text-xs font-semibold text-slate-500">Headers（每行 `Key: Value`）</label>
+                <Textarea value={ytdlpHeadersText} onChange={(event) => setYTDLPHeadersText(event.target.value)} rows={4} />
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">Metadata Args Raw</label>
+                <Textarea
+                  value={ytdlpMetadataArgsRaw}
+                  onChange={(event) => setYTDLPMetadataArgsRaw(event.target.value)}
+                  rows={5}
+                  placeholder='例如：--extractor-args "generic:foo=bar"'
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">Download Args Raw</label>
+                <Textarea
+                  value={ytdlpDownloadArgsRaw}
+                  onChange={(event) => setYTDLPDownloadArgsRaw(event.target.value)}
+                  rows={5}
+                  placeholder="例如：--format best"
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            说明：配置只会作用于新创建的 URL 导入任务，已排队或运行中的任务不会被修改。
+          </div>
+
+          <div className="flex justify-end">
+            <Button onClick={() => void onSaveYTDLPSettings()} disabled={patchSettingsMutation.isPending || settingsQuery.isLoading}>
+              {patchSettingsMutation.isPending ? "保存中..." : "保存 yt-dlp 配置"}
             </Button>
           </div>
         </CardContent>

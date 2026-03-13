@@ -5,6 +5,7 @@ import (
 	crand "crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -41,15 +42,33 @@ type siteSettingsRow struct {
 	SiteLogoMediaID string
 	SiteLogoURL     string
 	RegisterEnabled bool
+	YTDLPParamMode  string
+	YTDLPSafe       ytdlpSafeSettings
+	YTDLPSafeJSON   string
+	YTDLPMetaRaw    string
+	YTDLPDownRaw    string
 	UpdatedBy       string
 	UpdatedAt       string
 }
 
 type adminPatchSiteSettingsRequest struct {
-	SiteTitle       *string `json:"site_title"`
-	SiteDescription *string `json:"site_description"`
-	SiteLogoMediaID *string `json:"site_logo_media_id"`
-	RegisterEnabled *bool   `json:"register_enabled"`
+	SiteTitle        *string                  `json:"site_title"`
+	SiteDescription  *string                  `json:"site_description"`
+	SiteLogoMediaID  *string                  `json:"site_logo_media_id"`
+	RegisterEnabled  *bool                    `json:"register_enabled"`
+	YTDLPParamMode   *string                  `json:"ytdlp_param_mode"`
+	YTDLPSafe        *adminPatchYTDLPSafeBody `json:"ytdlp_safe"`
+	YTDLPMetadataRaw *string                  `json:"ytdlp_metadata_args_raw"`
+	YTDLPDownloadRaw *string                  `json:"ytdlp_download_args_raw"`
+}
+
+type adminPatchYTDLPSafeBody struct {
+	Format        *string            `json:"format"`
+	ExtractorArgs *string            `json:"extractor_args"`
+	UserAgent     *string            `json:"user_agent"`
+	Referer       *string            `json:"referer"`
+	Headers       *map[string]string `json:"headers"`
+	SocketTimeout *int64             `json:"socket_timeout"`
 }
 
 type adminCreateCategoryRequest struct {
@@ -96,6 +115,10 @@ func (h *Handler) querySiteSettingsRow(ctx context.Context) (siteSettingsRow, er
 
 	if err := h.app.DB.QueryRowContext(ctx, `
 SELECT s.site_title, s.site_description, COALESCE(s.site_logo_media_id, ''), s.register_enabled,
+       COALESCE(s.ytdlp_param_mode, 'safe'),
+       COALESCE(s.ytdlp_safe_json, '{}'),
+       COALESCE(s.ytdlp_metadata_args_raw, ''),
+       COALESCE(s.ytdlp_download_args_raw, ''),
        COALESCE(s.updated_by, ''), s.updated_at,
        COALESCE(m.provider, ''), COALESCE(m.bucket, ''), COALESCE(m.object_key, '')
 FROM site_settings s
@@ -106,6 +129,10 @@ LIMIT 1`).Scan(
 		&row.SiteDescription,
 		&row.SiteLogoMediaID,
 		&registerEnabled,
+		&row.YTDLPParamMode,
+		&row.YTDLPSafeJSON,
+		&row.YTDLPMetaRaw,
+		&row.YTDLPDownRaw,
 		&row.UpdatedBy,
 		&row.UpdatedAt,
 		&logoProvider,
@@ -116,6 +143,16 @@ LIMIT 1`).Scan(
 	}
 
 	row.RegisterEnabled = registerEnabled == 1
+	mode, modeErr := normalizeYTDLPMode(row.YTDLPParamMode)
+	if modeErr != nil {
+		mode = ytdlpModeSafe
+	}
+	row.YTDLPParamMode = mode
+	safeCfg, safeErr := parseYTDLPSafeJSON(row.YTDLPSafeJSON)
+	if safeErr != nil {
+		safeCfg = ytdlpSafeSettings{}
+	}
+	row.YTDLPSafe = safeCfg
 	row.SiteLogoURL = mediaURL(h.app.Storage, logoProvider, logoBucket, logoObjectKey)
 	return row, nil
 }
@@ -341,8 +378,12 @@ func (h *Handler) AdminGetSiteSettings(c *fiber.Ctx) error {
 			}
 			return row.SiteLogoMediaID
 		}(),
-		"site_logo_url":    row.SiteLogoURL,
-		"register_enabled": row.RegisterEnabled,
+		"site_logo_url":           row.SiteLogoURL,
+		"register_enabled":        row.RegisterEnabled,
+		"ytdlp_param_mode":        row.YTDLPParamMode,
+		"ytdlp_safe":              row.YTDLPSafe,
+		"ytdlp_metadata_args_raw": row.YTDLPMetaRaw,
+		"ytdlp_download_args_raw": row.YTDLPDownRaw,
 		"updated_by": func() interface{} {
 			if row.UpdatedBy == "" {
 				return nil
@@ -358,7 +399,14 @@ func (h *Handler) AdminPatchSiteSettings(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return response.Error(c, fiber.StatusBadRequest, "invalid request body")
 	}
-	if req.SiteTitle == nil && req.SiteDescription == nil && req.SiteLogoMediaID == nil && req.RegisterEnabled == nil {
+	if req.SiteTitle == nil &&
+		req.SiteDescription == nil &&
+		req.SiteLogoMediaID == nil &&
+		req.RegisterEnabled == nil &&
+		req.YTDLPParamMode == nil &&
+		req.YTDLPSafe == nil &&
+		req.YTDLPMetadataRaw == nil &&
+		req.YTDLPDownloadRaw == nil {
 		return response.Error(c, fiber.StatusBadRequest, "at least one field is required")
 	}
 
@@ -386,14 +434,42 @@ func (h *Handler) AdminPatchSiteSettings(c *fiber.Ctx) error {
 		beforeDescription string
 		beforeLogoMediaID sql.NullString
 		beforeEnabled     int64
+		beforeYTDLPMode   string
+		beforeYTDLPSafe   string
+		beforeYTDLPMeta   string
+		beforeYTDLPDown   string
 	)
 	if err := tx.QueryRowContext(c.UserContext(), `
-SELECT site_title, site_description, site_logo_media_id, register_enabled
+SELECT site_title, site_description, site_logo_media_id, register_enabled,
+       COALESCE(ytdlp_param_mode, 'safe'),
+       COALESCE(ytdlp_safe_json, '{}'),
+       COALESCE(ytdlp_metadata_args_raw, ''),
+       COALESCE(ytdlp_download_args_raw, '')
 FROM site_settings
 WHERE id = 1
-LIMIT 1`).Scan(&beforeTitle, &beforeDescription, &beforeLogoMediaID, &beforeEnabled); err != nil {
+LIMIT 1`).Scan(
+		&beforeTitle,
+		&beforeDescription,
+		&beforeLogoMediaID,
+		&beforeEnabled,
+		&beforeYTDLPMode,
+		&beforeYTDLPSafe,
+		&beforeYTDLPMeta,
+		&beforeYTDLPDown,
+	); err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to update site settings")
 	}
+
+	beforeMode, err := normalizeYTDLPMode(beforeYTDLPMode)
+	if err != nil {
+		beforeMode = ytdlpModeSafe
+	}
+	beforeSafeCfg, _ := parseYTDLPSafeJSON(beforeYTDLPSafe)
+	beforeSafeJSON, _ := json.Marshal(beforeSafeCfg)
+	currentMode := beforeMode
+	currentSafe := beforeSafeCfg
+	currentMetaRaw := strings.TrimSpace(beforeYTDLPMeta)
+	currentDownRaw := strings.TrimSpace(beforeYTDLPDown)
 
 	setClauses := make([]string, 0, 6)
 	args := make([]interface{}, 0, 8)
@@ -452,6 +528,99 @@ LIMIT 1`).Scan(&beforeTitle, &beforeDescription, &beforeLogoMediaID, &beforeEnab
 		args = append(args, registerEnabledInt)
 	}
 
+	if req.YTDLPParamMode != nil {
+		mode, modeErr := normalizeYTDLPMode(*req.YTDLPParamMode)
+		if modeErr != nil {
+			return response.Error(c, fiber.StatusBadRequest, modeErr.Error())
+		}
+		currentMode = mode
+	}
+	if req.YTDLPSafe != nil {
+		if req.YTDLPSafe.Format != nil {
+			currentSafe.Format = *req.YTDLPSafe.Format
+		}
+		if req.YTDLPSafe.ExtractorArgs != nil {
+			currentSafe.ExtractorArgs = *req.YTDLPSafe.ExtractorArgs
+		}
+		if req.YTDLPSafe.UserAgent != nil {
+			currentSafe.UserAgent = *req.YTDLPSafe.UserAgent
+		}
+		if req.YTDLPSafe.Referer != nil {
+			currentSafe.Referer = *req.YTDLPSafe.Referer
+		}
+		if req.YTDLPSafe.Headers != nil {
+			if len(*req.YTDLPSafe.Headers) == 0 {
+				currentSafe.Headers = nil
+			} else {
+				nextHeaders := make(map[string]string, len(*req.YTDLPSafe.Headers))
+				for key, value := range *req.YTDLPSafe.Headers {
+					nextHeaders[key] = value
+				}
+				currentSafe.Headers = nextHeaders
+			}
+		}
+		if req.YTDLPSafe.SocketTimeout != nil {
+			currentSafe.SocketTimeout = *req.YTDLPSafe.SocketTimeout
+		}
+		normalized, normErr := normalizeYTDLPSafeSettings(currentSafe)
+		if normErr != nil {
+			return response.Error(c, fiber.StatusBadRequest, normErr.Error())
+		}
+		currentSafe = normalized
+	}
+	if req.YTDLPMetadataRaw != nil {
+		currentMetaRaw = strings.TrimSpace(*req.YTDLPMetadataRaw)
+	}
+	if req.YTDLPDownloadRaw != nil {
+		currentDownRaw = strings.TrimSpace(*req.YTDLPDownloadRaw)
+	}
+
+	switch currentMode {
+	case ytdlpModeSafe:
+		if _, _, safeErr := buildYTDLPArgsFromSafe(currentSafe); safeErr != nil {
+			return response.Error(c, fiber.StatusBadRequest, safeErr.Error())
+		}
+	case ytdlpModeAdvanced:
+		metaArgs, parseErr := splitCommandArgs(currentMetaRaw)
+		if parseErr != nil {
+			return response.Error(c, fiber.StatusBadRequest, "ytdlp_metadata_args_raw is invalid")
+		}
+		downArgs, parseErr := splitCommandArgs(currentDownRaw)
+		if parseErr != nil {
+			return response.Error(c, fiber.StatusBadRequest, "ytdlp_download_args_raw is invalid")
+		}
+		if valErr := validateYTDLPArgTokens(metaArgs); valErr != nil {
+			return response.Error(c, fiber.StatusBadRequest, valErr.Error())
+		}
+		if valErr := validateYTDLPArgTokens(downArgs); valErr != nil {
+			return response.Error(c, fiber.StatusBadRequest, valErr.Error())
+		}
+	default:
+		return response.Error(c, fiber.StatusBadRequest, "ytdlp_param_mode is invalid")
+	}
+
+	currentSafeJSON, _ := json.Marshal(currentSafe)
+	if currentMode != beforeMode {
+		setClauses = append(setClauses, "ytdlp_param_mode = ?")
+		args = append(args, currentMode)
+	}
+	if string(currentSafeJSON) != string(beforeSafeJSON) {
+		setClauses = append(setClauses, "ytdlp_safe_json = ?")
+		args = append(args, string(currentSafeJSON))
+	}
+	if currentMetaRaw != strings.TrimSpace(beforeYTDLPMeta) {
+		setClauses = append(setClauses, "ytdlp_metadata_args_raw = ?")
+		args = append(args, currentMetaRaw)
+	}
+	if currentDownRaw != strings.TrimSpace(beforeYTDLPDown) {
+		setClauses = append(setClauses, "ytdlp_download_args_raw = ?")
+		args = append(args, currentDownRaw)
+	}
+	ytdlpChanged := currentMode != beforeMode ||
+		string(currentSafeJSON) != string(beforeSafeJSON) ||
+		currentMetaRaw != strings.TrimSpace(beforeYTDLPMeta) ||
+		currentDownRaw != strings.TrimSpace(beforeYTDLPDown)
+
 	setClauses = append(setClauses, "updated_by = ?", "updated_at = ?")
 	args = append(args, currentUserID(c), nowString(), 1)
 
@@ -471,12 +640,29 @@ LIMIT 1`).Scan(&beforeTitle, &beforeDescription, &beforeLogoMediaID, &beforeEnab
 		afterDescription string
 		afterLogoMediaID sql.NullString
 		afterEnabled     int64
+		afterYTDLPMode   string
+		afterYTDLPSafe   string
+		afterYTDLPMeta   string
+		afterYTDLPDown   string
 	)
 	if err := tx.QueryRowContext(c.UserContext(), `
-SELECT site_title, site_description, site_logo_media_id, register_enabled
+SELECT site_title, site_description, site_logo_media_id, register_enabled,
+       COALESCE(ytdlp_param_mode, 'safe'),
+       COALESCE(ytdlp_safe_json, '{}'),
+       COALESCE(ytdlp_metadata_args_raw, ''),
+       COALESCE(ytdlp_download_args_raw, '')
 FROM site_settings
 WHERE id = 1
-LIMIT 1`).Scan(&afterTitle, &afterDescription, &afterLogoMediaID, &afterEnabled); err != nil {
+LIMIT 1`).Scan(
+		&afterTitle,
+		&afterDescription,
+		&afterLogoMediaID,
+		&afterEnabled,
+		&afterYTDLPMode,
+		&afterYTDLPSafe,
+		&afterYTDLPMeta,
+		&afterYTDLPDown,
+	); err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to update site settings")
 	}
 
@@ -490,7 +676,11 @@ LIMIT 1`).Scan(&afterTitle, &afterDescription, &afterLogoMediaID, &afterEnabled)
 				}
 				return beforeLogoMediaID.String
 			}(),
-			"register_enabled": beforeEnabled == 1,
+			"register_enabled":        beforeEnabled == 1,
+			"ytdlp_param_mode":        beforeMode,
+			"ytdlp_safe":              beforeSafeCfg,
+			"ytdlp_metadata_args_raw": strings.TrimSpace(beforeYTDLPMeta),
+			"ytdlp_download_args_raw": strings.TrimSpace(beforeYTDLPDown),
 		},
 		"after": fiber.Map{
 			"site_title":       afterTitle,
@@ -502,9 +692,37 @@ LIMIT 1`).Scan(&afterTitle, &afterDescription, &afterLogoMediaID, &afterEnabled)
 				return afterLogoMediaID.String
 			}(),
 			"register_enabled": afterEnabled == 1,
+			"ytdlp_param_mode": afterYTDLPMode,
+			"ytdlp_safe": func() interface{} {
+				cfg, _ := parseYTDLPSafeJSON(afterYTDLPSafe)
+				return cfg
+			}(),
+			"ytdlp_metadata_args_raw": strings.TrimSpace(afterYTDLPMeta),
+			"ytdlp_download_args_raw": strings.TrimSpace(afterYTDLPDown),
 		},
 	}); err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to write audit log")
+	}
+	if ytdlpChanged {
+		if err := h.writeAdminAudit(c.UserContext(), tx, c, "site_settings.patch_ytdlp", "site_settings", "1", fiber.Map{
+			"before": fiber.Map{
+				"ytdlp_param_mode":        beforeMode,
+				"ytdlp_safe":              beforeSafeCfg,
+				"ytdlp_metadata_args_raw": strings.TrimSpace(beforeYTDLPMeta),
+				"ytdlp_download_args_raw": strings.TrimSpace(beforeYTDLPDown),
+			},
+			"after": fiber.Map{
+				"ytdlp_param_mode": afterYTDLPMode,
+				"ytdlp_safe": func() interface{} {
+					cfg, _ := parseYTDLPSafeJSON(afterYTDLPSafe)
+					return cfg
+				}(),
+				"ytdlp_metadata_args_raw": strings.TrimSpace(afterYTDLPMeta),
+				"ytdlp_download_args_raw": strings.TrimSpace(afterYTDLPDown),
+			},
+		}); err != nil {
+			return response.Error(c, fiber.StatusInternalServerError, "failed to write audit log")
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

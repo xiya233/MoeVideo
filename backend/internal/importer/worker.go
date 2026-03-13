@@ -198,15 +198,22 @@ func (w *Worker) processJob(ctx context.Context, job claimedJob) (*processResult
 		sourceType  string
 		torrentData []byte
 		sourceURL   sql.NullString
+		ytdlpMode   string
+		ytdlpMeta   string
+		ytdlpDown   string
 		categoryID  sql.NullInt64
 		tagsJSON    string
 		visibility  string
 	)
 	err := w.app.DB.QueryRowContext(ctx, `
-SELECT user_id, source_type, torrent_data, source_url, category_id, tags_json, visibility
+SELECT user_id, source_type, torrent_data, source_url,
+       COALESCE(ytdlp_param_mode, 'safe'),
+       COALESCE(ytdlp_metadata_args_json, '[]'),
+       COALESCE(ytdlp_download_args_json, '[]'),
+       category_id, tags_json, visibility
 FROM video_import_jobs
 WHERE id = ?
-LIMIT 1`, job.ID).Scan(&jobUserID, &sourceType, &torrentData, &sourceURL, &categoryID, &tagsJSON, &visibility)
+LIMIT 1`, job.ID).Scan(&jobUserID, &sourceType, &torrentData, &sourceURL, &ytdlpMode, &ytdlpMeta, &ytdlpDown, &categoryID, &tagsJSON, &visibility)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, permanentError{err: fmt.Errorf("import job %s not found", job.ID)}
@@ -251,7 +258,11 @@ ORDER BY file_index ASC`, job.ID)
 
 	switch sourceType {
 	case "url":
-		return w.processURLJob(ctx, job, selected, strings.TrimSpace(sourceURL.String), categoryPtr, tags, visibility)
+		metaArgs, downArgs, parseErr := parseJobYTDLPArgs(ytdlpMode, ytdlpMeta, ytdlpDown)
+		if parseErr != nil {
+			return nil, permanentError{err: fmt.Errorf("import.ytdlp.invalid_args: %v", parseErr)}
+		}
+		return w.processURLJob(ctx, job, selected, strings.TrimSpace(sourceURL.String), categoryPtr, tags, visibility, metaArgs, downArgs)
 	case "torrent":
 	default:
 		return nil, permanentError{err: fmt.Errorf("import job %s has unsupported source_type: %s", job.ID, sourceType)}
@@ -391,6 +402,8 @@ func (w *Worker) processURLJob(
 	categoryID *int64,
 	tags []string,
 	visibility string,
+	metadataArgs []string,
+	downloadArgs []string,
 ) (*processResult, error) {
 	if strings.TrimSpace(sourceURL) == "" && len(selected) > 0 {
 		sourceURL = strings.TrimSpace(selected[0].FilePath)
@@ -409,7 +422,7 @@ func (w *Worker) processURLJob(
 			return nil, fmt.Errorf("mark import item downloading: %w", err)
 		}
 
-		importErr := w.importURLItem(ctx, job, item, sourceURL, categoryID, tags, visibility)
+		importErr := w.importURLItem(ctx, job, item, sourceURL, categoryID, tags, visibility, metadataArgs, downloadArgs)
 		if importErr != nil {
 			failedCount++
 			lastErr = truncateErr(importErr, 600)
@@ -458,13 +471,15 @@ func (w *Worker) importURLItem(
 	categoryID *int64,
 	tags []string,
 	visibility string,
+	metadataArgs []string,
+	downloadArgs []string,
 ) error {
 	sourceURL = strings.TrimSpace(sourceURL)
 	if sourceURL == "" {
 		return permanentError{err: fmt.Errorf("source_url is required")}
 	}
 
-	meta, err := w.extractURLMetadata(ctx, sourceURL)
+	meta, err := w.extractURLMetadata(ctx, sourceURL, metadataArgs)
 	if err != nil {
 		return err
 	}
@@ -485,7 +500,7 @@ func (w *Worker) importURLItem(
 	}
 	defer os.RemoveAll(tmpDir)
 
-	localSourcePath, err := w.downloadURLSource(ctx, sourceURL, tmpDir)
+	localSourcePath, err := w.downloadURLSource(ctx, sourceURL, tmpDir, downloadArgs)
 	if err != nil {
 		return err
 	}
@@ -532,7 +547,7 @@ func (w *Worker) importURLItem(
 	return nil
 }
 
-func (w *Worker) extractURLMetadata(ctx context.Context, sourceURL string) (ytDLPMetadata, error) {
+func (w *Worker) extractURLMetadata(ctx context.Context, sourceURL string, extraArgs []string) (ytDLPMetadata, error) {
 	timeout := w.app.Config.ImportURLTimeout
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
@@ -540,7 +555,10 @@ func (w *Worker) extractURLMetadata(ctx context.Context, sourceURL string) (ytDL
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, w.app.Config.YTDLPBin, "--dump-single-json", "--no-playlist", "--no-warnings", sourceURL)
+	args := []string{"--dump-single-json", "--no-playlist", "--no-warnings"}
+	args = append(args, extraArgs...)
+	args = append(args, sourceURL)
+	cmd := exec.CommandContext(runCtx, w.app.Config.YTDLPBin, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if runCtx.Err() == context.DeadlineExceeded {
@@ -556,7 +574,7 @@ func (w *Worker) extractURLMetadata(ctx context.Context, sourceURL string) (ytDL
 	return meta, nil
 }
 
-func (w *Worker) downloadURLSource(ctx context.Context, sourceURL, tmpDir string) (string, error) {
+func (w *Worker) downloadURLSource(ctx context.Context, sourceURL, tmpDir string, extraArgs []string) (string, error) {
 	timeout := w.app.Config.ImportURLTimeout
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
@@ -565,16 +583,16 @@ func (w *Worker) downloadURLSource(ctx context.Context, sourceURL, tmpDir string
 	defer cancel()
 
 	outputTemplate := filepath.Join(tmpDir, "source.%(ext)s")
-	cmd := exec.CommandContext(
-		runCtx,
-		w.app.Config.YTDLPBin,
+	args := []string{
 		"--no-playlist",
 		"--no-progress",
 		"--no-warnings",
 		"--restrict-filenames",
 		"-o", outputTemplate,
-		sourceURL,
-	)
+	}
+	args = append(args, extraArgs...)
+	args = append(args, sourceURL)
+	cmd := exec.CommandContext(runCtx, w.app.Config.YTDLPBin, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if runCtx.Err() == context.DeadlineExceeded {
@@ -945,6 +963,104 @@ func (e permanentError) Error() string {
 
 func (e permanentError) Unwrap() error {
 	return e.err
+}
+
+const (
+	workerYTDLPModeSafe     = "safe"
+	workerYTDLPModeAdvanced = "advanced"
+)
+
+var workerBlockedYTDLPArgs = map[string]struct{}{
+	"--exec":                 {},
+	"--exec-before-download": {},
+	"-o":                     {},
+	"--output":               {},
+	"-p":                     {},
+	"--paths":                {},
+	"--config-locations":     {},
+	"--batch-file":           {},
+}
+
+var workerBlockedYTDLPArgPrefixes = []string{
+	"--exec=",
+	"--exec-before-download=",
+	"--output=",
+	"--paths=",
+	"--config-locations=",
+	"--batch-file=",
+}
+
+func parseJobYTDLPArgs(modeRaw, metaJSONRaw, downJSONRaw string) ([]string, []string, error) {
+	mode := strings.ToLower(strings.TrimSpace(modeRaw))
+	if mode == "" {
+		mode = workerYTDLPModeSafe
+	}
+	if mode != workerYTDLPModeSafe && mode != workerYTDLPModeAdvanced {
+		return nil, nil, fmt.Errorf("unknown ytdlp_param_mode")
+	}
+
+	metaArgs, err := parseArgJSON(metaJSONRaw)
+	if err != nil {
+		return nil, nil, err
+	}
+	downArgs, err := parseArgJSON(downJSONRaw)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validateWorkerYTDLPArgs(metaArgs); err != nil {
+		return nil, nil, err
+	}
+	if err := validateWorkerYTDLPArgs(downArgs); err != nil {
+		return nil, nil, err
+	}
+	return metaArgs, downArgs, nil
+}
+
+func parseArgJSON(raw string) ([]string, error) {
+	content := strings.TrimSpace(raw)
+	if content == "" {
+		return []string{}, nil
+	}
+	var args []string
+	if err := json.Unmarshal([]byte(content), &args); err != nil {
+		return nil, fmt.Errorf("invalid arg json")
+	}
+	out := make([]string, 0, len(args))
+	for _, token := range args {
+		trimmed := strings.TrimSpace(token)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out, nil
+}
+
+func validateWorkerYTDLPArgs(args []string) error {
+	for _, token := range args {
+		normalized := strings.ToLower(strings.TrimSpace(token))
+		if normalized == "" {
+			continue
+		}
+		if len(normalized) > 2048 {
+			return fmt.Errorf("yt-dlp arg is too long")
+		}
+		if _, ok := workerBlockedYTDLPArgs[normalized]; ok {
+			return fmt.Errorf("blocked yt-dlp arg: %s", token)
+		}
+		for _, prefix := range workerBlockedYTDLPArgPrefixes {
+			if strings.HasPrefix(normalized, prefix) {
+				return fmt.Errorf("blocked yt-dlp arg: %s", token)
+			}
+		}
+		if strings.HasPrefix(normalized, "-o") && len(normalized) > 2 {
+			return fmt.Errorf("blocked yt-dlp arg: %s", token)
+		}
+		if strings.HasPrefix(normalized, "-p") && len(normalized) > 2 {
+			return fmt.Errorf("blocked yt-dlp arg: %s", token)
+		}
+	}
+	return nil
 }
 
 var importUnsafeChars = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)

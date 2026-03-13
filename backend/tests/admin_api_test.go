@@ -126,6 +126,39 @@ func TestAdminSiteSettingsAndCategoryFlow(t *testing.T) {
 		t.Fatalf("register_enabled should be false")
 	}
 
+	status, ytdlpResp := doJSONRequest(t, srv, http.MethodPatch, "/api/v1/admin/site-settings", map[string]interface{}{
+		"ytdlp_param_mode":        "advanced",
+		"ytdlp_metadata_args_raw": "--extractor-args \"generic:foo=bar\"",
+		"ytdlp_download_args_raw": "--format best",
+	}, map[string]string{"Authorization": "Bearer " + adminAccess})
+	if status != http.StatusOK {
+		t.Fatalf("patch ytdlp settings should return 200, got %d (%s)", status, ytdlpResp.Message)
+	}
+
+	status, ytdlpGetResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/admin/site-settings", nil, map[string]string{
+		"Authorization": "Bearer " + adminAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("admin get site settings should return 200, got %d", status)
+	}
+	var adminSettingsData struct {
+		YTDLPParamMode   string `json:"ytdlp_param_mode"`
+		YTDLPMetadataRaw string `json:"ytdlp_metadata_args_raw"`
+		YTDLPDownloadRaw string `json:"ytdlp_download_args_raw"`
+	}
+	if err := json.Unmarshal(ytdlpGetResp.Data, &adminSettingsData); err != nil {
+		t.Fatalf("parse admin site settings: %v", err)
+	}
+	if adminSettingsData.YTDLPParamMode != "advanced" {
+		t.Fatalf("expected ytdlp_param_mode=advanced, got %s", adminSettingsData.YTDLPParamMode)
+	}
+	if !strings.Contains(adminSettingsData.YTDLPMetadataRaw, "generic:foo=bar") {
+		t.Fatalf("unexpected ytdlp metadata args: %s", adminSettingsData.YTDLPMetadataRaw)
+	}
+	if !strings.Contains(adminSettingsData.YTDLPDownloadRaw, "--format") {
+		t.Fatalf("unexpected ytdlp download args: %s", adminSettingsData.YTDLPDownloadRaw)
+	}
+
 	status, catResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/admin/site-settings/categories", map[string]interface{}{
 		"slug":       "admin-created",
 		"name":       "管理分类",

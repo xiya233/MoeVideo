@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -424,6 +425,11 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 		}
 	}
 
+	ytdlpMode, ytdlpMetaArgsJSON, ytdlpDownArgsJSON, err := h.resolveYTDLPSnapshotForJob(c.UserContext(), tx)
+	if err != nil {
+		return response.Error(c, fiber.StatusServiceUnavailable, err.Error())
+	}
+
 	now := nowUTC()
 	nowStr := util.FormatTime(now)
 	expiresAt := util.FormatTime(now.Add(24 * time.Hour))
@@ -440,12 +446,14 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 INSERT INTO video_import_jobs (
 	id, user_id, source_type, source_filename, info_hash, torrent_data,
 	source_url, resolved_media_url, resolver_name, resolver_meta_json,
+	ytdlp_param_mode, ytdlp_metadata_args_json, ytdlp_download_args_json,
 	status, category_id, tags_json, visibility, attempts, max_attempts,
 	total_files, selected_files, completed_files, failed_files, progress,
 	available_at, started_at, finished_at, expires_at, error_message,
 	created_at, updated_at
 ) VALUES (?, ?, 'url', ?, NULL, NULL,
 	?, NULL, NULL, NULL,
+	?, ?, ?,
 	'queued', ?, ?, ?, 0, ?,
 	1, 1, 0, 0, 0,
 	?, NULL, NULL, ?, NULL,
@@ -455,6 +463,9 @@ INSERT INTO video_import_jobs (
 		uid,
 		sourceFilename,
 		req.URL,
+		ytdlpMode,
+		ytdlpMetaArgsJSON,
+		ytdlpDownArgsJSON,
 		req.CategoryID,
 		string(tagsJSON),
 		visibility,
@@ -496,6 +507,7 @@ func (h *Handler) ListImportJobs(c *fiber.Ctx) error {
 	query := `
 SELECT id, source_type, COALESCE(source_filename, ''), COALESCE(info_hash, ''), status,
        COALESCE(source_url, ''), COALESCE(resolved_media_url, ''), COALESCE(resolver_name, ''),
+       COALESCE(ytdlp_param_mode, 'safe'),
        COALESCE(category_id, 0), tags_json, visibility,
        total_files, selected_files, completed_files, failed_files, progress,
        COALESCE(available_at, ''), COALESCE(started_at, ''), COALESCE(finished_at, ''),
@@ -534,6 +546,7 @@ WHERE user_id = ?`
 		SourceURL     string
 		ResolvedURL   string
 		ResolverName  string
+		YTDLPMode     string
 		CategoryID    int64
 		TagsJSON      string
 		Visibility    string
@@ -563,6 +576,7 @@ WHERE user_id = ?`
 			&item.SourceURL,
 			&item.ResolvedURL,
 			&item.ResolverName,
+			&item.YTDLPMode,
 			&item.CategoryID,
 			&item.TagsJSON,
 			&item.Visibility,
@@ -608,6 +622,7 @@ WHERE user_id = ?`
 			"source_url":         job.SourceURL,
 			"resolved_media_url": job.ResolvedURL,
 			"resolver_name":      job.ResolverName,
+			"ytdlp_param_mode":   job.YTDLPMode,
 			"status":             job.Status,
 			"category_id":        nullableCategory(job.CategoryID),
 			"tags":               parseImportTags(job.TagsJSON),
@@ -645,6 +660,7 @@ func (h *Handler) GetImportJobDetail(c *fiber.Ctx) error {
 		sourceURL      string
 		resolvedMedia  string
 		resolverName   string
+		ytdlpMode      string
 		status         string
 		categoryID     sql.NullInt64
 		tagsJSON       string
@@ -666,6 +682,7 @@ func (h *Handler) GetImportJobDetail(c *fiber.Ctx) error {
 	err := h.app.DB.QueryRowContext(c.UserContext(), `
 SELECT user_id, source_type, COALESCE(source_filename, ''), COALESCE(info_hash, ''),
        COALESCE(source_url, ''), COALESCE(resolved_media_url, ''), COALESCE(resolver_name, ''),
+       COALESCE(ytdlp_param_mode, 'safe'),
        status,
        category_id, tags_json, visibility,
        total_files, selected_files, completed_files, failed_files, progress,
@@ -681,6 +698,7 @@ LIMIT 1`, jobID).Scan(
 		&sourceURL,
 		&resolvedMedia,
 		&resolverName,
+		&ytdlpMode,
 		&status,
 		&categoryID,
 		&tagsJSON,
@@ -781,6 +799,7 @@ ORDER BY file_index ASC`, jobID)
 			"source_url":         sourceURL,
 			"resolved_media_url": resolvedMedia,
 			"resolver_name":      resolverName,
+			"ytdlp_param_mode":   ytdlpMode,
 			"status":             status,
 			"category_id":        nullableCategoryFromNull(categoryID),
 			"tags":               parseImportTags(tagsJSON),
@@ -801,6 +820,87 @@ ORDER BY file_index ASC`, jobID)
 		"items":             items,
 		"created_video_ids": createdVideoIDs,
 	})
+}
+
+func (h *Handler) resolveYTDLPSnapshotForJob(ctx context.Context, tx *sql.Tx) (mode string, metadataJSON string, downloadJSON string, err error) {
+	now := nowString()
+	if _, err = tx.ExecContext(
+		ctx,
+		`INSERT OR IGNORE INTO site_settings (
+		    id, site_title, site_description, site_logo_media_id, register_enabled, updated_by, created_at, updated_at
+		) VALUES (1, ?, ?, NULL, 1, NULL, ?, ?)`,
+		defaultSiteTitle,
+		defaultSiteDescription,
+		now,
+		now,
+	); err != nil {
+		return "", "", "", fmt.Errorf("failed to read yt-dlp settings")
+	}
+
+	var (
+		modeRaw     string
+		safeJSON    string
+		metaRaw     string
+		downloadRaw string
+	)
+	if err = tx.QueryRowContext(ctx, `
+SELECT COALESCE(ytdlp_param_mode, 'safe'),
+       COALESCE(ytdlp_safe_json, '{}'),
+       COALESCE(ytdlp_metadata_args_raw, ''),
+       COALESCE(ytdlp_download_args_raw, '')
+FROM site_settings
+WHERE id = 1
+LIMIT 1`).Scan(&modeRaw, &safeJSON, &metaRaw, &downloadRaw); err != nil {
+		return "", "", "", fmt.Errorf("failed to read yt-dlp settings")
+	}
+
+	mode, err = normalizeYTDLPMode(modeRaw)
+	if err != nil {
+		return "", "", "", fmt.Errorf("invalid yt-dlp settings")
+	}
+
+	var (
+		metaArgs []string
+		downArgs []string
+	)
+	switch mode {
+	case ytdlpModeSafe:
+		safeCfg, parseErr := parseYTDLPSafeJSON(safeJSON)
+		if parseErr != nil {
+			return "", "", "", fmt.Errorf("invalid yt-dlp settings")
+		}
+		metaArgs, downArgs, parseErr = buildYTDLPArgsFromSafe(safeCfg)
+		if parseErr != nil {
+			return "", "", "", fmt.Errorf("invalid yt-dlp settings")
+		}
+	case ytdlpModeAdvanced:
+		metaArgs, err = splitCommandArgs(metaRaw)
+		if err != nil {
+			return "", "", "", fmt.Errorf("invalid yt-dlp settings")
+		}
+		downArgs, err = splitCommandArgs(downloadRaw)
+		if err != nil {
+			return "", "", "", fmt.Errorf("invalid yt-dlp settings")
+		}
+		if err = validateYTDLPArgTokens(metaArgs); err != nil {
+			return "", "", "", fmt.Errorf("invalid yt-dlp settings")
+		}
+		if err = validateYTDLPArgTokens(downArgs); err != nil {
+			return "", "", "", fmt.Errorf("invalid yt-dlp settings")
+		}
+	default:
+		return "", "", "", fmt.Errorf("invalid yt-dlp settings")
+	}
+
+	metadataJSON, err = marshalArgTokenJSON(metaArgs)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to encode yt-dlp settings")
+	}
+	downloadJSON, err = marshalArgTokenJSON(downArgs)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to encode yt-dlp settings")
+	}
+	return mode, metadataJSON, downloadJSON, nil
 }
 
 func decodeBase64Payload(input string) ([]byte, error) {

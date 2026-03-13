@@ -162,6 +162,7 @@ export type ImportJob = {
   source_url?: string;
   resolved_media_url?: string;
   resolver_name?: string;
+  ytdlp_param_mode?: "safe" | "advanced";
   status: ImportJobStatus;
   category_id?: number;
   tags: string[];
