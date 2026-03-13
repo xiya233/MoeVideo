@@ -59,6 +59,11 @@ func RegisterRoutes(api fiber.Router, a *app.App) {
 	api.Post("/videos", middleware.RequireAuth(a), h.CreateVideo)
 	api.Delete("/videos/:videoId", middleware.RequireAuth(a), h.DeleteVideo)
 
+	api.Post("/imports/torrent/inspect", middleware.RequireAuth(a), h.InspectTorrentImport)
+	api.Post("/imports/torrent/start", middleware.RequireAuth(a), h.StartTorrentImport)
+	api.Get("/imports", middleware.RequireAuth(a), h.ListImportJobs)
+	api.Get("/imports/:jobId", middleware.RequireAuth(a), h.GetImportJobDetail)
+
 	api.Get("/videos/:videoId/comments", middleware.OptionalAuth(a), h.ListComments)
 	api.Post("/videos/:videoId/comments", middleware.RequireAuth(a), h.CreateComment)
 	api.Get("/videos/:videoId/danmaku", middleware.OptionalAuth(a), h.ListVideoDanmaku)

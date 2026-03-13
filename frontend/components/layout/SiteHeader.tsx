@@ -104,8 +104,21 @@ export function SiteHeader() {
 
         <div className="flex items-center gap-2">
           <Link
+            href="/import"
+            className={cn(
+              "flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition-all hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
+              pathname === "/import" && "bg-primary/15 text-primary",
+            )}
+            title="导入视频"
+          >
+            <AppIcon name="input" />
+          </Link>
+          <Link
             href="/upload"
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition-all hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
+            className={cn(
+              "flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition-all hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
+              pathname === "/upload" && "bg-primary/15 text-primary",
+            )}
             title="上传"
           >
             <AppIcon name="upload" />

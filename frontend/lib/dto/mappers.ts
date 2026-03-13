@@ -7,8 +7,13 @@ import type {
   DanmakuItem,
   DanmakuListData,
   ContinueWatchingItem,
+  ImportItem,
+  ImportJob,
+  ImportJobDetailData,
+  ImportJobsData,
   HomeData,
   LoginOrRegisterData,
+  TorrentInspectResult,
   UserProfileData,
   UploadCompleteData,
   UploadTicket,
@@ -303,5 +308,97 @@ export function mapContinueWatchingItem(value: unknown): ContinueWatchingItem {
     duration_sec: num(src.duration_sec),
     progress_percent: num(src.progress_percent),
     updated_at: str(src.updated_at),
+  };
+}
+
+export function mapImportJob(value: unknown): ImportJob {
+  const src = obj(value);
+  const statusRaw = str(src.status);
+  const status: ImportJob["status"] =
+    statusRaw === "queued" ||
+    statusRaw === "downloading" ||
+    statusRaw === "succeeded" ||
+    statusRaw === "partial" ||
+    statusRaw === "failed"
+      ? statusRaw
+      : "draft";
+  const visibilityRaw = str(src.visibility);
+  const visibility: ImportJob["visibility"] =
+    visibilityRaw === "private" || visibilityRaw === "unlisted" ? visibilityRaw : "public";
+
+  return {
+    id: str(src.id),
+    source_type: "torrent",
+    source_filename: str(src.source_filename),
+    info_hash: str(src.info_hash),
+    status,
+    category_id: num(src.category_id) || undefined,
+    tags: arr(src.tags).map((item) => str(item)).filter(Boolean),
+    visibility,
+    total_files: num(src.total_files),
+    selected_files: num(src.selected_files),
+    completed_files: num(src.completed_files),
+    failed_files: num(src.failed_files),
+    progress: num(src.progress),
+    available_at: str(src.available_at) || undefined,
+    started_at: str(src.started_at) || undefined,
+    finished_at: str(src.finished_at) || undefined,
+    expires_at: str(src.expires_at) || undefined,
+    error_message: str(src.error_message) || undefined,
+    created_at: str(src.created_at),
+    updated_at: str(src.updated_at),
+  };
+}
+
+export function mapImportItem(value: unknown): ImportItem {
+  const src = obj(value);
+  const statusRaw = str(src.status);
+  const status: ImportItem["status"] =
+    statusRaw === "downloading" ||
+    statusRaw === "completed" ||
+    statusRaw === "failed" ||
+    statusRaw === "skipped"
+      ? statusRaw
+      : "pending";
+
+  return {
+    id: str(src.id),
+    file_index: num(src.file_index),
+    file_path: str(src.file_path),
+    file_size_bytes: num(src.file_size_bytes),
+    selected: bool(src.selected),
+    status,
+    error_message: str(src.error_message) || undefined,
+    media_object_id: str(src.media_object_id) || undefined,
+    video_id: str(src.video_id) || undefined,
+    created_at: str(src.created_at) || undefined,
+    updated_at: str(src.updated_at) || undefined,
+  };
+}
+
+export function mapTorrentInspectResult(value: unknown): TorrentInspectResult {
+  const src = obj(value);
+  return {
+    job: mapImportJob(src.job),
+    items: arr(src.items).map(mapImportItem),
+  };
+}
+
+export function mapImportJobsData(value: unknown): ImportJobsData {
+  const src = obj(value);
+  return {
+    items: arr(src.items).map(mapImportJob),
+    next_cursor: str(src.next_cursor) || undefined,
+  };
+}
+
+export function mapImportJobDetailData(value: unknown): ImportJobDetailData {
+  const src = obj(value);
+  return {
+    job: mapImportJob(src.job),
+    items: arr(src.items).map(mapImportItem),
+    created_video_ids: arr(src.created_video_ids)
+      .map((item) => str(item))
+      .filter(Boolean),
   };
 }

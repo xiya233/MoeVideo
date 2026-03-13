@@ -24,6 +24,10 @@ type Config struct {
 	FFprobeBin       string
 	TranscodePoll    time.Duration
 	TranscodeMaxTry  int
+	ImportPoll       time.Duration
+	ImportMaxTry     int
+	ImportTorrentMax int64
+	ImportMaxFiles   int
 
 	S3Bucket          string
 	S3Region          string
@@ -87,6 +91,39 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("TRANSCODE_MAX_RETRIES must be positive")
 	}
 	cfg.TranscodeMaxTry = transcodeMaxTry
+
+	importPoll, err := time.ParseDuration(getEnv("IMPORT_POLL_INTERVAL", "1s"))
+	if err != nil {
+		return cfg, fmt.Errorf("invalid IMPORT_POLL_INTERVAL: %w", err)
+	}
+	cfg.ImportPoll = importPoll
+
+	importMaxTry, err := strconv.Atoi(getEnv("IMPORT_MAX_RETRIES", "3"))
+	if err != nil {
+		return cfg, fmt.Errorf("invalid IMPORT_MAX_RETRIES: %w", err)
+	}
+	if importMaxTry <= 0 {
+		return cfg, fmt.Errorf("IMPORT_MAX_RETRIES must be positive")
+	}
+	cfg.ImportMaxTry = importMaxTry
+
+	importTorrentMaxMB, err := strconv.ParseInt(getEnv("IMPORT_TORRENT_MAX_MB", "2"), 10, 64)
+	if err != nil {
+		return cfg, fmt.Errorf("invalid IMPORT_TORRENT_MAX_MB: %w", err)
+	}
+	if importTorrentMaxMB <= 0 {
+		return cfg, fmt.Errorf("IMPORT_TORRENT_MAX_MB must be positive")
+	}
+	cfg.ImportTorrentMax = importTorrentMaxMB * 1024 * 1024
+
+	importMaxFiles, err := strconv.Atoi(getEnv("IMPORT_MAX_SELECTED_FILES", "20"))
+	if err != nil {
+		return cfg, fmt.Errorf("invalid IMPORT_MAX_SELECTED_FILES: %w", err)
+	}
+	if importMaxFiles <= 0 {
+		return cfg, fmt.Errorf("IMPORT_MAX_SELECTED_FILES must be positive")
+	}
+	cfg.ImportMaxFiles = importMaxFiles
 
 	maxUploadMB, err := strconv.ParseInt(getEnv("MAX_UPLOAD_MB", "2048"), 10, 64)
 	if err != nil {

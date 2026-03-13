@@ -151,6 +151,62 @@ export type DanmakuListData = {
   next_cursor?: string;
 };
 
+export type ImportJobStatus = "draft" | "queued" | "downloading" | "succeeded" | "partial" | "failed";
+export type ImportItemStatus = "pending" | "downloading" | "completed" | "failed" | "skipped";
+
+export type ImportJob = {
+  id: string;
+  source_type: "torrent";
+  source_filename: string;
+  info_hash: string;
+  status: ImportJobStatus;
+  category_id?: number;
+  tags: string[];
+  visibility: "public" | "private" | "unlisted";
+  total_files: number;
+  selected_files: number;
+  completed_files: number;
+  failed_files: number;
+  progress: number;
+  available_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  expires_at?: string;
+  error_message?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ImportItem = {
+  id: string;
+  file_index: number;
+  file_path: string;
+  file_size_bytes: number;
+  selected: boolean;
+  status: ImportItemStatus;
+  error_message?: string;
+  media_object_id?: string;
+  video_id?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type TorrentInspectResult = {
+  job: ImportJob;
+  items: ImportItem[];
+};
+
+export type ImportJobsData = {
+  items: ImportJob[];
+  next_cursor?: string;
+};
+
+export type ImportJobDetailData = {
+  job: ImportJob;
+  items: ImportItem[];
+  created_video_ids: string[];
+};
+
 export type ContinueWatchingItem = {
   video: VideoCard;
   position_sec: number;

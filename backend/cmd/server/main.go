@@ -18,6 +18,7 @@ import (
 	"moevideo/backend/internal/config"
 	"moevideo/backend/internal/db"
 	"moevideo/backend/internal/handlers"
+	"moevideo/backend/internal/importer"
 	"moevideo/backend/internal/response"
 	"moevideo/backend/internal/storage"
 	"moevideo/backend/internal/transcode"
@@ -104,6 +105,7 @@ func main() {
 	workerCtx, cancelWorker := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancelWorker()
 	go transcode.NewWorker(appContainer).Run(workerCtx)
+	go importer.NewWorker(appContainer).Run(workerCtx)
 	go func() {
 		<-workerCtx.Done()
 		log.Printf("shutdown signal received, stopping MoeVideo API...")

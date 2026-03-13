@@ -13,6 +13,7 @@ import {
   House,
   Image,
   ImagePlus,
+  Import as ImportIcon,
   Info,
   LayoutGrid,
   MessageCircle,
@@ -69,7 +70,8 @@ export type IconName =
   | "home"
   | "grid_view"
   | "search"
-  | "upload";
+  | "upload"
+  | "input";
 
 const ICON_MAP: Record<IconName, LucideIcon> = {
   sentiment_neutral: Smile,
@@ -105,6 +107,7 @@ const ICON_MAP: Record<IconName, LucideIcon> = {
   grid_view: LayoutGrid,
   search: Search,
   upload: Upload,
+  input: ImportIcon,
 };
 
 type AppIconProps = Omit<ComponentProps<"svg">, "name"> &
