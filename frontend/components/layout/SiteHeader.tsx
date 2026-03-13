@@ -14,7 +14,7 @@ export function SiteHeader() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const { user, openAuthDialog, logout } = useAuth();
+  const { ready, user, openAuthDialog, logout } = useAuth();
   const siteSettingsQuery = usePublicSiteSettings();
 
   const [searchValue, setSearchValue] = useState("");
@@ -113,7 +113,12 @@ export function SiteHeader() {
 
           <div className="mx-1 hidden h-6 w-[1px] bg-slate-200 sm:block" />
 
-          {user ? (
+          {!ready ? (
+            <div className="flex items-center gap-2">
+              <div className="h-9 w-28 animate-pulse rounded-full bg-slate-100" />
+              <div className="h-9 w-16 animate-pulse rounded-xl bg-slate-100" />
+            </div>
+          ) : user ? (
             <>
               <Link href="/me" className="hidden items-center gap-2 rounded-full bg-primary/10 px-3 py-1 sm:flex">
                 <div className="h-7 w-7 overflow-hidden rounded-full bg-white">

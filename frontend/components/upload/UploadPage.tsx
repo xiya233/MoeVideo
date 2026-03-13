@@ -78,7 +78,7 @@ function resolveVideoContentType(file: File): string {
 
 export function UploadPage() {
   const router = useRouter();
-  const { request, uploadBinary, session, openAuthDialog } = useAuth();
+  const { ready, request, uploadBinary, session, openAuthDialog } = useAuth();
 
   const [categories, setCategories] = useState<Category[]>([]);
   const [loadingCategories, setLoadingCategories] = useState(true);
@@ -267,6 +267,18 @@ export function UploadPage() {
       setSubmitting(false);
     }
   };
+
+  if (!ready) {
+    return (
+      <div className="mx-auto w-full max-w-5xl rounded-xl border border-primary/10 bg-white p-10 shadow-sm">
+        <div className="space-y-4">
+          <div className="h-8 w-48 animate-pulse rounded-lg bg-slate-100" />
+          <div className="h-5 w-72 animate-pulse rounded-lg bg-slate-100" />
+          <div className="h-11 w-28 animate-pulse rounded-full bg-slate-100" />
+        </div>
+      </div>
+    );
+  }
 
   if (!session) {
     return (
