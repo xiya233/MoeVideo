@@ -52,4 +52,5 @@ mise run backend-test
 
 - API 文档：`backend/docs/api.md`
 - 数据模型文档：`backend/docs/schema.md`
+- yt-dlp 参数配置文档：`backend/docs/ytdlp-settings.md`
 - SQL 迁移：`backend/internal/db/migrations/0001_init.sql`
