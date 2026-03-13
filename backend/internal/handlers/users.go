@@ -184,12 +184,17 @@ func (h *Handler) GetUserByID(c *fiber.Ctx) error {
 	profileAccessible := user.ProfilePublic || isOwner
 	return response.OK(c, fiber.Map{
 		"user": fiber.Map{
-			"id":              user.ID,
-			"username":        user.Username,
-			"bio":             user.Bio,
-			"avatar_url":      user.AvatarURL,
-			"followers_count": user.FollowersCount,
-			"following_count": user.FollowingCount,
+			"id":               user.ID,
+			"username":         user.Username,
+			"bio":              user.Bio,
+			"avatar_url":       user.AvatarURL,
+			"followers_count":  user.FollowersCount,
+			"following_count":  user.FollowingCount,
+			"profile_public":   user.ProfilePublic,
+			"public_videos":    user.PublicVideos,
+			"public_favorites": user.PublicFavorites,
+			"public_following": user.PublicFollowing,
+			"public_followers": user.PublicFollowers,
 		},
 		"followed":           followed,
 		"profile_accessible": profileAccessible,

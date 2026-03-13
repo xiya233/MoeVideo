@@ -884,12 +884,22 @@ func TestUserProfilePrivacyAndFollowers(t *testing.T) {
 	}
 	var userData struct {
 		ProfileAccessible bool `json:"profile_accessible"`
+		User              struct {
+			ProfilePublic   bool `json:"profile_public"`
+			PublicVideos    bool `json:"public_videos"`
+			PublicFavorites bool `json:"public_favorites"`
+			PublicFollowing bool `json:"public_following"`
+			PublicFollowers bool `json:"public_followers"`
+		} `json:"user"`
 	}
 	if err := json.Unmarshal(userResp.Data, &userData); err != nil {
 		t.Fatalf("parse /users/{id} response: %v", err)
 	}
 	if userData.ProfileAccessible {
 		t.Fatalf("expected profile_accessible=false when profile_public=0")
+	}
+	if userData.User.ProfilePublic {
+		t.Fatalf("expected user.profile_public=false after disabling profile")
 	}
 
 	status, _ = doJSONRequest(t, srv, http.MethodGet, "/api/v1/users/"+ownerID+"/videos?limit=10", nil, map[string]string{
@@ -918,11 +928,44 @@ func TestUserProfilePrivacyAndFollowers(t *testing.T) {
 	}
 
 	status, _ = doJSONRequest(t, srv, http.MethodPatch, "/api/v1/users/me", map[string]interface{}{
-		"profile_public": true,
-		"public_videos":  true,
+		"profile_public":   true,
+		"public_videos":    true,
+		"public_favorites": true,
+		"public_following": true,
+		"public_followers": true,
 	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
 	if status != http.StatusOK {
 		t.Fatalf("enable public videos should succeed, got %d", status)
+	}
+
+	status, publicUserResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/users/"+ownerID, nil, map[string]string{
+		"Authorization": "Bearer " + viewerAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("get /users/{id} after enabling profile should succeed, got %d", status)
+	}
+	var publicUserData struct {
+		ProfileAccessible bool `json:"profile_accessible"`
+		User              struct {
+			ProfilePublic   bool `json:"profile_public"`
+			PublicVideos    bool `json:"public_videos"`
+			PublicFavorites bool `json:"public_favorites"`
+			PublicFollowing bool `json:"public_following"`
+			PublicFollowers bool `json:"public_followers"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(publicUserResp.Data, &publicUserData); err != nil {
+		t.Fatalf("parse public /users/{id} response: %v", err)
+	}
+	if !publicUserData.ProfileAccessible {
+		t.Fatalf("expected profile_accessible=true after enabling profile")
+	}
+	if !publicUserData.User.ProfilePublic ||
+		!publicUserData.User.PublicVideos ||
+		!publicUserData.User.PublicFavorites ||
+		!publicUserData.User.PublicFollowing ||
+		!publicUserData.User.PublicFollowers {
+		t.Fatalf("expected all public profile flags true, got %+v", publicUserData.User)
 	}
 
 	status, viewerVideosResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/users/"+ownerID+"/videos?limit=10", nil, map[string]string{
