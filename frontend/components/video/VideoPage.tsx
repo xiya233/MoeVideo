@@ -226,13 +226,19 @@ export function VideoPage({ videoId }: VideoPageProps) {
   }, [request, videoId]);
 
   const fetchRecommendations = useCallback(
-    async ({ withLoading = false }: { withLoading?: boolean } = {}) => {
+    async ({ withLoading = false, excludeIDs = [] }: { withLoading?: boolean; excludeIDs?: string[] } = {}) => {
       if (withLoading) {
         setRecommendationLoading(true);
       }
       setRecommendationError("");
       try {
-        const data = await request<{ items: VideoCard[] }>(`/videos/${videoId}/recommendations?limit=8`, { auth: false });
+        const params = new URLSearchParams();
+        params.set("limit", "8");
+        params.set("random", "1");
+        if (excludeIDs.length > 0) {
+          params.set("exclude_ids", excludeIDs.join(","));
+        }
+        const data = await request<{ items: VideoCard[] }>(`/videos/${videoId}/recommendations?${params.toString()}`, { auth: false });
         setRecommendations((data.items ?? []).map(mapVideoCard));
       } catch (err) {
         setRecommendations([]);
@@ -986,8 +992,9 @@ export function VideoPage({ videoId }: VideoPageProps) {
     if (!detail || detail.status !== "published" || recommendationLoading) {
       return;
     }
-    await fetchRecommendations({ withLoading: true });
-  }, [detail, fetchRecommendations, recommendationLoading]);
+    const excludeIDs = recommendations.map((item) => item.id).filter(Boolean);
+    await fetchRecommendations({ withLoading: true, excludeIDs });
+  }, [detail, fetchRecommendations, recommendationLoading, recommendations]);
 
   const recommendationCards = useMemo(() => recommendations.slice(0, 8), [recommendations]);
   const playerSource = useMemo(() => {
@@ -1172,6 +1179,10 @@ export function VideoPage({ videoId }: VideoPageProps) {
               <span className="flex items-center gap-1">
                 <AppIcon name="visibility" size={18} />
                 {formatCount(detail.stats.views_count)} 播放
+              </span>
+              <span className="flex items-center gap-1">
+                <AppIcon name="grid_view" size={18} />
+                分类：{detail.video.category || "未分类"}
               </span>
               <span className="flex items-center gap-1">
                 <AppIcon name="calendar_today" size={18} />
@@ -1465,11 +1476,11 @@ export function VideoPage({ videoId }: VideoPageProps) {
                   <AuthorInline
                     username={video.author.username}
                     avatarUrl={video.author.avatar_url}
-                    avatarClassName="h-4 w-4"
-                    usernameClassName="text-xs text-slate-500"
+                    avatarClassName="h-5 w-5"
+                    usernameClassName="text-[11px] text-slate-500"
                   />
-                  <p className="flex items-center gap-1 text-[10px] text-slate-400">
-                    <AppIcon name="play_circle" size={12} />
+                  <p className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                    <AppIcon name="visibility" size={12} className="text-slate-300" />
                     {formatCount(video.views_count)} 播放
                   </p>
                 </div>

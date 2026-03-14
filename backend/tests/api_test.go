@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -327,6 +328,84 @@ func createActiveCategory(t *testing.T, container *app.App, slug, name string) i
 		t.Fatalf("read category id: %v", err)
 	}
 	return categoryID
+}
+
+func createPublishedVideoWithTags(
+	t *testing.T,
+	container *app.App,
+	userID string,
+	categoryID *int64,
+	visibility string,
+	title string,
+	tags []string,
+) string {
+	t.Helper()
+
+	if visibility == "" {
+		visibility = "public"
+	}
+	now := util.FormatTime(time.Now().UTC())
+	mediaID := "media-" + uuid.NewString()
+	videoID := "video-" + uuid.NewString()
+	objectKey := "videos/" + userID + "/seed/" + mediaID + ".mp4"
+
+	if _, err := container.DB.Exec(
+		`INSERT INTO media_objects (id, provider, bucket, object_key, original_filename, mime_type, size_bytes, duration_sec, created_by, created_at)
+		 VALUES (?, 'local', '', ?, 'sample.mp4', 'video/mp4', 1024, 120, ?, ?)`,
+		mediaID,
+		objectKey,
+		userID,
+		now,
+	); err != nil {
+		t.Fatalf("insert media: %v", err)
+	}
+
+	var categoryArg interface{}
+	if categoryID != nil {
+		categoryArg = *categoryID
+	}
+
+	if _, err := container.DB.Exec(
+		`INSERT INTO videos (id, uploader_id, title, description, category_id, source_media_id, status, visibility, duration_sec, published_at, created_at, updated_at)
+		 VALUES (?, ?, ?, 'seed', ?, ?, 'published', ?, 120, ?, ?, ?)`,
+		videoID,
+		userID,
+		title,
+		categoryArg,
+		mediaID,
+		visibility,
+		now,
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert video: %v", err)
+	}
+
+	for _, rawTag := range tags {
+		tag := strings.TrimSpace(rawTag)
+		if tag == "" {
+			continue
+		}
+		if _, err := container.DB.Exec(`INSERT INTO tags (name, use_count, created_at) VALUES (?, 0, ?) ON CONFLICT(name) DO NOTHING`, tag, now); err != nil {
+			t.Fatalf("insert tag: %v", err)
+		}
+		var tagID int64
+		if err := container.DB.QueryRow(`SELECT id FROM tags WHERE name = ? LIMIT 1`, tag).Scan(&tagID); err != nil {
+			t.Fatalf("query tag id: %v", err)
+		}
+		res, err := container.DB.Exec(`INSERT OR IGNORE INTO video_tags (video_id, tag_id) VALUES (?, ?)`, videoID, tagID)
+		if err != nil {
+			t.Fatalf("attach tag: %v", err)
+		}
+		affected, _ := res.RowsAffected()
+		if affected > 0 {
+			if _, err := container.DB.Exec(`UPDATE tags SET use_count = use_count + 1 WHERE id = ?`, tagID); err != nil {
+				t.Fatalf("increment tag use_count: %v", err)
+			}
+		}
+	}
+
+	return videoID
 }
 
 func TestCommentNestedReplyRejected(t *testing.T) {
@@ -1180,6 +1259,61 @@ func TestCreateVideoRequiresCategoryID(t *testing.T) {
 	}
 }
 
+func TestVideoRecommendationsRandomExcludeAndFallback(t *testing.T) {
+	srv, container := newTestServer(t)
+	ownerID, _, _ := registerUser(t, srv, "rec-owner", "rec-owner@example.com", "password123")
+
+	catA := createActiveCategory(t, container, "rec-cat-a", "Rec Cat A")
+	catB := createActiveCategory(t, container, "rec-cat-b", "Rec Cat B")
+
+	currentID := createPublishedVideoWithTags(t, container, ownerID, &catA, "public", "current", nil)
+	sameCategoryID := createPublishedVideoWithTags(t, container, ownerID, &catA, "public", "same-category", nil)
+	otherOneID := createPublishedVideoWithTags(t, container, ownerID, &catB, "public", "other-one", nil)
+	otherTwoID := createPublishedVideoWithTags(t, container, ownerID, &catB, "public", "other-two", nil)
+
+	status, resp := doJSONRequest(
+		t,
+		srv,
+		http.MethodGet,
+		"/api/v1/videos/"+currentID+"/recommendations?random=1&limit=3&exclude_ids="+otherOneID,
+		nil,
+		nil,
+	)
+	if status != http.StatusOK {
+		t.Fatalf("random recommendations should return 200, got %d (%s)", status, resp.Message)
+	}
+
+	var payload struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(resp.Data, &payload); err != nil {
+		t.Fatalf("parse random recommendations response: %v", err)
+	}
+
+	if len(payload.Items) != 2 {
+		t.Fatalf("expected 2 recommendation items, got %d", len(payload.Items))
+	}
+
+	ids := map[string]struct{}{}
+	for _, item := range payload.Items {
+		ids[item.ID] = struct{}{}
+		if item.ID == currentID {
+			t.Fatalf("recommendations must exclude current video")
+		}
+		if item.ID == otherOneID {
+			t.Fatalf("recommendations must exclude exclude_ids video")
+		}
+	}
+	if _, ok := ids[sameCategoryID]; !ok {
+		t.Fatalf("recommendations should include same-category candidate")
+	}
+	if _, ok := ids[otherTwoID]; !ok {
+		t.Fatalf("recommendations should include fallback candidate from other categories")
+	}
+}
+
 func TestVideoDetailPlaybackModeCompat(t *testing.T) {
 	srv, container := newTestServer(t)
 	userID, _, _ := registerUser(t, srv, "fred", "fred@example.com", "password123")
@@ -1519,6 +1653,117 @@ func TestURLImportStartCreatesQueuedJob(t *testing.T) {
 	}
 	if customDescription != "URL 自定义描述" {
 		t.Fatalf("unexpected custom_description: %s", customDescription)
+	}
+}
+
+func TestListVideosFilterByTagAndListTags(t *testing.T) {
+	srv, container := newTestServer(t)
+	ownerID, _, _ := registerUser(t, srv, "tag-owner", "tag-owner@example.com", "password123")
+	categoryID := createActiveCategory(t, container, "tag-cat", "Tag Cat")
+
+	alphaVideoID := createPublishedVideoWithTags(t, container, ownerID, &categoryID, "public", "alpha video", []string{"alpha", "common"})
+	betaVideoID := createPublishedVideoWithTags(t, container, ownerID, &categoryID, "public", "beta video", []string{"beta", "common"})
+	privateAlphaID := createPublishedVideoWithTags(t, container, ownerID, &categoryID, "private", "private alpha", []string{"alpha"})
+
+	status, alphaResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos?tag=alpha&limit=20", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list videos by tag should return 200, got %d (%s)", status, alphaResp.Message)
+	}
+	var alphaPayload struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(alphaResp.Data, &alphaPayload); err != nil {
+		t.Fatalf("parse alpha videos payload: %v", err)
+	}
+	if len(alphaPayload.Items) != 1 || alphaPayload.Items[0].ID != alphaVideoID {
+		t.Fatalf("expected only public alpha video, got %+v", alphaPayload.Items)
+	}
+	if alphaPayload.Items[0].ID == privateAlphaID {
+		t.Fatalf("private alpha video must not appear in public tag list")
+	}
+
+	status, commonResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/videos?tag=common&limit=20", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list videos by common tag should return 200, got %d (%s)", status, commonResp.Message)
+	}
+	var commonPayload struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(commonResp.Data, &commonPayload); err != nil {
+		t.Fatalf("parse common videos payload: %v", err)
+	}
+	if len(commonPayload.Items) != 2 {
+		t.Fatalf("expected 2 videos for common tag, got %d", len(commonPayload.Items))
+	}
+	commonIDs := map[string]struct{}{}
+	for _, item := range commonPayload.Items {
+		commonIDs[item.ID] = struct{}{}
+	}
+	if _, ok := commonIDs[alphaVideoID]; !ok {
+		t.Fatalf("common tag payload missing alpha video")
+	}
+	if _, ok := commonIDs[betaVideoID]; !ok {
+		t.Fatalf("common tag payload missing beta video")
+	}
+
+	status, tagsResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/tags?limit=2", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list tags should return 200, got %d (%s)", status, tagsResp.Message)
+	}
+	var tagsPayload struct {
+		Items []struct {
+			Name        string `json:"name"`
+			VideosCount int64  `json:"videos_count"`
+			UseCount    int64  `json:"use_count"`
+		} `json:"items"`
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(tagsResp.Data, &tagsPayload); err != nil {
+		t.Fatalf("parse tags payload: %v", err)
+	}
+	if len(tagsPayload.Items) != 2 {
+		t.Fatalf("expected 2 tags in first page, got %d", len(tagsPayload.Items))
+	}
+	if tagsPayload.NextCursor == "" {
+		t.Fatalf("expected next_cursor for paged tags list")
+	}
+
+	status, tagsResp2 := doJSONRequest(t, srv, http.MethodGet, "/api/v1/tags?limit=2&cursor="+url.QueryEscape(tagsPayload.NextCursor), nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list tags second page should return 200, got %d (%s)", status, tagsResp2.Message)
+	}
+	var tagsPayload2 struct {
+		Items []struct {
+			Name        string `json:"name"`
+			VideosCount int64  `json:"videos_count"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(tagsResp2.Data, &tagsPayload2); err != nil {
+		t.Fatalf("parse second tags payload: %v", err)
+	}
+	if len(tagsPayload2.Items) == 0 {
+		t.Fatalf("expected second page of tags to contain remaining items")
+	}
+
+	all := map[string]int64{}
+	for _, item := range tagsPayload.Items {
+		all[item.Name] = item.VideosCount
+	}
+	for _, item := range tagsPayload2.Items {
+		all[item.Name] = item.VideosCount
+	}
+	if all["common"] != 2 {
+		t.Fatalf("expected common videos_count=2, got %d", all["common"])
+	}
+	if all["alpha"] != 1 {
+		t.Fatalf("expected alpha videos_count=1 (private excluded), got %d", all["alpha"])
+	}
+	if all["beta"] != 1 {
+		t.Fatalf("expected beta videos_count=1, got %d", all["beta"])
 	}
 }
 

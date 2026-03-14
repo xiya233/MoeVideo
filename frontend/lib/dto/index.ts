@@ -5,6 +5,17 @@ export type Category = {
   sort_order: number;
 };
 
+export type TagItem = {
+  name: string;
+  videos_count: number;
+  use_count: number;
+};
+
+export type TagsData = {
+  items: TagItem[];
+  next_cursor?: string;
+};
+
 export type Author = {
   id: string;
   username: string;

@@ -45,6 +45,7 @@ func RegisterRoutes(api fiber.Router, a *app.App) {
 
 	api.Get("/home", middleware.OptionalAuth(a), h.GetHome)
 	api.Get("/categories", h.ListCategories)
+	api.Get("/tags", h.ListTags)
 	api.Get("/site-settings/public", h.GetPublicSiteSettings)
 	api.Get("/rankings/hot", h.GetHotRankings)
 

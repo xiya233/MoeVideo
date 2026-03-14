@@ -117,8 +117,14 @@ type videoQueryOptions struct {
 	Limit    int
 	Sort     string
 	Category string
+	Tag      string
 	Query    string
 	Cursor   string
+}
+
+type tagListCursor struct {
+	VideosCount int64  `json:"videos_count"`
+	Name        string `json:"name"`
 }
 
 func (h *Handler) queryVideoCards(ctx context.Context, opts videoQueryOptions) ([]map[string]interface{}, error) {
@@ -160,6 +166,15 @@ WHERE v.status = 'published' AND v.visibility = 'public'
 		categoryFilter, catArgs := buildCategoryFilter(opts.Category)
 		query += categoryFilter
 		args = append(args, catArgs...)
+	}
+	if opts.Tag != "" {
+		query += ` AND EXISTS (
+			SELECT 1
+			FROM video_tags vt
+			JOIN tags t ON t.id = vt.tag_id
+			WHERE vt.video_id = v.id AND t.name = ?
+		)`
+		args = append(args, opts.Tag)
 	}
 	if opts.Query != "" {
 		query += ` AND (
@@ -218,6 +233,82 @@ WHERE v.status = 'published' AND v.visibility = 'public'
 		}
 	}
 	return cards, nextCursor, nil
+}
+
+func (h *Handler) ListTags(c *fiber.Ctx) error {
+	limit := pagination.ClampLimit(c.Query("limit"), defaultLimit, maxLimit)
+	cursorRaw := strings.TrimSpace(c.Query("cursor"))
+
+	query := `
+WITH tag_stats AS (
+	SELECT
+		t.name AS name,
+		t.use_count AS use_count,
+		COUNT(DISTINCT v.id) AS videos_count
+	FROM tags t
+	JOIN video_tags vt ON vt.tag_id = t.id
+	JOIN videos v ON v.id = vt.video_id
+	WHERE v.status = 'published' AND v.visibility = 'public'
+	GROUP BY t.id, t.name, t.use_count
+)
+SELECT name, use_count, videos_count
+FROM tag_stats
+`
+	args := make([]interface{}, 0, 4)
+
+	if cursorRaw != "" {
+		var cur tagListCursor
+		if err := pagination.Decode(cursorRaw, &cur); err != nil {
+			return response.Error(c, fiber.StatusBadRequest, "invalid cursor")
+		}
+		query += ` WHERE (videos_count < ? OR (videos_count = ? AND name > ?))`
+		args = append(args, cur.VideosCount, cur.VideosCount, cur.Name)
+	}
+
+	query += ` ORDER BY videos_count DESC, name ASC LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := h.app.DB.QueryContext(c.UserContext(), query, args...)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to fetch tags")
+	}
+	defer rows.Close()
+
+	items := make([]map[string]interface{}, 0, limit+1)
+	for rows.Next() {
+		var name string
+		var useCount, videosCount int64
+		if err := rows.Scan(&name, &useCount, &videosCount); err != nil {
+			return response.Error(c, fiber.StatusInternalServerError, "failed to parse tags")
+		}
+		items = append(items, map[string]interface{}{
+			"name":         name,
+			"use_count":    useCount,
+			"videos_count": videosCount,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to read tags")
+	}
+
+	nextCursor := ""
+	if len(items) > limit {
+		last := items[limit-1]
+		items = items[:limit]
+		encoded, err := pagination.Encode(tagListCursor{
+			VideosCount: last["videos_count"].(int64),
+			Name:        last["name"].(string),
+		})
+		if err != nil {
+			return response.Error(c, fiber.StatusInternalServerError, "failed to encode cursor")
+		}
+		nextCursor = encoded
+	}
+
+	return response.OK(c, fiber.Map{
+		"items":       items,
+		"next_cursor": nextCursor,
+	})
 }
 
 func buildCategoryFilter(category string) (string, []interface{}) {

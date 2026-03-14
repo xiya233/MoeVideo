@@ -1,6 +1,8 @@
 import type {
   Author,
   Category,
+  TagItem,
+  TagsData,
   CommentItem,
   CommentsData,
   DanmakuData,
@@ -96,6 +98,23 @@ export function mapCategory(value: unknown): Category {
     slug: str(src.slug),
     name: str(src.name, "未分类"),
     sort_order: num(src.sort_order),
+  };
+}
+
+export function mapTagItem(value: unknown): TagItem {
+  const src = obj(value);
+  return {
+    name: str(src.name),
+    videos_count: num(src.videos_count),
+    use_count: num(src.use_count),
+  };
+}
+
+export function mapTagsData(value: unknown): TagsData {
+  const src = obj(value);
+  return {
+    items: arr(src.items).map(mapTagItem),
+    next_cursor: str(src.next_cursor) || undefined,
   };
 }
 

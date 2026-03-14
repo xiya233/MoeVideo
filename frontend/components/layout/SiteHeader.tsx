@@ -78,6 +78,16 @@ export function SiteHeader() {
               <AppIcon name="grid_view" size={20} />
               分类
             </Link>
+            <Link
+              href="/tags"
+              className={cn(
+                "flex items-center gap-1 text-sm font-medium text-slate-700 transition-colors hover:text-primary",
+                pathname === "/tags" && "text-primary",
+              )}
+            >
+              <AppIcon name="tag" size={18} />
+              标签
+            </Link>
           </nav>
         </div>
 

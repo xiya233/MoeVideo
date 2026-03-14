@@ -47,6 +47,7 @@ func (h *Handler) ListVideos(c *fiber.Ctx) error {
 		Cursor:   c.Query("cursor"),
 		Query:    strings.TrimSpace(c.Query("q")),
 		Category: strings.TrimSpace(c.Query("category")),
+		Tag:      strings.TrimSpace(c.Query("tag")),
 		Sort:     strings.TrimSpace(c.Query("sort")),
 	})
 	if err != nil {
@@ -280,6 +281,8 @@ func (h *Handler) GetVideoRecommendations(c *fiber.Ctx) error {
 		return response.Error(c, fiber.StatusBadRequest, "videoId is required")
 	}
 	limit := pagination.ClampLimit(c.Query("limit"), 8, maxLimit)
+	randomMode := strings.TrimSpace(c.Query("random")) == "1"
+	excludeIDs := parseRecommendationExcludeIDs(c.Query("exclude_ids"))
 	viewerID := currentUserID(c)
 
 	visible, err := h.loadVideoVisibility(c.UserContext(), videoID)
@@ -298,6 +301,25 @@ func (h *Handler) GetVideoRecommendations(c *fiber.Ctx) error {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to load video")
 	}
 
+	excludeSet := make(map[string]struct{}, len(excludeIDs)+1)
+	excludeSet[videoID] = struct{}{}
+	for _, id := range excludeIDs {
+		excludeSet[id] = struct{}{}
+	}
+
+	if randomMode {
+		var categoryPtr *int64
+		if categoryID.Valid {
+			v := categoryID.Int64
+			categoryPtr = &v
+		}
+		cards, err := h.queryRandomRecommendations(c.UserContext(), limit, categoryPtr, excludeSet)
+		if err != nil {
+			return response.Error(c, fiber.StatusInternalServerError, "failed to fetch recommendations")
+		}
+		return response.OK(c, fiber.Map{"items": cards})
+	}
+
 	opts := videoQueryOptions{Limit: limit, Sort: "hot"}
 	if categoryID.Valid {
 		opts.Category = fmt.Sprintf("%d", categoryID.Int64)
@@ -309,7 +331,8 @@ func (h *Handler) GetVideoRecommendations(c *fiber.Ctx) error {
 
 	filtered := make([]map[string]interface{}, 0, len(cards))
 	for _, card := range cards {
-		if card["id"] == videoID {
+		cardID, _ := card["id"].(string)
+		if _, ok := excludeSet[cardID]; ok {
 			continue
 		}
 		filtered = append(filtered, card)
@@ -319,6 +342,132 @@ func (h *Handler) GetVideoRecommendations(c *fiber.Ctx) error {
 	}
 
 	return response.OK(c, fiber.Map{"items": filtered})
+}
+
+func parseRecommendationExcludeIDs(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	seen := make(map[string]struct{}, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		id := strings.TrimSpace(part)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+		if len(out) >= 100 {
+			break
+		}
+	}
+	return out
+}
+
+func (h *Handler) queryRandomRecommendations(
+	ctx context.Context,
+	limit int,
+	categoryID *int64,
+	excludeSet map[string]struct{},
+) ([]map[string]interface{}, error) {
+	if limit <= 0 {
+		return []map[string]interface{}{}, nil
+	}
+
+	excludedIDs := make([]string, 0, len(excludeSet))
+	for id := range excludeSet {
+		excludedIDs = append(excludedIDs, id)
+	}
+
+	queryPart := func(categoryOnly bool) (string, []interface{}) {
+		query := `
+SELECT v.id, v.title, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at),
+       COALESCE(c.name, ''),
+       COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, ''),
+       COALESCE(pm.provider, ''), COALESCE(pm.bucket, ''), COALESCE(pm.object_key, ''),
+       u.id, u.username, COALESCE(u.followers_count, 0),
+       COALESCE(am.provider, ''), COALESCE(am.bucket, ''), COALESCE(am.object_key, '')
+FROM videos v
+JOIN users u ON u.id = v.uploader_id
+LEFT JOIN categories c ON c.id = v.category_id
+LEFT JOIN media_objects cm ON cm.id = v.cover_media_id
+LEFT JOIN media_objects pm ON pm.id = v.preview_media_id
+LEFT JOIN media_objects am ON am.id = u.avatar_media_id
+WHERE v.status = 'published' AND v.visibility = 'public'
+`
+		args := make([]interface{}, 0, 4+len(excludedIDs))
+		if categoryOnly && categoryID != nil {
+			query += ` AND v.category_id = ?`
+			args = append(args, *categoryID)
+		}
+		if len(excludedIDs) > 0 {
+			placeholders := strings.TrimSuffix(strings.Repeat("?,", len(excludedIDs)), ",")
+			query += ` AND v.id NOT IN (` + placeholders + `)`
+			for _, id := range excludedIDs {
+				args = append(args, id)
+			}
+		}
+		query += ` ORDER BY RANDOM() LIMIT ?`
+		args = append(args, limit)
+		return query, args
+	}
+
+	runQuery := func(categoryOnly bool) ([]map[string]interface{}, error) {
+		query, args := queryPart(categoryOnly)
+		rows, err := h.app.DB.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		return h.scanVideoCards(rows)
+	}
+
+	result := make([]map[string]interface{}, 0, limit)
+	if categoryID != nil {
+		cards, err := runQuery(true)
+		if err != nil {
+			return nil, err
+		}
+		for _, card := range cards {
+			result = append(result, card)
+			if id, ok := card["id"].(string); ok && id != "" {
+				if _, exists := excludeSet[id]; !exists {
+					excludeSet[id] = struct{}{}
+					excludedIDs = append(excludedIDs, id)
+				}
+			}
+		}
+	}
+
+	if len(result) < limit {
+		cards, err := runQuery(false)
+		if err != nil {
+			return nil, err
+		}
+		for _, card := range cards {
+			id, _ := card["id"].(string)
+			if id != "" {
+				if _, exists := excludeSet[id]; exists {
+					continue
+				}
+				excludeSet[id] = struct{}{}
+			}
+			result = append(result, card)
+			if len(result) >= limit {
+				break
+			}
+		}
+	}
+
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
 }
 
 func (h *Handler) TrackVideoView(c *fiber.Ctx) error {

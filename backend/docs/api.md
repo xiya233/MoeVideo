@@ -41,6 +41,7 @@ Authorization: Bearer <access_jwt>
 
 - `GET /home`
 - `GET /categories`
+- `GET /tags`
 - `GET /rankings/hot`
 - `GET /videos`
 
@@ -51,6 +52,7 @@ Query params:
 - `q`
 - `category`
 - `sort` (`latest|hot`)
+- `tag` (按标签精确过滤)
 
 ## Video Playback
 
@@ -77,6 +79,12 @@ Visibility rules:
 
 - public users can only access `published + public`
 - uploader can access `processing/failed` details for polling
+
+### `GET /videos/{videoId}/recommendations` query
+
+- `limit`
+- `random=1`（启用随机推荐）
+- `exclude_ids=id1,id2,...`（可选，排除指定视频）
 
 ## Comments (one-level reply)
 
