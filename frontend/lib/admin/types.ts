@@ -156,3 +156,21 @@ export type AdminSiteCategory = {
   sort_order: number;
   is_active: boolean;
 };
+
+export type AdminFeaturedBannerVideo = {
+  id: string;
+  title: string;
+  status: string;
+  visibility: string;
+  cover_url?: string;
+};
+
+export type AdminFeaturedBannerItem = {
+  position: number;
+  video: AdminFeaturedBannerVideo;
+};
+
+export type AdminFeaturedBanners = {
+  video_ids: string[];
+  items: AdminFeaturedBannerItem[];
+};

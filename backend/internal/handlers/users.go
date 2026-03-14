@@ -1379,6 +1379,7 @@ func (h *Handler) scanVideoCards(rows *sql.Rows) ([]map[string]interface{}, erro
 		var (
 			id, title, publishedAt, category                 string
 			durationSec, viewsCount, commentsCount           int64
+			hotScore                                         float64
 			coverProvider, coverBucket, coverObjectKey       string
 			previewProvider, previewBucket, previewObjectKey string
 			authorID, authorName                             string
@@ -1392,6 +1393,7 @@ func (h *Handler) scanVideoCards(rows *sql.Rows) ([]map[string]interface{}, erro
 			&viewsCount,
 			&commentsCount,
 			&publishedAt,
+			&hotScore,
 			&category,
 			&coverProvider,
 			&coverBucket,
@@ -1417,6 +1419,7 @@ func (h *Handler) scanVideoCards(rows *sql.Rows) ([]map[string]interface{}, erro
 			"views_count":      viewsCount,
 			"comments_count":   commentsCount,
 			"published_at":     publishedAt,
+			"hot_score":        hotScore,
 			"category":         category,
 			"author": map[string]interface{}{
 				"id":              authorID,

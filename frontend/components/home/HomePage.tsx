@@ -124,6 +124,8 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState("");
   const [initialLoaded, setInitialLoaded] = useState(false);
+  const [activeFeaturedIndex, setActiveFeaturedIndex] = useState(0);
+  const [carouselPaused, setCarouselPaused] = useState(false);
 
   const q = query.trim();
   const categoryFilter = category.trim();
@@ -283,6 +285,44 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
   };
 
   const ranking = useMemo(() => home?.hot_rankings?.slice(0, 5) ?? [], [home?.hot_rankings]);
+  const featuredItems = useMemo(() => {
+    if (home?.featured_items && home.featured_items.length > 0) {
+      return home.featured_items.slice(0, 5);
+    }
+    return home?.featured ? [home.featured] : [];
+  }, [home?.featured, home?.featured_items]);
+  const featuredSignature = useMemo(() => featuredItems.map((item) => item.id).join(","), [featuredItems]);
+  const activeFeatured = featuredItems.length > 0 ? featuredItems[Math.min(activeFeaturedIndex, featuredItems.length - 1)] : null;
+
+  useEffect(() => {
+    setActiveFeaturedIndex(0);
+  }, [featuredSignature]);
+
+  useEffect(() => {
+    if (carouselPaused || featuredItems.length <= 1) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setActiveFeaturedIndex((prev) => (prev + 1) % featuredItems.length);
+    }, 4000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [carouselPaused, featuredItems.length]);
+
+  const goToNextFeatured = () => {
+    if (featuredItems.length <= 1) {
+      return;
+    }
+    setActiveFeaturedIndex((prev) => (prev + 1) % featuredItems.length);
+  };
+
+  const goToPrevFeatured = () => {
+    if (featuredItems.length <= 1) {
+      return;
+    }
+    setActiveFeaturedIndex((prev) => (prev - 1 + featuredItems.length) % featuredItems.length);
+  };
 
   return (
     <div className="space-y-12">
@@ -297,15 +337,19 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
 
       {!loading && !error ? (
         <>
-          <section className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+          <section className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:items-stretch">
             <div className="group relative lg:col-span-8">
-              <div className="relative aspect-[16/9] w-full overflow-hidden rounded-xl bg-primary/5 shadow-xl">
-                {home?.featured?.cover_url ? (
+              <div
+                className="relative h-[320px] w-full overflow-hidden rounded-xl bg-primary/5 shadow-xl md:h-[360px] lg:h-[420px]"
+                onMouseEnter={() => setCarouselPaused(true)}
+                onMouseLeave={() => setCarouselPaused(false)}
+              >
+                {activeFeatured?.cover_url ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
-                    src={home.featured.cover_url}
-                    alt={home.featured.title}
-                    className="h-full w-full object-cover"
+                    src={activeFeatured.cover_url}
+                    alt={activeFeatured.title}
+                    className="h-full w-full object-cover transition-opacity duration-300"
                   />
                 ) : (
                   <div className="h-full w-full bg-primary/10" />
@@ -315,13 +359,16 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
                   <span className="mb-3 w-fit rounded-full bg-primary px-3 py-1 text-xs font-bold text-white">
                     今日推荐
                   </span>
-                  {home?.featured ? (
+                  {activeFeatured ? (
                     <>
-                      <Link href={`/videos/${home.featured.id}`} className="mb-2 line-clamp-2 text-3xl font-bold text-white">
-                        {home.featured.title}
+                      <Link
+                        href={`/videos/${activeFeatured.id}`}
+                        className="mb-2 line-clamp-2 text-2xl font-bold text-white [text-shadow:0_0_18px_rgba(61,184,245,0.55)] md:text-3xl"
+                      >
+                        {activeFeatured.title}
                       </Link>
-                      <p className="max-w-lg text-sm text-white/80">
-                        来自 {home.featured.author.username} · {formatCount(home.featured.views_count)} 播放
+                      <p className="max-w-lg text-sm text-white/90">
+                        来自 {activeFeatured.author.username} · {formatCount(activeFeatured.views_count)} 播放
                       </p>
                     </>
                   ) : (
@@ -329,26 +376,53 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
                   )}
                 </div>
 
+                {featuredItems.length > 1 ? (
+                  <>
+                    <button
+                      type="button"
+                      aria-label="上一张"
+                      onClick={goToPrevFeatured}
+                      className="absolute left-4 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/35 text-white backdrop-blur-md transition hover:bg-black/55"
+                    >
+                      <AppIcon name="chevron_left" size={18} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="下一张"
+                      onClick={goToNextFeatured}
+                      className="absolute right-4 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/35 text-white backdrop-blur-md transition hover:bg-black/55"
+                    >
+                      <AppIcon name="chevron_right" size={18} />
+                    </button>
+                  </>
+                ) : null}
+
                 <div className="absolute bottom-4 right-8 flex gap-2">
-                  <div className="h-2 w-2 rounded-full bg-white" />
-                  <div className="h-2 w-2 rounded-full bg-white/50" />
-                  <div className="h-2 w-2 rounded-full bg-white/50" />
+                  {(featuredItems.length > 0 ? featuredItems : Array.from({ length: 1 })).map((_, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      aria-label={`切换到第 ${idx + 1} 张`}
+                      onClick={() => setActiveFeaturedIndex(idx)}
+                      className={cn(
+                        "h-2 w-2 rounded-full transition",
+                        idx === activeFeaturedIndex ? "bg-white" : "bg-white/50 hover:bg-white/70",
+                      )}
+                    />
+                  ))}
                 </div>
               </div>
             </div>
 
-            <aside className="rounded-xl border border-slate-100 bg-white p-6 shadow-sm lg:col-span-4">
+            <aside className="flex h-[320px] flex-col rounded-xl border border-slate-100 bg-white p-6 shadow-sm md:h-[360px] lg:col-span-4 lg:h-[420px]">
               <div className="mb-6 flex items-center justify-between">
                 <h2 className="flex items-center gap-2 text-lg font-bold text-slate-900">
                   <AppIcon name="local_fire_department" className="text-orange-500" />
                   热度排行榜
                 </h2>
-                <Link className="text-xs font-medium text-primary" href="/">
-                  查看更多
-                </Link>
               </div>
 
-              <div className="space-y-4">
+              <div className="space-y-3">
                 {ranking.map((video, index) => (
                   <Link key={video.id} href={`/videos/${video.id}`} className="group flex cursor-pointer items-center gap-4">
                     <span
@@ -385,6 +459,16 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
                 ))}
 
                 {ranking.length === 0 ? <p className="text-sm text-slate-500">暂无排行数据</p> : null}
+              </div>
+
+              <div className="mt-auto pt-4">
+                <Link
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-primary transition hover:text-primary/80"
+                  href="/rankings/hot"
+                >
+                  查看更多
+                  <AppIcon name="chevron_right" size={14} />
+                </Link>
               </div>
             </aside>
           </section>

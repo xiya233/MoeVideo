@@ -264,3 +264,75 @@ func TestAdminSiteSettingsAndCategoryFlow(t *testing.T) {
 		t.Fatalf("expected in-use message, got %q", conflictResp.Message)
 	}
 }
+
+func TestAdminFeaturedBannersFlow(t *testing.T) {
+	srv, container := newTestServer(t)
+	adminID, adminAccess, _ := registerUser(t, srv, "banner-admin", "banner-admin@example.com", "password123")
+	setUserRole(t, container.DB, adminID, "admin")
+
+	videoIDs := make([]string, 0, 5)
+	for idx := 0; idx < 5; idx++ {
+		videoID := createPublishedVideoWithTags(t, container, adminID, nil, "public", fmt.Sprintf("banner-%d", idx+1), nil)
+		videoIDs = append(videoIDs, videoID)
+		if _, err := container.DB.Exec(
+			`UPDATE videos SET title = ?, hot_score = ?, updated_at = datetime('now') WHERE id = ?`,
+			fmt.Sprintf("banner-%d", idx+1),
+			500-idx,
+			videoID,
+		); err != nil {
+			t.Fatalf("update banner video %d: %v", idx+1, err)
+		}
+	}
+
+	status, putResp := doJSONRequest(t, srv, http.MethodPut, "/api/v1/admin/banners/featured", map[string]interface{}{
+		"video_ids": videoIDs,
+	}, map[string]string{"Authorization": "Bearer " + adminAccess})
+	if status != http.StatusOK {
+		t.Fatalf("set featured banners should return 200, got %d (%s)", status, putResp.Message)
+	}
+
+	status, getResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/admin/banners/featured", nil, map[string]string{
+		"Authorization": "Bearer " + adminAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("get featured banners should return 200, got %d (%s)", status, getResp.Message)
+	}
+	var bannersData struct {
+		VideoIDs []string `json:"video_ids"`
+	}
+	if err := json.Unmarshal(getResp.Data, &bannersData); err != nil {
+		t.Fatalf("parse featured banners response: %v", err)
+	}
+	if len(bannersData.VideoIDs) != 5 {
+		t.Fatalf("expected 5 featured video ids, got %d", len(bannersData.VideoIDs))
+	}
+	if bannersData.VideoIDs[0] != videoIDs[0] {
+		t.Fatalf("unexpected first featured video id: got %s want %s", bannersData.VideoIDs[0], videoIDs[0])
+	}
+
+	status, homeResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/home", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("home should return 200, got %d (%s)", status, homeResp.Message)
+	}
+	var homeData struct {
+		FeaturedItems []struct {
+			ID string `json:"id"`
+		} `json:"featured_items"`
+	}
+	if err := json.Unmarshal(homeResp.Data, &homeData); err != nil {
+		t.Fatalf("parse home response: %v", err)
+	}
+	if len(homeData.FeaturedItems) == 0 {
+		t.Fatalf("home featured_items should not be empty")
+	}
+	if homeData.FeaturedItems[0].ID != videoIDs[0] {
+		t.Fatalf("home featured first id mismatch: got %s want %s", homeData.FeaturedItems[0].ID, videoIDs[0])
+	}
+
+	status, dupResp := doJSONRequest(t, srv, http.MethodPut, "/api/v1/admin/banners/featured", map[string]interface{}{
+		"video_ids": []string{videoIDs[0], videoIDs[0], videoIDs[2], videoIDs[3], videoIDs[4]},
+	}, map[string]string{"Authorization": "Bearer " + adminAccess})
+	if status != http.StatusBadRequest {
+		t.Fatalf("duplicate featured ids should return 400, got %d (%s)", status, dupResp.Message)
+	}
+}

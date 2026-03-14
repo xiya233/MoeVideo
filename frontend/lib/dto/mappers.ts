@@ -14,6 +14,7 @@ import type {
   ImportJobDetailData,
   ImportJobsData,
   HomeData,
+  HotRankingsData,
   LoginOrRegisterData,
   TorrentInspectResult,
   UserProfileData,
@@ -143,9 +144,18 @@ export function mapHomeData(value: unknown): HomeData {
   const featuredRaw = src.featured;
   return {
     featured: featuredRaw ? mapVideoCard(featuredRaw) : null,
+    featured_items: arr(src.featured_items).map(mapVideoCard),
     hot_rankings: arr(src.hot_rankings).map(mapVideoCard),
     categories: arr(src.categories).map(mapCategory),
     videos: arr(src.videos).map(mapVideoCard),
+    next_cursor: str(src.next_cursor) || undefined,
+  };
+}
+
+export function mapHotRankingsData(value: unknown): HotRankingsData {
+  const src = obj(value);
+  return {
+    items: arr(src.items).map(mapVideoCard),
     next_cursor: str(src.next_cursor) || undefined,
   };
 }

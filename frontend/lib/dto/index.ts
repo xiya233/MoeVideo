@@ -42,9 +42,15 @@ export type VideoCard = {
 
 export type HomeData = {
   featured: VideoCard | null;
+  featured_items: VideoCard[];
   hot_rankings: VideoCard[];
   categories: Category[];
   videos: VideoCard[];
+  next_cursor?: string;
+};
+
+export type HotRankingsData = {
+  items: VideoCard[];
   next_cursor?: string;
 };
 

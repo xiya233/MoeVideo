@@ -408,6 +408,72 @@ func createPublishedVideoWithTags(
 	return videoID
 }
 
+func TestHotRankingsCursorPagination(t *testing.T) {
+	srv, container := newTestServer(t)
+	userID, _, _ := registerUser(t, srv, "hot-user", "hot-user@example.com", "password123")
+
+	videoA := createPublishedVideoWithTags(t, container, userID, nil, "public", "A", nil)
+	videoB := createPublishedVideoWithTags(t, container, userID, nil, "public", "B", nil)
+	videoC := createPublishedVideoWithTags(t, container, userID, nil, "public", "C", nil)
+
+	if _, err := container.DB.Exec(`UPDATE videos SET hot_score = 300, title = 'A', updated_at = datetime('now') WHERE id = ?`, videoA); err != nil {
+		t.Fatalf("update hot score A: %v", err)
+	}
+	if _, err := container.DB.Exec(`UPDATE videos SET hot_score = 200, title = 'B', updated_at = datetime('now') WHERE id = ?`, videoB); err != nil {
+		t.Fatalf("update hot score B: %v", err)
+	}
+	if _, err := container.DB.Exec(`UPDATE videos SET hot_score = 100, title = 'C', updated_at = datetime('now') WHERE id = ?`, videoC); err != nil {
+		t.Fatalf("update hot score C: %v", err)
+	}
+
+	status, firstResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/rankings/hot?limit=2", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("hot rankings first page should return 200, got %d (%s)", status, firstResp.Message)
+	}
+
+	var firstData struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(firstResp.Data, &firstData); err != nil {
+		t.Fatalf("parse hot rankings first page: %v", err)
+	}
+	if len(firstData.Items) != 2 {
+		t.Fatalf("hot rankings first page expected 2 items, got %d", len(firstData.Items))
+	}
+	if firstData.NextCursor == "" {
+		t.Fatalf("hot rankings first page should return next_cursor")
+	}
+
+	status, secondResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/rankings/hot?limit=2&cursor="+url.QueryEscape(firstData.NextCursor), nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("hot rankings second page should return 200, got %d (%s)", status, secondResp.Message)
+	}
+
+	var secondData struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(secondResp.Data, &secondData); err != nil {
+		t.Fatalf("parse hot rankings second page: %v", err)
+	}
+	if len(secondData.Items) == 0 {
+		t.Fatalf("hot rankings second page should not be empty")
+	}
+	seen := map[string]struct{}{
+		firstData.Items[0].ID: {},
+		firstData.Items[1].ID: {},
+	}
+	for _, item := range secondData.Items {
+		if _, exists := seen[item.ID]; exists {
+			t.Fatalf("hot rankings pagination returned duplicate id %s", item.ID)
+		}
+	}
+}
+
 func TestCommentNestedReplyRejected(t *testing.T) {
 	srv, container := newTestServer(t)
 	userID, access, _ := registerUser(t, srv, "bob", "bob@example.com", "password123")

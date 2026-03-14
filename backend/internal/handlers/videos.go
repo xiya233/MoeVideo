@@ -401,6 +401,7 @@ func (h *Handler) queryRandomRecommendations(
 	queryPart := func(categoryOnly bool) (string, []interface{}) {
 		query := `
 SELECT v.id, v.title, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at),
+       COALESCE(v.hot_score, 0),
        COALESCE(c.name, ''),
        COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, ''),
        COALESCE(pm.provider, ''), COALESCE(pm.bucket, ''), COALESCE(pm.object_key, ''),

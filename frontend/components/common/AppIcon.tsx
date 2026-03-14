@@ -32,6 +32,8 @@ import {
   User,
   UserCircle,
   Users,
+  ChevronLeft,
+  ChevronRight,
   X,
   Eye,
   CalendarDays,
@@ -73,7 +75,9 @@ export type IconName =
   | "search"
   | "upload"
   | "input"
-  | "magnet";
+  | "magnet"
+  | "chevron_left"
+  | "chevron_right";
 
 const ICON_MAP: Record<IconName, LucideIcon> = {
   sentiment_neutral: Smile,
@@ -111,6 +115,8 @@ const ICON_MAP: Record<IconName, LucideIcon> = {
   upload: Upload,
   input: ImportIcon,
   magnet: Magnet,
+  chevron_left: ChevronLeft,
+  chevron_right: ChevronRight,
 };
 
 type AppIconProps = Omit<ComponentProps<"svg">, "name"> &

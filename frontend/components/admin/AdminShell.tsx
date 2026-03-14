@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, Clapperboard, FileText, MessageSquare, Repeat2, Settings2, Shield, Users } from "lucide-react";
+import { BarChart3, Clapperboard, FileText, Image, MessageSquare, Repeat2, Settings2, Shield, Users } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 const navItems = [
   { href: "/admin", label: "Dashboard", icon: BarChart3 },
   { href: "/admin/videos", label: "Videos", icon: Clapperboard },
+  { href: "/admin/banners", label: "Banner Management", icon: Image },
   { href: "/admin/transcode", label: "Transcode", icon: Repeat2 },
   { href: "/admin/comments", label: "Comments", icon: MessageSquare },
   { href: "/admin/users", label: "Users", icon: Users },

@@ -2,6 +2,7 @@ import type { RequestOptions } from "@/lib/api/types";
 import type {
   AdminAuditLog,
   AdminComment,
+  AdminFeaturedBanners,
   AdminOverview,
   AdminSiteCategory,
   AdminSiteSettings,
@@ -29,6 +30,20 @@ function buildQuery(params: Record<string, string | number | undefined>): string
 export const adminApi = {
   getOverview(request: ApiRequest) {
     return request<AdminOverview>("/admin/overview", { auth: true });
+  },
+
+  getFeaturedBanners(request: ApiRequest) {
+    return request<AdminFeaturedBanners>("/admin/banners/featured", { auth: true });
+  },
+
+  setFeaturedBanners(request: ApiRequest, videoIDs: string[]) {
+    return request<AdminFeaturedBanners>("/admin/banners/featured", {
+      method: "PUT",
+      auth: true,
+      body: {
+        video_ids: videoIDs,
+      },
+    });
   },
 
   getSiteSettings(request: ApiRequest) {

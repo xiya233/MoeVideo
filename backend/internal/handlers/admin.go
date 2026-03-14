@@ -33,6 +33,10 @@ type adminPatchUserRequest struct {
 	Role   *string `json:"role"`
 }
 
+type adminSetFeaturedBannersRequest struct {
+	VideoIDs []string `json:"video_ids"`
+}
+
 type sqlExecutor interface {
 	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
 }
@@ -98,6 +102,8 @@ func (h *Handler) loadAdminAuditSchema(ctx context.Context) (adminAuditSchema, e
 
 func (h *Handler) RegisterAdminRoutes(admin fiber.Router) {
 	admin.Get("/overview", h.AdminOverview)
+	admin.Get("/banners/featured", h.AdminGetFeaturedBanners)
+	admin.Put("/banners/featured", h.AdminSetFeaturedBanners)
 	admin.Get("/site-settings", h.AdminGetSiteSettings)
 	admin.Patch("/site-settings", h.AdminPatchSiteSettings)
 	admin.Get("/site-settings/categories", h.AdminListSiteCategories)
@@ -114,6 +120,176 @@ func (h *Handler) RegisterAdminRoutes(admin fiber.Router) {
 	admin.Get("/users", h.AdminListUsers)
 	admin.Patch("/users/:id", h.AdminPatchUser)
 	admin.Get("/audit-logs", h.AdminListAuditLogs)
+}
+
+func (h *Handler) queryFeaturedBannerItems(ctx context.Context) ([]fiber.Map, []string, error) {
+	rows, err := h.app.DB.QueryContext(ctx, `
+SELECT b.position, v.id, v.title,
+       COALESCE(v.status, ''), COALESCE(v.visibility, 'public'),
+       COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, '')
+FROM site_featured_banners b
+JOIN videos v ON v.id = b.video_id
+LEFT JOIN media_objects cm ON cm.id = v.cover_media_id
+ORDER BY b.position ASC`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	items := make([]fiber.Map, 0, 5)
+	videoIDs := make([]string, 0, 5)
+	for rows.Next() {
+		var (
+			position                                   int64
+			videoID, title, rowStatus, rowVisibility   string
+			coverProvider, coverBucket, coverObjectKey string
+		)
+		if err := rows.Scan(
+			&position,
+			&videoID,
+			&title,
+			&rowStatus,
+			&rowVisibility,
+			&coverProvider,
+			&coverBucket,
+			&coverObjectKey,
+		); err != nil {
+			return nil, nil, err
+		}
+		videoIDs = append(videoIDs, videoID)
+		items = append(items, fiber.Map{
+			"position": position,
+			"video": fiber.Map{
+				"id":         videoID,
+				"title":      title,
+				"status":     rowStatus,
+				"visibility": rowVisibility,
+				"cover_url":  mediaURL(h.app.Storage, coverProvider, coverBucket, coverObjectKey),
+			},
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return items, videoIDs, nil
+}
+
+func (h *Handler) queryFeaturedBannerIDsTx(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT video_id
+FROM site_featured_banners
+ORDER BY position ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]string, 0, 5)
+	for rows.Next() {
+		var videoID string
+		if err := rows.Scan(&videoID); err != nil {
+			return nil, err
+		}
+		out = append(out, videoID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (h *Handler) AdminGetFeaturedBanners(c *fiber.Ctx) error {
+	items, videoIDs, err := h.queryFeaturedBannerItems(c.UserContext())
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to load featured banners")
+	}
+	return response.OK(c, fiber.Map{
+		"items":     items,
+		"video_ids": videoIDs,
+	})
+}
+
+func (h *Handler) AdminSetFeaturedBanners(c *fiber.Ctx) error {
+	var req adminSetFeaturedBannersRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.Error(c, fiber.StatusBadRequest, "invalid request body")
+	}
+	if len(req.VideoIDs) != 5 {
+		return response.Error(c, fiber.StatusBadRequest, "video_ids must contain exactly 5 items")
+	}
+
+	videoIDs := make([]string, 0, 5)
+	seen := make(map[string]struct{}, 5)
+	for idx, raw := range req.VideoIDs {
+		videoID := strings.TrimSpace(raw)
+		if videoID == "" {
+			return response.Error(c, fiber.StatusBadRequest, fmt.Sprintf("video_ids[%d] is required", idx))
+		}
+		if _, exists := seen[videoID]; exists {
+			return response.Error(c, fiber.StatusBadRequest, "video_ids contains duplicate values")
+		}
+		seen[videoID] = struct{}{}
+		videoIDs = append(videoIDs, videoID)
+	}
+
+	ctx := c.UserContext()
+	tx, err := h.app.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to begin transaction")
+	}
+	defer tx.Rollback()
+
+	beforeIDs, err := h.queryFeaturedBannerIDsTx(ctx, tx)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to update featured banners")
+	}
+
+	for idx, videoID := range videoIDs {
+		var exists int64
+		if err := tx.QueryRowContext(
+			ctx,
+			`SELECT COUNT(1) FROM videos WHERE id = ? AND status = 'published' AND visibility = 'public'`,
+			videoID,
+		).Scan(&exists); err != nil {
+			return response.Error(c, fiber.StatusInternalServerError, "failed to validate featured banners")
+		}
+		if exists == 0 {
+			return response.Error(c, fiber.StatusBadRequest, fmt.Sprintf("video_ids[%d] is invalid", idx))
+		}
+	}
+
+	now := nowString()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM site_featured_banners`); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to update featured banners")
+	}
+	for idx, videoID := range videoIDs {
+		if _, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO site_featured_banners (position, video_id, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+			idx+1,
+			videoID,
+			now,
+			now,
+		); err != nil {
+			if isConflictErr(err) {
+				return response.Error(c, fiber.StatusConflict, "featured banners conflict")
+			}
+			return response.Error(c, fiber.StatusInternalServerError, "failed to update featured banners")
+		}
+	}
+
+	if err := h.writeAdminAudit(ctx, tx, c, "site_banners.patch", "site_banners", "featured", fiber.Map{
+		"before_video_ids": beforeIDs,
+		"after_video_ids":  videoIDs,
+	}); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to write audit log")
+	}
+
+	if err := tx.Commit(); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to update featured banners")
+	}
+
+	return h.AdminGetFeaturedBanners(c)
 }
 
 func (h *Handler) AdminOverview(c *fiber.Ctx) error {

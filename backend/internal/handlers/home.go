@@ -42,11 +42,18 @@ func (h *Handler) ListCategories(c *fiber.Ctx) error {
 
 func (h *Handler) GetHotRankings(c *fiber.Ctx) error {
 	limit := pagination.ClampLimit(c.Query("limit"), 10, maxLimit)
-	cards, err := h.queryVideoCards(c.UserContext(), videoQueryOptions{Limit: limit, Sort: "hot"})
+	cards, nextCursor, err := h.queryVideoCardsWithCursor(c.UserContext(), videoQueryOptions{
+		Limit:  limit,
+		Sort:   "hot",
+		Cursor: c.Query("cursor"),
+	})
 	if err != nil {
+		if strings.Contains(err.Error(), "decode cursor") {
+			return response.Error(c, fiber.StatusBadRequest, "invalid cursor")
+		}
 		return response.Error(c, fiber.StatusInternalServerError, "failed to fetch hot rankings")
 	}
-	return response.OK(c, fiber.Map{"items": cards})
+	return response.OK(c, fiber.Map{"items": cards, "next_cursor": nextCursor})
 }
 
 func (h *Handler) GetHome(c *fiber.Ctx) error {
@@ -60,7 +67,7 @@ func (h *Handler) GetHome(c *fiber.Ctx) error {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to fetch home hot rankings")
 	}
 
-	featuredList, err := h.queryVideoCards(c.UserContext(), videoQueryOptions{Limit: 1, Sort: "latest"})
+	featuredList, err := h.queryFeaturedItems(c.UserContext(), 5)
 	if err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to fetch featured video")
 	}
@@ -105,11 +112,12 @@ func (h *Handler) GetHome(c *fiber.Ctx) error {
 	}
 
 	return response.OK(c, fiber.Map{
-		"featured":     featured,
-		"hot_rankings": hot,
-		"categories":   categories,
-		"videos":       cards,
-		"next_cursor":  nextCursor,
+		"featured":       featured,
+		"featured_items": featuredList,
+		"hot_rankings":   hot,
+		"categories":     categories,
+		"videos":         cards,
+		"next_cursor":    nextCursor,
 	})
 }
 
@@ -127,9 +135,137 @@ type tagListCursor struct {
 	Name        string `json:"name"`
 }
 
+type hotListCursor struct {
+	HotScore float64 `json:"hot_score"`
+	ID       string  `json:"id"`
+}
+
 func (h *Handler) queryVideoCards(ctx context.Context, opts videoQueryOptions) ([]map[string]interface{}, error) {
 	cards, _, err := h.queryVideoCardsWithCursor(ctx, opts)
 	return cards, err
+}
+
+func (h *Handler) queryFeaturedItems(ctx context.Context, limit int) ([]map[string]interface{}, error) {
+	if limit <= 0 {
+		return []map[string]interface{}{}, nil
+	}
+
+	query := `
+SELECT b.position,
+       v.id, v.title, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at), COALESCE(v.hot_score, 0),
+       COALESCE(c.name, ''),
+       COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, ''),
+       COALESCE(pm.provider, ''), COALESCE(pm.bucket, ''), COALESCE(pm.object_key, ''),
+       u.id, u.username, COALESCE(u.followers_count, 0),
+       COALESCE(am.provider, ''), COALESCE(am.bucket, ''), COALESCE(am.object_key, '')
+FROM site_featured_banners b
+JOIN videos v ON v.id = b.video_id
+JOIN users u ON u.id = v.uploader_id
+LEFT JOIN categories c ON c.id = v.category_id
+LEFT JOIN media_objects cm ON cm.id = v.cover_media_id
+LEFT JOIN media_objects pm ON pm.id = v.preview_media_id
+LEFT JOIN media_objects am ON am.id = u.avatar_media_id
+WHERE v.status = 'published' AND v.visibility = 'public'
+ORDER BY b.position ASC
+LIMIT ?`
+
+	rows, err := h.app.DB.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]map[string]interface{}, 0, limit)
+	seen := make(map[string]struct{}, limit)
+	for rows.Next() {
+		var (
+			position                                         int64
+			id, title, publishedAt, category                 string
+			durationSec, viewsCount, commentsCount           int64
+			hotScore                                         float64
+			coverProvider, coverBucket, coverObjectKey       string
+			previewProvider, previewBucket, previewObjectKey string
+			authorID, authorName                             string
+			authorFollowers                                  int64
+			authorProvider, authorBucket, authorObjectKey    string
+		)
+		if err := rows.Scan(
+			&position,
+			&id,
+			&title,
+			&durationSec,
+			&viewsCount,
+			&commentsCount,
+			&publishedAt,
+			&hotScore,
+			&category,
+			&coverProvider,
+			&coverBucket,
+			&coverObjectKey,
+			&previewProvider,
+			&previewBucket,
+			&previewObjectKey,
+			&authorID,
+			&authorName,
+			&authorFollowers,
+			&authorProvider,
+			&authorBucket,
+			&authorObjectKey,
+		); err != nil {
+			return nil, err
+		}
+		seen[id] = struct{}{}
+		items = append(items, map[string]interface{}{
+			"id":               id,
+			"title":            title,
+			"cover_url":        mediaURL(h.app.Storage, coverProvider, coverBucket, coverObjectKey),
+			"preview_webp_url": mediaURL(h.app.Storage, previewProvider, previewBucket, previewObjectKey),
+			"duration_sec":     durationSec,
+			"views_count":      viewsCount,
+			"comments_count":   commentsCount,
+			"published_at":     publishedAt,
+			"category":         category,
+			"hot_score":        hotScore,
+			"position":         position,
+			"author": map[string]interface{}{
+				"id":              authorID,
+				"username":        authorName,
+				"followers_count": authorFollowers,
+				"avatar_url":      mediaURL(h.app.Storage, authorProvider, authorBucket, authorObjectKey),
+			},
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(items) >= limit {
+		return items[:limit], nil
+	}
+
+	fallback, err := h.queryVideoCards(ctx, videoQueryOptions{Limit: limit * 2, Sort: "latest"})
+	if err != nil {
+		return nil, err
+	}
+	for _, card := range fallback {
+		id, _ := card["id"].(string)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		items = append(items, card)
+		if len(items) >= limit {
+			break
+		}
+	}
+
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
 }
 
 func (h *Handler) queryVideoCardsWithCursor(ctx context.Context, opts videoQueryOptions) ([]map[string]interface{}, string, error) {
@@ -146,7 +282,7 @@ func (h *Handler) queryVideoCardsWithCursor(ctx context.Context, opts videoQuery
 	}
 
 	query := `
-SELECT v.id, v.title, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at),
+SELECT v.id, v.title, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at), COALESCE(v.hot_score, 0),
        COALESCE(c.name, ''),
        COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, ''),
        COALESCE(pm.provider, ''), COALESCE(pm.bucket, ''), COALESCE(pm.object_key, ''),
@@ -190,19 +326,26 @@ WHERE v.status = 'published' AND v.visibility = 'public'
 		args = append(args, kw, kw, kw)
 	}
 
-	var cur listCursor
-	if opts.Cursor != "" {
-		if err := pagination.Decode(opts.Cursor, &cur); err != nil {
-			return nil, "", fmt.Errorf("decode cursor: %w", err)
-		}
-		query += ` AND (COALESCE(v.published_at, v.created_at) < ? OR (COALESCE(v.published_at, v.created_at) = ? AND v.id < ?))`
-		args = append(args, cur.PublishedAt, cur.PublishedAt, cur.ID)
-	}
-
 	switch sort {
 	case "hot":
+		if opts.Cursor != "" {
+			var cur hotListCursor
+			if err := pagination.Decode(opts.Cursor, &cur); err != nil {
+				return nil, "", fmt.Errorf("decode cursor: %w", err)
+			}
+			query += ` AND (v.hot_score < ? OR (v.hot_score = ? AND v.id < ?))`
+			args = append(args, cur.HotScore, cur.HotScore, cur.ID)
+		}
 		query += ` ORDER BY v.hot_score DESC, v.id DESC`
 	default:
+		if opts.Cursor != "" {
+			var cur listCursor
+			if err := pagination.Decode(opts.Cursor, &cur); err != nil {
+				return nil, "", fmt.Errorf("decode cursor: %w", err)
+			}
+			query += ` AND (COALESCE(v.published_at, v.created_at) < ? OR (COALESCE(v.published_at, v.created_at) = ? AND v.id < ?))`
+			args = append(args, cur.PublishedAt, cur.PublishedAt, cur.ID)
+		}
 		query += ` ORDER BY COALESCE(v.published_at, v.created_at) DESC, v.id DESC`
 	}
 
@@ -224,10 +367,17 @@ WHERE v.status = 'published' AND v.visibility = 'public'
 	if len(cards) > limit {
 		last := cards[limit-1]
 		cards = cards[:limit]
-		nextCursor, err = pagination.Encode(listCursor{
-			PublishedAt: last["published_at"].(string),
-			ID:          last["id"].(string),
-		})
+		if sort == "hot" {
+			nextCursor, err = pagination.Encode(hotListCursor{
+				HotScore: last["hot_score"].(float64),
+				ID:       last["id"].(string),
+			})
+		} else {
+			nextCursor, err = pagination.Encode(listCursor{
+				PublishedAt: last["published_at"].(string),
+				ID:          last["id"].(string),
+			})
+		}
 		if err != nil {
 			return nil, "", err
 		}
