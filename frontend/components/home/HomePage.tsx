@@ -602,13 +602,14 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
                 {ranking.length === 0 ? <p className="text-sm text-slate-500">暂无排行数据</p> : null}
               </div>
 
-              <div className="mt-auto pt-4">
+              <div className="mt-auto flex justify-center pt-4">
                 <Link
-                  className="inline-flex items-center gap-1 text-xs font-semibold text-primary transition hover:text-primary/80"
+                  className="inline-flex items-center gap-1.5 rounded-full bg-primary px-5 py-2 text-sm font-bold text-white shadow-lg shadow-primary/25 transition-all hover:scale-105 hover:text-white active:scale-95 active:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 focus-visible:ring-offset-2"
                   href="/rankings/hot"
+                  style={{ color: "#ffffff" }}
                 >
-                  查看更多
-                  <AppIcon name="chevron_right" size={14} />
+                  <span className="text-white">查看更多</span>
+                  <AppIcon name="chevron_right" size={16} className="text-white" />
                 </Link>
               </div>
             </aside>
