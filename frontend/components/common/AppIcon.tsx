@@ -28,6 +28,7 @@ import {
   Tag,
   ThumbsUp,
   Upload,
+  Magnet,
   User,
   UserCircle,
   Users,
@@ -71,7 +72,8 @@ export type IconName =
   | "grid_view"
   | "search"
   | "upload"
-  | "input";
+  | "input"
+  | "magnet";
 
 const ICON_MAP: Record<IconName, LucideIcon> = {
   sentiment_neutral: Smile,
@@ -108,6 +110,7 @@ const ICON_MAP: Record<IconName, LucideIcon> = {
   search: Search,
   upload: Upload,
   input: ImportIcon,
+  magnet: Magnet,
 };
 
 type AppIconProps = Omit<ComponentProps<"svg">, "name"> &

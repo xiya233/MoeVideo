@@ -134,6 +134,9 @@ export function ImportPage() {
   const [jobsError, setJobsError] = useState("");
 
   const pollRef = useRef<number | null>(null);
+  const fieldClass =
+    "w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-70";
+  const fieldLabelClass = "text-xs font-semibold uppercase tracking-wide text-slate-500";
 
   const selectedCount = selectedIndexes.size;
 
@@ -396,25 +399,31 @@ export function ImportPage() {
         </div>
         <p className="text-sm text-slate-500">支持 URL 或 BT 种子导入，系统会自动下载后进入现有转码发布流程。</p>
 
-        <div className="mt-5 flex items-center gap-2">
+        <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <button
             type="button"
             onClick={() => setImportMode("url")}
             className={cn(
-              "rounded-full px-4 py-1.5 text-xs font-semibold transition",
-              importMode === "url" ? "bg-primary text-white" : "bg-slate-100 text-slate-600 hover:text-slate-900",
+              "flex h-14 items-center justify-center gap-2 rounded-xl border px-5 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+              importMode === "url"
+                ? "border-primary bg-primary/10 text-primary shadow-sm"
+                : "border-slate-200 bg-slate-50 text-slate-700 hover:border-primary/40 hover:bg-primary/5 hover:text-slate-900",
             )}
           >
+            <AppIcon name="input" size={18} className="shrink-0" />
             URL 导入
           </button>
           <button
             type="button"
             onClick={() => setImportMode("torrent")}
             className={cn(
-              "rounded-full px-4 py-1.5 text-xs font-semibold transition",
-              importMode === "torrent" ? "bg-primary text-white" : "bg-slate-100 text-slate-600 hover:text-slate-900",
+              "flex h-14 items-center justify-center gap-2 rounded-xl border px-5 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+              importMode === "torrent"
+                ? "border-primary bg-primary/10 text-primary shadow-sm"
+                : "border-slate-200 bg-slate-50 text-slate-700 hover:border-primary/40 hover:bg-primary/5 hover:text-slate-900",
             )}
           >
+            <AppIcon name="magnet" size={18} className="shrink-0" />
             BT 种子导入
           </button>
         </div>
@@ -453,42 +462,42 @@ export function ImportPage() {
           <>
             <div className="mt-6 space-y-4">
               <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">视频 URL</span>
+                <span className={fieldLabelClass}>视频 URL</span>
                 <input
                   value={urlInput}
                   onChange={(event) => setURLInput(event.target.value)}
                   placeholder="https://example.com/video/123"
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                  className={fieldClass}
                 />
               </label>
 
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">标题（可选）</span>
+                  <span className={fieldLabelClass}>标题（可选）</span>
                   <input
                     value={importTitle}
                     onChange={(event) => setImportTitle(event.target.value)}
                     placeholder="留空则自动生成标题"
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                    className={fieldClass}
                   />
                 </label>
                 <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">描述（可选）</span>
+                  <span className={fieldLabelClass}>描述（可选）</span>
                   <textarea
                     value={importDescription}
                     onChange={(event) => setImportDescription(event.target.value)}
                     rows={3}
                     placeholder="导入后写入视频描述"
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                    className={`${fieldClass} resize-none`}
                   />
                 </label>
               </div>
 
               <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                 <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">分类</span>
+                  <span className={fieldLabelClass}>分类</span>
                   <select
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                    className={`${fieldClass} appearance-none`}
                     value={categoryID}
                     onChange={(event) => setCategoryID(event.target.value)}
                     disabled={loadingCategories}
@@ -503,9 +512,9 @@ export function ImportPage() {
                 </label>
 
                 <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">可见性</span>
+                  <span className={fieldLabelClass}>可见性</span>
                   <select
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                    className={`${fieldClass} appearance-none`}
                     value={visibility}
                     onChange={(event) => setVisibility(event.target.value as "public" | "private" | "unlisted")}
                   >
@@ -516,12 +525,12 @@ export function ImportPage() {
                 </label>
 
                 <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">标签（逗号分隔）</span>
+                  <span className={fieldLabelClass}>标签（逗号分隔）</span>
                   <input
                     value={tagInput}
                     onChange={(event) => setTagInput(event.target.value)}
                     placeholder="例如：动漫,二创"
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                    className={fieldClass}
                   />
                 </label>
               </div>
@@ -532,7 +541,7 @@ export function ImportPage() {
                   type="button"
                   onClick={() => void onStartURLImport()}
                   disabled={urlPending}
-                  className="rounded-xl bg-primary px-5 py-2 text-sm font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="rounded-xl bg-primary px-5 py-3 text-sm font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {urlPending ? "提交中..." : "开始导入"}
                 </button>
