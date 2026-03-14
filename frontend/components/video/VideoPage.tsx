@@ -1180,10 +1180,20 @@ export function VideoPage({ videoId }: VideoPageProps) {
                 <AppIcon name="visibility" size={18} />
                 {formatCount(detail.stats.views_count)} 播放
               </span>
-              <span className="flex items-center gap-1">
-                <AppIcon name="grid_view" size={18} />
-                分类：{detail.video.category || "未分类"}
-              </span>
+              {detail.video.category_id ? (
+                <Link
+                  href={`/?category=${detail.video.category_id}`}
+                  className="flex items-center gap-1 transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
+                >
+                  <AppIcon name="grid_view" size={18} />
+                  分类：{detail.video.category || "未分类"}
+                </Link>
+              ) : (
+                <span className="flex items-center gap-1">
+                  <AppIcon name="grid_view" size={18} />
+                  分类：未分类
+                </span>
+              )}
               <span className="flex items-center gap-1">
                 <AppIcon name="calendar_today" size={18} />
                 {formatDate(detail.video.published_at)}
@@ -1270,9 +1280,13 @@ export function VideoPage({ videoId }: VideoPageProps) {
           {detail.tags.length > 0 ? (
             <div className="mt-3 flex flex-wrap gap-2">
               {detail.tags.map((tag) => (
-                <span key={tag} className="rounded-full bg-primary/10 px-3 py-1 text-xs font-bold text-primary">
+                <Link
+                  key={tag}
+                  href={`/tags?tag=${encodeURIComponent(tag)}`}
+                  className="rounded-full bg-primary/10 px-3 py-1 text-xs font-bold text-primary transition-colors hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
+                >
                   #{tag}
-                </span>
+                </Link>
               ))}
             </div>
           ) : null}

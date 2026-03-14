@@ -68,6 +68,7 @@ Query params:
 
 - top-level `status`: `processing | published | failed`
 - optional `viewer_progress_sec` (only when logged in)
+- `video` adds optional `category_id` (for category filter jump)
 - `playback`:
   - `status`: `processing | ready | failed`
   - `type`: `hls | mp4 | ""`

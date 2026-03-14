@@ -1210,7 +1210,10 @@ func TestCreateVideoEnqueueProcessingAndDetailVisibility(t *testing.T) {
 		t.Fatalf("owner should access processing video detail, got %d", status)
 	}
 	var detailData struct {
-		Status   string `json:"status"`
+		Status string `json:"status"`
+		Video  struct {
+			CategoryID int64 `json:"category_id"`
+		} `json:"video"`
 		Playback struct {
 			Status string `json:"status"`
 			Type   string `json:"type"`
@@ -1227,6 +1230,9 @@ func TestCreateVideoEnqueueProcessingAndDetailVisibility(t *testing.T) {
 	}
 	if detailData.Playback.Type != "" {
 		t.Fatalf("expected empty playback type during processing, got %q", detailData.Playback.Type)
+	}
+	if detailData.Video.CategoryID != categoryID {
+		t.Fatalf("expected video.category_id=%d, got %d", categoryID, detailData.Video.CategoryID)
 	}
 }
 

@@ -68,7 +68,7 @@ func (h *Handler) GetVideoDetail(c *fiber.Ctx) error {
 	query := `
 SELECT v.id, v.title, v.description, v.status, v.duration_sec, v.views_count, v.likes_count, v.favorites_count, v.comments_count, v.shares_count,
        COALESCE(v.published_at, v.created_at), COALESCE(v.visibility,'public'),
-       COALESCE(cat.name, ''),
+       COALESCE(cat.name, ''), v.category_id,
        u.id, u.username, COALESCE(u.followers_count, 0),
        COALESCE(am.provider, ''), COALESCE(am.bucket, ''), COALESCE(am.object_key, ''),
        COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, ''),
@@ -88,6 +88,7 @@ LIMIT 1`
 
 	var (
 		id, title, description, videoStatus, publishedAt, visibility, category string
+		categoryID                                                             sql.NullInt64
 		durationSec, views, likes, favorites, comments, shares, followers      int64
 		uploaderID, uploaderName                                               string
 		avatarProvider, avatarBucket, avatarKey                                string
@@ -111,6 +112,7 @@ LIMIT 1`
 		&publishedAt,
 		&visibility,
 		&category,
+		&categoryID,
 		&uploaderID,
 		&uploaderName,
 		&followers,
@@ -235,27 +237,32 @@ ORDER BY t.name ASC`, videoID)
 		playback["variants"] = variants
 	}
 
-	data := fiber.Map{
-		"status": videoStatus,
-		"video": fiber.Map{
-			"id":               id,
-			"title":            title,
-			"cover_url":        mediaURL(h.app.Storage, coverProvider, coverBucket, coverKey),
-			"preview_webp_url": mediaURL(h.app.Storage, previewProvider, previewBucket, previewKey),
-			"visibility":       visibility,
-			"duration_sec":     durationSec,
-			"views_count":      views,
-			"comments_count":   comments,
-			"published_at":     publishedAt,
-			"category":         category,
-			"author": fiber.Map{
-				"id":              uploaderID,
-				"username":        uploaderName,
-				"followers_count": followers,
-				"avatar_url":      mediaURL(h.app.Storage, avatarProvider, avatarBucket, avatarKey),
-				"followed":        followingUploader,
-			},
+	videoData := fiber.Map{
+		"id":               id,
+		"title":            title,
+		"cover_url":        mediaURL(h.app.Storage, coverProvider, coverBucket, coverKey),
+		"preview_webp_url": mediaURL(h.app.Storage, previewProvider, previewBucket, previewKey),
+		"visibility":       visibility,
+		"duration_sec":     durationSec,
+		"views_count":      views,
+		"comments_count":   comments,
+		"published_at":     publishedAt,
+		"category":         category,
+		"author": fiber.Map{
+			"id":              uploaderID,
+			"username":        uploaderName,
+			"followers_count": followers,
+			"avatar_url":      mediaURL(h.app.Storage, avatarProvider, avatarBucket, avatarKey),
+			"followed":        followingUploader,
 		},
+	}
+	if categoryID.Valid {
+		videoData["category_id"] = categoryID.Int64
+	}
+
+	data := fiber.Map{
+		"status":      videoStatus,
+		"video":       videoData,
 		"source_url":  mp4URL,
 		"playback":    playback,
 		"description": description,

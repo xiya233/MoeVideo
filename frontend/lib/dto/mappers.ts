@@ -120,11 +120,13 @@ export function mapTagsData(value: unknown): TagsData {
 
 export function mapVideoCard(value: unknown): VideoCard {
   const src = obj(value);
+  const categoryID = num(src.category_id);
   return {
     id: str(src.id),
     title: str(src.title, "未命名视频"),
     status: str(src.status) || undefined,
     visibility: str(src.visibility) || undefined,
+    category_id: categoryID > 0 ? categoryID : undefined,
     cover_url: str(src.cover_url) || undefined,
     preview_webp_url: str(src.preview_webp_url) || undefined,
     duration_sec: num(src.duration_sec),

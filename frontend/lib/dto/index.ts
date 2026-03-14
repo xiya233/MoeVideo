@@ -29,6 +29,7 @@ export type VideoCard = {
   title: string;
   status?: string;
   visibility?: string;
+  category_id?: number;
   cover_url?: string;
   preview_webp_url?: string;
   duration_sec: number;
