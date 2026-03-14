@@ -1,13 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useEffect, useState, type ReactNode } from "react";
+import { Suspense, useEffect, type ReactNode } from "react";
 
 import { AuthDialog } from "@/components/auth/AuthDialog";
 import { AppIcon } from "@/components/common/AppIcon";
 import { SiteHeader } from "@/components/layout/SiteHeader";
 import { usePublicSiteSettings } from "@/lib/site-settings/public";
-import type { FooterLinks } from "@/lib/site-settings/types";
+import type { FooterLinks, PublicSiteSettings } from "@/lib/site-settings/types";
 
 function BrandMark({ siteTitle, siteLogoURL, size = 36 }: { siteTitle: string; siteLogoURL?: string; size?: number }) {
   if (siteLogoURL) {
@@ -157,20 +157,20 @@ function SiteFooter({
   return <HomeFooter siteTitle={siteTitle} siteDescription={siteDescription} siteLogoURL={siteLogoURL} footerLinks={footerLinks} />;
 }
 
-export function SiteShell({ children }: { children: ReactNode }) {
-  const [mounted, setMounted] = useState(false);
-  const siteSettingsQuery = usePublicSiteSettings();
-  const siteTitle = siteSettingsQuery.data?.site_title?.trim() || "MoeVideo";
-  const siteDescription = siteSettingsQuery.data?.site_description?.trim() || "MoeVideo VOD - Stitch design implementation";
-  const siteLogoURL = siteSettingsQuery.data?.site_logo_url;
-  const footerLinks = normalizeFooterLinks(siteSettingsQuery.data?.footer_links);
-  const displayedSiteTitle = mounted ? siteTitle : "MoeVideo";
-  const displayedSiteDescription = mounted ? siteDescription : "MoeVideo VOD - Stitch design implementation";
-  const displayedSiteLogoURL = mounted ? siteLogoURL : undefined;
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+export function SiteShell({
+  children,
+  initialSiteSettings,
+}: {
+  children: ReactNode;
+  initialSiteSettings: PublicSiteSettings;
+}) {
+  const siteSettingsQuery = usePublicSiteSettings({ initialData: initialSiteSettings });
+  const siteSettings = siteSettingsQuery.data ?? initialSiteSettings;
+  const siteTitle = siteSettings.site_title?.trim() || "MoeVideo";
+  const siteDescription = siteSettings.site_description?.trim() || "MoeVideo VOD - Stitch design implementation";
+  const siteLogoURL = siteSettings.site_logo_url;
+  const footerLinks = normalizeFooterLinks(siteSettings.footer_links);
+  const registerEnabled = siteSettings.register_enabled ?? true;
 
   useEffect(() => {
     document.title = siteTitle;
@@ -186,16 +186,11 @@ export function SiteShell({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-background-light text-slate-900">
       <Suspense fallback={<div className="h-[73px] border-b border-primary/10 bg-white/80" />}>
-        <SiteHeader />
+        <SiteHeader siteTitle={siteTitle} siteLogoURL={siteLogoURL} registerEnabled={registerEnabled} />
       </Suspense>
       <main className="mx-auto w-full max-w-[1400px] px-4 py-8 md:px-10">{children}</main>
       <Suspense>
-        <SiteFooter
-          siteTitle={displayedSiteTitle}
-          siteDescription={displayedSiteDescription}
-          siteLogoURL={displayedSiteLogoURL}
-          footerLinks={footerLinks}
-        />
+        <SiteFooter siteTitle={siteTitle} siteDescription={siteDescription} siteLogoURL={siteLogoURL} footerLinks={footerLinks} />
       </Suspense>
       <AuthDialog />
     </div>

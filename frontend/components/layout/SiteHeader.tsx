@@ -2,33 +2,30 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
 import { AppIcon } from "@/components/common/AppIcon";
-import { usePublicSiteSettings } from "@/lib/site-settings/public";
 import { cn } from "@/lib/utils/cn";
 
-export function SiteHeader() {
+export function SiteHeader({
+  siteTitle,
+  siteLogoURL,
+  registerEnabled,
+}: {
+  siteTitle: string;
+  siteLogoURL?: string;
+  registerEnabled: boolean;
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
 
   const { ready, user, openAuthDialog, logout } = useAuth();
-  const siteSettingsQuery = usePublicSiteSettings();
 
   const [mounted, setMounted] = useState(false);
   const [searchValue, setSearchValue] = useState("");
   const [logoutPending, setLogoutPending] = useState(false);
-
-  const siteTitle = useMemo(
-    () => siteSettingsQuery.data?.site_title?.trim() || "MoeVideo",
-    [siteSettingsQuery.data?.site_title],
-  );
-  const siteLogoURL = siteSettingsQuery.data?.site_logo_url || "";
-  const registerEnabled = siteSettingsQuery.data?.register_enabled ?? true;
-  const displayedSiteTitle = mounted ? siteTitle : "MoeVideo";
-  const displayedSiteLogoURL = mounted ? siteLogoURL : "";
 
   useEffect(() => {
     setMounted(true);
@@ -118,13 +115,13 @@ export function SiteHeader() {
       <div className="mx-auto flex w-full max-w-[1400px] items-center justify-between gap-4">
         <div className="flex items-center gap-8">
           <Link className="flex items-center gap-2 text-primary" href="/">
-            {displayedSiteLogoURL ? (
+            {siteLogoURL ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={displayedSiteLogoURL} alt={displayedSiteTitle} className="h-9 w-9 rounded-md object-cover" />
+              <img src={siteLogoURL} alt={siteTitle} className="h-9 w-9 rounded-md object-cover" />
             ) : (
               <AppIcon name="face_5" size={36} />
             )}
-            <h2 className="text-xl font-bold tracking-tight text-slate-900">{displayedSiteTitle}</h2>
+            <h2 className="text-xl font-bold tracking-tight text-slate-900">{siteTitle}</h2>
           </Link>
 
           <nav className="hidden items-center gap-6 md:flex">

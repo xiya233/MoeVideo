@@ -23,9 +23,14 @@ async function fetchPublicSiteSettings(): Promise<PublicSiteSettings> {
   return parsed.data;
 }
 
-export function usePublicSiteSettings() {
+type UsePublicSiteSettingsOptions = {
+  initialData?: PublicSiteSettings;
+};
+
+export function usePublicSiteSettings(options?: UsePublicSiteSettingsOptions) {
   return useQuery({
     queryKey: ["site-settings-public"],
     queryFn: fetchPublicSiteSettings,
+    initialData: options?.initialData,
   });
 }
