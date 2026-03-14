@@ -471,7 +471,7 @@ export function ImportPage() {
                 />
               </label>
 
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
                 <label className="space-y-1">
                   <span className={fieldLabelClass}>标题（可选）</span>
                   <input
