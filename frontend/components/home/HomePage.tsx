@@ -131,9 +131,10 @@ function FeaturedHeroSlide({
           <>
             <Link
               href={`/videos/${video.id}`}
-              className="mb-2 line-clamp-2 text-2xl font-bold text-white [text-shadow:0_0_18px_rgba(61,184,245,0.55)] md:text-3xl"
+              className="mb-2 line-clamp-2 text-2xl font-bold text-white [text-shadow:0_2px_8px_rgba(0,0,0,0.45)] md:text-3xl"
+              style={{ color: "#ffffff" }}
             >
-              {video.title}
+              <span className="text-white">{video.title}</span>
             </Link>
             <p className="max-w-lg text-sm text-white/90">
               来自 {video.author.username} · {formatCount(video.views_count)} 播放
