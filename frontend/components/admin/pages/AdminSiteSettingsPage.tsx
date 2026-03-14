@@ -12,12 +12,66 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { adminApi } from "@/lib/admin/api";
-import type { AdminSiteCategory } from "@/lib/admin/types";
+import type { AdminSiteCategory, FooterLinks } from "@/lib/admin/types";
 import type { UploadCompleteData, UploadTicket } from "@/lib/dto";
 import { mapUploadCompleteData, mapUploadTicket } from "@/lib/dto/mappers";
 
 const MAX_LOGO_SIZE = 10 * 1024 * 1024;
 const ALLOWED_LOGO_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const FOOTER_ITEM_COUNT = 3;
+
+const DEFAULT_FOOTER_LINKS: FooterLinks = {
+  about: [
+    { label: "加入我们", url: "/about/join" },
+    { label: "联系我们", url: "/about/contact" },
+    { label: "创作团队", url: "/about/team" },
+  ],
+  support: [
+    { label: "反馈中心", url: "/support/feedback" },
+    { label: "隐私设置", url: "/support/privacy" },
+    { label: "上传规范", url: "/support/upload-guidelines" },
+  ],
+  legal: [
+    { label: "用户协议", url: "/legal/terms" },
+    { label: "隐私政策", url: "/legal/privacy" },
+    { label: "版权声明", url: "/legal/copyright" },
+  ],
+  updates: [
+    { label: "官方公告", url: "/updates/news" },
+    { label: "活动中心", url: "/updates/events" },
+    { label: "开发日志", url: "/updates/changelog" },
+  ],
+};
+
+const FOOTER_GROUPS: Array<{ key: keyof FooterLinks; title: string }> = [
+  { key: "about", title: "关于我们" },
+  { key: "support", title: "帮助支持" },
+  { key: "legal", title: "协议条款" },
+  { key: "updates", title: "关注更新" },
+];
+
+function normalizeFooterLinksInput(input?: FooterLinks): FooterLinks {
+  const source = input ?? DEFAULT_FOOTER_LINKS;
+  const normalizeGroup = (items: FooterLinks[keyof FooterLinks], fallback: FooterLinks[keyof FooterLinks]) => {
+    if (!Array.isArray(items) || items.length !== FOOTER_ITEM_COUNT) {
+      return fallback.map((item) => ({ ...item }));
+    }
+    const normalized = items.map((item, index) => {
+      const fallbackItem = fallback[index];
+      const label = item?.label?.trim() || fallbackItem.label;
+      const url = item?.url?.trim() || fallbackItem.url;
+      return { label, url };
+    });
+    return normalized;
+  };
+
+  return {
+    about: normalizeGroup(source.about, DEFAULT_FOOTER_LINKS.about),
+    support: normalizeGroup(source.support, DEFAULT_FOOTER_LINKS.support),
+    legal: normalizeGroup(source.legal, DEFAULT_FOOTER_LINKS.legal),
+    updates: normalizeGroup(source.updates, DEFAULT_FOOTER_LINKS.updates),
+  };
+}
 
 function headersToText(headers?: Record<string, string>): string {
   if (!headers) {
@@ -69,6 +123,7 @@ export function AdminSiteSettingsPage() {
   const [ytdlpSocketTimeout, setYTDLPSocketTimeout] = useState("");
   const [ytdlpMetadataArgsRaw, setYTDLPMetadataArgsRaw] = useState("");
   const [ytdlpDownloadArgsRaw, setYTDLPDownloadArgsRaw] = useState("");
+  const [footerLinks, setFooterLinks] = useState<FooterLinks>(normalizeFooterLinksInput());
 
   const [createSlug, setCreateSlug] = useState("");
   const [createName, setCreateName] = useState("");
@@ -112,6 +167,7 @@ export function AdminSiteSettingsPage() {
     );
     setYTDLPMetadataArgsRaw(settingsQuery.data.ytdlp_metadata_args_raw ?? "");
     setYTDLPDownloadArgsRaw(settingsQuery.data.ytdlp_download_args_raw ?? "");
+    setFooterLinks(normalizeFooterLinksInput(settingsQuery.data.footer_links));
   }, [settingsQuery.data]);
 
   const patchSettingsMutation = useMutation({
@@ -120,6 +176,7 @@ export function AdminSiteSettingsPage() {
       site_description?: string;
       register_enabled?: boolean;
       site_logo_media_id?: string;
+      footer_links?: FooterLinks;
       ytdlp_param_mode?: "safe" | "advanced";
       ytdlp_safe?: {
         format?: string;
@@ -268,6 +325,44 @@ export function AdminSiteSettingsPage() {
       site_description: siteDescription.trim(),
       register_enabled: registerEnabled,
     });
+  };
+
+  const updateFooterLinkField = (group: keyof FooterLinks, index: number, field: "label" | "url", value: string) => {
+    setFooterLinks((prev) => {
+      const next = normalizeFooterLinksInput(prev);
+      next[group][index] = {
+        ...next[group][index],
+        [field]: value,
+      };
+      return next;
+    });
+  };
+
+  const onSaveFooterLinks = async () => {
+    setSaveError("");
+    setSaveMessage("");
+
+    try {
+      const normalized = normalizeFooterLinksInput(footerLinks);
+      for (const group of FOOTER_GROUPS) {
+        normalized[group.key].forEach((item, index) => {
+          if (!item.label.trim()) {
+            throw new Error(`${group.title} 第 ${index + 1} 项文案不能为空`);
+          }
+          if (!item.url.trim()) {
+            throw new Error(`${group.title} 第 ${index + 1} 项 URL 不能为空`);
+          }
+        });
+      }
+
+      await patchSettingsMutation.mutateAsync({
+        footer_links: normalized,
+      });
+      setSaveMessage("Footer 链接已保存");
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "保存 Footer 失败");
+      setSaveMessage("");
+    }
   };
 
   const onSaveYTDLPSettings = async () => {
@@ -489,6 +584,42 @@ export function AdminSiteSettingsPage() {
           <div className="flex justify-end">
             <Button onClick={() => void onSaveYTDLPSettings()} disabled={patchSettingsMutation.isPending || settingsQuery.isLoading}>
               {patchSettingsMutation.isPending ? "保存中..." : "保存 yt-dlp 配置"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Footer Links</CardTitle>
+          <CardDescription>配置站点页 Footer 的四组文案与链接（每组固定 3 项）。</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {FOOTER_GROUPS.map((group) => (
+            <div key={group.key} className="rounded-lg border border-slate-200 p-3">
+              <h4 className="mb-3 text-sm font-semibold text-slate-800">{group.title}</h4>
+              <div className="space-y-2">
+                {footerLinks[group.key].map((item, index) => (
+                  <div key={`${group.key}-${index}`} className="grid gap-2 md:grid-cols-2">
+                    <Input
+                      value={item.label}
+                      onChange={(event) => updateFooterLinkField(group.key, index, "label", event.target.value)}
+                      placeholder={`第 ${index + 1} 项文案`}
+                    />
+                    <Input
+                      value={item.url}
+                      onChange={(event) => updateFooterLinkField(group.key, index, "url", event.target.value)}
+                      placeholder={`第 ${index + 1} 项 URL`}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          <div className="flex justify-end">
+            <Button onClick={() => void onSaveFooterLinks()} disabled={patchSettingsMutation.isPending || settingsQuery.isLoading}>
+              {patchSettingsMutation.isPending ? "保存中..." : "保存 Footer 链接"}
             </Button>
           </div>
         </CardContent>

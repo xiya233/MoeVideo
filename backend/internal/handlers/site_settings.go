@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -41,6 +42,8 @@ type siteSettingsRow struct {
 	SiteDescription string
 	SiteLogoMediaID string
 	SiteLogoURL     string
+	FooterLinksJSON string
+	FooterLinks     footerLinksSettings
 	RegisterEnabled bool
 	YTDLPParamMode  string
 	YTDLPSafe       ytdlpSafeSettings
@@ -55,6 +58,7 @@ type adminPatchSiteSettingsRequest struct {
 	SiteTitle        *string                  `json:"site_title"`
 	SiteDescription  *string                  `json:"site_description"`
 	SiteLogoMediaID  *string                  `json:"site_logo_media_id"`
+	FooterLinks      *footerLinksSettings     `json:"footer_links"`
 	RegisterEnabled  *bool                    `json:"register_enabled"`
 	YTDLPParamMode   *string                  `json:"ytdlp_param_mode"`
 	YTDLPSafe        *adminPatchYTDLPSafeBody `json:"ytdlp_safe"`
@@ -83,6 +87,140 @@ type adminPatchCategoryRequest struct {
 	Name      *string `json:"name"`
 	SortOrder *int64  `json:"sort_order"`
 	IsActive  *bool   `json:"is_active"`
+}
+
+type footerLinkItem struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
+type footerLinksSettings struct {
+	About   []footerLinkItem `json:"about"`
+	Support []footerLinkItem `json:"support"`
+	Legal   []footerLinkItem `json:"legal"`
+	Updates []footerLinkItem `json:"updates"`
+}
+
+var defaultFooterLinksSettings = footerLinksSettings{
+	About: []footerLinkItem{
+		{Label: "加入我们", URL: "/about/join"},
+		{Label: "联系我们", URL: "/about/contact"},
+		{Label: "创作团队", URL: "/about/team"},
+	},
+	Support: []footerLinkItem{
+		{Label: "反馈中心", URL: "/support/feedback"},
+		{Label: "隐私设置", URL: "/support/privacy"},
+		{Label: "上传规范", URL: "/support/upload-guidelines"},
+	},
+	Legal: []footerLinkItem{
+		{Label: "用户协议", URL: "/legal/terms"},
+		{Label: "隐私政策", URL: "/legal/privacy"},
+		{Label: "版权声明", URL: "/legal/copyright"},
+	},
+	Updates: []footerLinkItem{
+		{Label: "官方公告", URL: "/updates/news"},
+		{Label: "活动中心", URL: "/updates/events"},
+		{Label: "开发日志", URL: "/updates/changelog"},
+	},
+}
+
+func cloneFooterLinksSettings(src footerLinksSettings) footerLinksSettings {
+	return footerLinksSettings{
+		About:   append([]footerLinkItem(nil), src.About...),
+		Support: append([]footerLinkItem(nil), src.Support...),
+		Legal:   append([]footerLinkItem(nil), src.Legal...),
+		Updates: append([]footerLinkItem(nil), src.Updates...),
+	}
+}
+
+func isValidFooterURL(raw string) bool {
+	if strings.HasPrefix(raw, "/") {
+		return true
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	return scheme == "http" || scheme == "https"
+}
+
+func normalizeFooterLinks(input footerLinksSettings) (footerLinksSettings, error) {
+	normalizeGroup := func(groupName string, items []footerLinkItem) ([]footerLinkItem, error) {
+		if len(items) != 3 {
+			return nil, fmt.Errorf("footer_links.%s must contain exactly 3 items", groupName)
+		}
+		out := make([]footerLinkItem, 0, 3)
+		for idx, item := range items {
+			label := strings.TrimSpace(item.Label)
+			if label == "" {
+				return nil, fmt.Errorf("footer_links.%s[%d].label cannot be empty", groupName, idx)
+			}
+			if len([]rune(label)) > 32 {
+				return nil, fmt.Errorf("footer_links.%s[%d].label is too long", groupName, idx)
+			}
+			linkURL := strings.TrimSpace(item.URL)
+			if linkURL == "" {
+				return nil, fmt.Errorf("footer_links.%s[%d].url cannot be empty", groupName, idx)
+			}
+			if len([]rune(linkURL)) > 500 {
+				return nil, fmt.Errorf("footer_links.%s[%d].url is too long", groupName, idx)
+			}
+			if !isValidFooterURL(linkURL) {
+				return nil, fmt.Errorf("footer_links.%s[%d].url is invalid", groupName, idx)
+			}
+			out = append(out, footerLinkItem{
+				Label: label,
+				URL:   linkURL,
+			})
+		}
+		return out, nil
+	}
+
+	about, err := normalizeGroup("about", input.About)
+	if err != nil {
+		return footerLinksSettings{}, err
+	}
+	support, err := normalizeGroup("support", input.Support)
+	if err != nil {
+		return footerLinksSettings{}, err
+	}
+	legal, err := normalizeGroup("legal", input.Legal)
+	if err != nil {
+		return footerLinksSettings{}, err
+	}
+	updates, err := normalizeGroup("updates", input.Updates)
+	if err != nil {
+		return footerLinksSettings{}, err
+	}
+
+	return footerLinksSettings{
+		About:   about,
+		Support: support,
+		Legal:   legal,
+		Updates: updates,
+	}, nil
+}
+
+func parseFooterLinksJSON(raw string) (footerLinksSettings, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return cloneFooterLinksSettings(defaultFooterLinksSettings), nil
+	}
+
+	var parsed footerLinksSettings
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return footerLinksSettings{}, err
+	}
+	return normalizeFooterLinks(parsed)
+}
+
+func parseFooterLinksJSONOrDefault(raw string) footerLinksSettings {
+	parsed, err := parseFooterLinksJSON(raw)
+	if err != nil {
+		return cloneFooterLinksSettings(defaultFooterLinksSettings)
+	}
+	return parsed
 }
 
 func (h *Handler) ensureSiteSettingsRow(ctx context.Context) error {
@@ -115,6 +253,7 @@ func (h *Handler) querySiteSettingsRow(ctx context.Context) (siteSettingsRow, er
 
 	if err := h.app.DB.QueryRowContext(ctx, `
 SELECT s.site_title, s.site_description, COALESCE(s.site_logo_media_id, ''), s.register_enabled,
+       COALESCE(s.footer_links_json, ''),
        COALESCE(s.ytdlp_param_mode, 'safe'),
        COALESCE(s.ytdlp_safe_json, '{}'),
        COALESCE(s.ytdlp_metadata_args_raw, ''),
@@ -129,6 +268,7 @@ LIMIT 1`).Scan(
 		&row.SiteDescription,
 		&row.SiteLogoMediaID,
 		&registerEnabled,
+		&row.FooterLinksJSON,
 		&row.YTDLPParamMode,
 		&row.YTDLPSafeJSON,
 		&row.YTDLPMetaRaw,
@@ -153,6 +293,7 @@ LIMIT 1`).Scan(
 		safeCfg = ytdlpSafeSettings{}
 	}
 	row.YTDLPSafe = safeCfg
+	row.FooterLinks = parseFooterLinksJSONOrDefault(row.FooterLinksJSON)
 	row.SiteLogoURL = mediaURL(h.app.Storage, logoProvider, logoBucket, logoObjectKey)
 	return row, nil
 }
@@ -359,6 +500,7 @@ func (h *Handler) GetPublicSiteSettings(c *fiber.Ctx) error {
 		"site_title":       row.SiteTitle,
 		"site_description": row.SiteDescription,
 		"site_logo_url":    row.SiteLogoURL,
+		"footer_links":     row.FooterLinks,
 		"register_enabled": row.RegisterEnabled,
 	})
 }
@@ -379,6 +521,7 @@ func (h *Handler) AdminGetSiteSettings(c *fiber.Ctx) error {
 			return row.SiteLogoMediaID
 		}(),
 		"site_logo_url":           row.SiteLogoURL,
+		"footer_links":            row.FooterLinks,
 		"register_enabled":        row.RegisterEnabled,
 		"ytdlp_param_mode":        row.YTDLPParamMode,
 		"ytdlp_safe":              row.YTDLPSafe,
@@ -402,6 +545,7 @@ func (h *Handler) AdminPatchSiteSettings(c *fiber.Ctx) error {
 	if req.SiteTitle == nil &&
 		req.SiteDescription == nil &&
 		req.SiteLogoMediaID == nil &&
+		req.FooterLinks == nil &&
 		req.RegisterEnabled == nil &&
 		req.YTDLPParamMode == nil &&
 		req.YTDLPSafe == nil &&
@@ -434,6 +578,7 @@ func (h *Handler) AdminPatchSiteSettings(c *fiber.Ctx) error {
 		beforeDescription string
 		beforeLogoMediaID sql.NullString
 		beforeEnabled     int64
+		beforeFooterLinks string
 		beforeYTDLPMode   string
 		beforeYTDLPSafe   string
 		beforeYTDLPMeta   string
@@ -441,6 +586,7 @@ func (h *Handler) AdminPatchSiteSettings(c *fiber.Ctx) error {
 	)
 	if err := tx.QueryRowContext(c.UserContext(), `
 SELECT site_title, site_description, site_logo_media_id, register_enabled,
+       COALESCE(footer_links_json, ''),
        COALESCE(ytdlp_param_mode, 'safe'),
        COALESCE(ytdlp_safe_json, '{}'),
        COALESCE(ytdlp_metadata_args_raw, ''),
@@ -452,6 +598,7 @@ LIMIT 1`).Scan(
 		&beforeDescription,
 		&beforeLogoMediaID,
 		&beforeEnabled,
+		&beforeFooterLinks,
 		&beforeYTDLPMode,
 		&beforeYTDLPSafe,
 		&beforeYTDLPMeta,
@@ -466,8 +613,11 @@ LIMIT 1`).Scan(
 	}
 	beforeSafeCfg, _ := parseYTDLPSafeJSON(beforeYTDLPSafe)
 	beforeSafeJSON, _ := json.Marshal(beforeSafeCfg)
+	beforeFooterCfg := parseFooterLinksJSONOrDefault(beforeFooterLinks)
+	beforeFooterJSON, _ := json.Marshal(beforeFooterCfg)
 	currentMode := beforeMode
 	currentSafe := beforeSafeCfg
+	currentFooter := beforeFooterCfg
 	currentMetaRaw := strings.TrimSpace(beforeYTDLPMeta)
 	currentDownRaw := strings.TrimSpace(beforeYTDLPDown)
 
@@ -517,6 +667,14 @@ LIMIT 1`).Scan(
 			setClauses = append(setClauses, "site_logo_media_id = ?")
 			args = append(args, siteLogoMediaID)
 		}
+	}
+
+	if req.FooterLinks != nil {
+		normalizedFooter, normErr := normalizeFooterLinks(*req.FooterLinks)
+		if normErr != nil {
+			return response.Error(c, fiber.StatusBadRequest, normErr.Error())
+		}
+		currentFooter = normalizedFooter
 	}
 
 	if req.RegisterEnabled != nil {
@@ -608,6 +766,11 @@ LIMIT 1`).Scan(
 		setClauses = append(setClauses, "ytdlp_safe_json = ?")
 		args = append(args, string(currentSafeJSON))
 	}
+	currentFooterJSON, _ := json.Marshal(currentFooter)
+	if string(currentFooterJSON) != string(beforeFooterJSON) {
+		setClauses = append(setClauses, "footer_links_json = ?")
+		args = append(args, string(currentFooterJSON))
+	}
 	if currentMetaRaw != strings.TrimSpace(beforeYTDLPMeta) {
 		setClauses = append(setClauses, "ytdlp_metadata_args_raw = ?")
 		args = append(args, currentMetaRaw)
@@ -640,6 +803,7 @@ LIMIT 1`).Scan(
 		afterDescription string
 		afterLogoMediaID sql.NullString
 		afterEnabled     int64
+		afterFooterLinks string
 		afterYTDLPMode   string
 		afterYTDLPSafe   string
 		afterYTDLPMeta   string
@@ -647,6 +811,7 @@ LIMIT 1`).Scan(
 	)
 	if err := tx.QueryRowContext(c.UserContext(), `
 SELECT site_title, site_description, site_logo_media_id, register_enabled,
+       COALESCE(footer_links_json, ''),
        COALESCE(ytdlp_param_mode, 'safe'),
        COALESCE(ytdlp_safe_json, '{}'),
        COALESCE(ytdlp_metadata_args_raw, ''),
@@ -658,6 +823,7 @@ LIMIT 1`).Scan(
 		&afterDescription,
 		&afterLogoMediaID,
 		&afterEnabled,
+		&afterFooterLinks,
 		&afterYTDLPMode,
 		&afterYTDLPSafe,
 		&afterYTDLPMeta,
@@ -676,6 +842,7 @@ LIMIT 1`).Scan(
 				}
 				return beforeLogoMediaID.String
 			}(),
+			"footer_links":            beforeFooterCfg,
 			"register_enabled":        beforeEnabled == 1,
 			"ytdlp_param_mode":        beforeMode,
 			"ytdlp_safe":              beforeSafeCfg,
@@ -691,6 +858,7 @@ LIMIT 1`).Scan(
 				}
 				return afterLogoMediaID.String
 			}(),
+			"footer_links":     parseFooterLinksJSONOrDefault(afterFooterLinks),
 			"register_enabled": afterEnabled == 1,
 			"ytdlp_param_mode": afterYTDLPMode,
 			"ytdlp_safe": func() interface{} {

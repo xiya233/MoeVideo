@@ -9,6 +9,7 @@ import type {
   AdminUser,
   AdminVideoItem,
   CursorList,
+  FooterLinks,
 } from "@/lib/admin/types";
 
 export type ApiRequest = <T>(path: string, options?: RequestOptions) => Promise<T>;
@@ -40,6 +41,7 @@ export const adminApi = {
       site_title?: string;
       site_description?: string;
       site_logo_media_id?: string;
+      footer_links?: FooterLinks;
       register_enabled?: boolean;
       ytdlp_param_mode?: "safe" | "advanced";
       ytdlp_safe?: {

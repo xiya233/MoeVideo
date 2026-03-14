@@ -1,12 +1,13 @@
 "use client";
 
-import { usePathname } from "next/navigation";
+import Link from "next/link";
 import { Suspense, useEffect, type ReactNode } from "react";
 
 import { AuthDialog } from "@/components/auth/AuthDialog";
 import { AppIcon } from "@/components/common/AppIcon";
 import { SiteHeader } from "@/components/layout/SiteHeader";
 import { usePublicSiteSettings } from "@/lib/site-settings/public";
+import type { FooterLinks } from "@/lib/site-settings/types";
 
 function BrandMark({ siteTitle, siteLogoURL, size = 36 }: { siteTitle: string; siteLogoURL?: string; size?: number }) {
   if (siteLogoURL) {
@@ -16,15 +17,83 @@ function BrandMark({ siteTitle, siteLogoURL, size = 36 }: { siteTitle: string; s
   return <AppIcon name="face_5" size={size} />;
 }
 
+const DEFAULT_FOOTER_LINKS: FooterLinks = {
+  about: [
+    { label: "加入我们", url: "/about/join" },
+    { label: "联系我们", url: "/about/contact" },
+    { label: "创作团队", url: "/about/team" },
+  ],
+  support: [
+    { label: "反馈中心", url: "/support/feedback" },
+    { label: "隐私设置", url: "/support/privacy" },
+    { label: "上传规范", url: "/support/upload-guidelines" },
+  ],
+  legal: [
+    { label: "用户协议", url: "/legal/terms" },
+    { label: "隐私政策", url: "/legal/privacy" },
+    { label: "版权声明", url: "/legal/copyright" },
+  ],
+  updates: [
+    { label: "官方公告", url: "/updates/news" },
+    { label: "活动中心", url: "/updates/events" },
+    { label: "开发日志", url: "/updates/changelog" },
+  ],
+};
+
+function normalizeFooterLinks(footerLinks?: FooterLinks): FooterLinks {
+  const valid = footerLinks ?? DEFAULT_FOOTER_LINKS;
+  const pickGroup = (value: unknown, fallback: FooterLinks[keyof FooterLinks]) => {
+    if (!Array.isArray(value) || value.length !== 3) {
+      return fallback;
+    }
+    const mapped = value
+      .map((item) => {
+        if (typeof item !== "object" || item === null) {
+          return null;
+        }
+        const row = item as { label?: unknown; url?: unknown };
+        const label = typeof row.label === "string" ? row.label.trim() : "";
+        const url = typeof row.url === "string" ? row.url.trim() : "";
+        if (!label || !url) {
+          return null;
+        }
+        return { label, url };
+      })
+      .filter((item): item is { label: string; url: string } => item !== null);
+    return mapped.length === 3 ? mapped : fallback;
+  };
+
+  return {
+    about: pickGroup(valid.about, DEFAULT_FOOTER_LINKS.about),
+    support: pickGroup(valid.support, DEFAULT_FOOTER_LINKS.support),
+    legal: pickGroup(valid.legal, DEFAULT_FOOTER_LINKS.legal),
+    updates: pickGroup(valid.updates, DEFAULT_FOOTER_LINKS.updates),
+  };
+}
+
+function isInternalFooterURL(url: string): boolean {
+  return url.startsWith("/");
+}
+
 function HomeFooter({
   siteTitle,
   siteDescription,
   siteLogoURL,
+  footerLinks,
 }: {
   siteTitle: string;
   siteDescription: string;
   siteLogoURL?: string;
+  footerLinks: FooterLinks;
 }) {
+  const links = normalizeFooterLinks(footerLinks);
+  const sections: Array<{ key: keyof FooterLinks; title: string }> = [
+    { key: "about", title: "关于我们" },
+    { key: "support", title: "帮助支持" },
+    { key: "legal", title: "协议条款" },
+    { key: "updates", title: "关注更新" },
+  ];
+
   return (
     <footer className="border-t border-slate-100 bg-white px-4 py-12 md:px-10">
       <div className="mx-auto grid w-full max-w-[1400px] grid-cols-2 gap-8 md:grid-cols-4 lg:grid-cols-6">
@@ -49,79 +118,26 @@ function HomeFooter({
           </div>
         </div>
 
-        <div>
-          <h4 className="mb-4 text-sm font-bold">关于我们</h4>
-          <ul className="space-y-2 text-xs font-medium text-slate-500">
-            <li>加入我们</li>
-            <li>联系我们</li>
-            <li>创作团队</li>
-          </ul>
-        </div>
-
-        <div>
-          <h4 className="mb-4 text-sm font-bold">帮助支持</h4>
-          <ul className="space-y-2 text-xs font-medium text-slate-500">
-            <li>反馈中心</li>
-            <li>隐私设置</li>
-            <li>上传规范</li>
-          </ul>
-        </div>
-
-        <div>
-          <h4 className="mb-4 text-sm font-bold">协议条款</h4>
-          <ul className="space-y-2 text-xs font-medium text-slate-500">
-            <li>用户协议</li>
-            <li>隐私政策</li>
-            <li>版权声明</li>
-          </ul>
-        </div>
-
-        <div>
-          <h4 className="mb-4 text-sm font-bold">关注更新</h4>
-          <ul className="space-y-2 text-xs font-medium text-slate-500">
-            <li>官方公告</li>
-            <li>活动中心</li>
-            <li>开发日志</li>
-          </ul>
-        </div>
-      </div>
-    </footer>
-  );
-}
-
-function CompactFooter({
-  uploadPage,
-  siteTitle,
-  siteLogoURL,
-}: {
-  uploadPage?: boolean;
-  siteTitle: string;
-  siteLogoURL?: string;
-}) {
-  return (
-    <footer className="border-t border-primary/10 bg-white py-10">
-      <div className="mx-auto w-full max-w-[1440px] px-4 text-center md:px-10">
-        {uploadPage ? (
-          <p className="text-xs text-slate-400">© 2026 {siteTitle} · 为创作而生</p>
-        ) : (
-          <>
-            <div className="mb-6 flex items-center justify-center gap-2 text-primary">
-              {siteLogoURL ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={siteLogoURL} alt={siteTitle} className="h-6 w-6 rounded-md object-cover" />
-              ) : (
-                <AppIcon name="play_circle" size={24} />
-              )}
-              <span className="text-lg font-bold">{siteTitle}</span>
-            </div>
-            <p className="text-sm text-slate-500">© 2026 {siteTitle} Project. Designed for anime and scenery lovers.</p>
-            <div className="mt-6 flex items-center justify-center gap-6 text-slate-400">
-              <AppIcon name="alternate_email" className="transition-colors hover:text-primary" />
-              <AppIcon name="public" className="transition-colors hover:text-primary" />
-              <AppIcon name="groups" className="transition-colors hover:text-primary" />
-            </div>
-          </>
-        )}
+        {sections.map((section) => (
+          <div key={section.key}>
+            <h4 className="mb-4 text-sm font-bold">{section.title}</h4>
+            <ul className="space-y-2 text-xs font-medium text-slate-500">
+              {links[section.key].map((item) => (
+                <li key={`${section.key}-${item.label}-${item.url}`}>
+                  {isInternalFooterURL(item.url) ? (
+                    <Link href={item.url} className="transition-colors hover:text-primary">
+                      {item.label}
+                    </Link>
+                  ) : (
+                    <a href={item.url} target="_blank" rel="noopener noreferrer" className="transition-colors hover:text-primary">
+                      {item.label}
+                    </a>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
       </div>
     </footer>
   );
@@ -131,16 +147,14 @@ function SiteFooter({
   siteTitle,
   siteDescription,
   siteLogoURL,
+  footerLinks,
 }: {
   siteTitle: string;
   siteDescription: string;
   siteLogoURL?: string;
+  footerLinks: FooterLinks;
 }) {
-  const pathname = usePathname();
-  if (pathname === "/") {
-    return <HomeFooter siteTitle={siteTitle} siteDescription={siteDescription} siteLogoURL={siteLogoURL} />;
-  }
-  return <CompactFooter uploadPage={pathname === "/upload"} siteTitle={siteTitle} siteLogoURL={siteLogoURL} />;
+  return <HomeFooter siteTitle={siteTitle} siteDescription={siteDescription} siteLogoURL={siteLogoURL} footerLinks={footerLinks} />;
 }
 
 export function SiteShell({ children }: { children: ReactNode }) {
@@ -148,6 +162,7 @@ export function SiteShell({ children }: { children: ReactNode }) {
   const siteTitle = siteSettingsQuery.data?.site_title?.trim() || "MoeVideo";
   const siteDescription = siteSettingsQuery.data?.site_description?.trim() || "MoeVideo VOD - Stitch design implementation";
   const siteLogoURL = siteSettingsQuery.data?.site_logo_url;
+  const footerLinks = normalizeFooterLinks(siteSettingsQuery.data?.footer_links);
 
   useEffect(() => {
     document.title = siteTitle;
@@ -167,7 +182,7 @@ export function SiteShell({ children }: { children: ReactNode }) {
       </Suspense>
       <main className="mx-auto w-full max-w-[1400px] px-4 py-8 md:px-10">{children}</main>
       <Suspense>
-        <SiteFooter siteTitle={siteTitle} siteDescription={siteDescription} siteLogoURL={siteLogoURL} />
+        <SiteFooter siteTitle={siteTitle} siteDescription={siteDescription} siteLogoURL={siteLogoURL} footerLinks={footerLinks} />
       </Suspense>
       <AuthDialog />
     </div>

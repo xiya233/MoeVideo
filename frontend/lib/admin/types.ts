@@ -115,11 +115,24 @@ export type AdminAuditLog = {
   };
 };
 
+export type FooterLink = {
+  label: string;
+  url: string;
+};
+
+export type FooterLinks = {
+  about: FooterLink[];
+  support: FooterLink[];
+  legal: FooterLink[];
+  updates: FooterLink[];
+};
+
 export type AdminSiteSettings = {
   site_title: string;
   site_description: string;
   site_logo_media_id?: string | null;
   site_logo_url?: string;
+  footer_links: FooterLinks;
   register_enabled: boolean;
   ytdlp_param_mode?: "safe" | "advanced";
   ytdlp_safe?: {

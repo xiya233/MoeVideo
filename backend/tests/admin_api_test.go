@@ -101,6 +101,28 @@ func TestAdminSiteSettingsAndCategoryFlow(t *testing.T) {
 	status, patchResp := doJSONRequest(t, srv, http.MethodPatch, "/api/v1/admin/site-settings", map[string]interface{}{
 		"site_title":       "MoeVideo Stage",
 		"site_description": "configurable site settings",
+		"footer_links": map[string]interface{}{
+			"about": []map[string]string{
+				{"label": "加入我们", "url": "/about/join"},
+				{"label": "联系我们", "url": "/about/contact"},
+				{"label": "创作团队", "url": "/about/team"},
+			},
+			"support": []map[string]string{
+				{"label": "反馈中心", "url": "/support/feedback"},
+				{"label": "隐私设置", "url": "/support/privacy"},
+				{"label": "上传规范", "url": "/support/upload-guidelines"},
+			},
+			"legal": []map[string]string{
+				{"label": "用户协议", "url": "/legal/terms"},
+				{"label": "隐私政策", "url": "/legal/privacy"},
+				{"label": "版权声明", "url": "/legal/copyright"},
+			},
+			"updates": []map[string]string{
+				{"label": "官方公告", "url": "/updates/news"},
+				{"label": "活动中心", "url": "/updates/events"},
+				{"label": "开发日志", "url": "/updates/changelog"},
+			},
+		},
 		"register_enabled": false,
 	}, map[string]string{"Authorization": "Bearer " + adminAccess})
 	if status != http.StatusOK {
@@ -115,6 +137,10 @@ func TestAdminSiteSettingsAndCategoryFlow(t *testing.T) {
 		SiteTitle       string `json:"site_title"`
 		SiteDescription string `json:"site_description"`
 		RegisterEnabled bool   `json:"register_enabled"`
+		FooterLinks     map[string][]struct {
+			Label string `json:"label"`
+			URL   string `json:"url"`
+		} `json:"footer_links"`
 	}
 	if err := json.Unmarshal(publicResp.Data, &publicData); err != nil {
 		t.Fatalf("parse public site settings: %v", err)
@@ -124,6 +150,12 @@ func TestAdminSiteSettingsAndCategoryFlow(t *testing.T) {
 	}
 	if publicData.RegisterEnabled {
 		t.Fatalf("register_enabled should be false")
+	}
+	if len(publicData.FooterLinks["legal"]) != 3 {
+		t.Fatalf("footer legal links should be 3, got %d", len(publicData.FooterLinks["legal"]))
+	}
+	if publicData.FooterLinks["legal"][0].URL != "/legal/terms" {
+		t.Fatalf("unexpected footer legal first url: %q", publicData.FooterLinks["legal"][0].URL)
 	}
 
 	status, ytdlpResp := doJSONRequest(t, srv, http.MethodPatch, "/api/v1/admin/site-settings", map[string]interface{}{
@@ -157,6 +189,34 @@ func TestAdminSiteSettingsAndCategoryFlow(t *testing.T) {
 	}
 	if !strings.Contains(adminSettingsData.YTDLPDownloadRaw, "--format") {
 		t.Fatalf("unexpected ytdlp download args: %s", adminSettingsData.YTDLPDownloadRaw)
+	}
+
+	status, invalidFooterResp := doJSONRequest(t, srv, http.MethodPatch, "/api/v1/admin/site-settings", map[string]interface{}{
+		"footer_links": map[string]interface{}{
+			"about": []map[string]string{
+				{"label": "加入我们", "url": "/about/join"},
+				{"label": "联系我们", "url": "/about/contact"},
+				{"label": "创作团队", "url": "javascript:alert(1)"},
+			},
+			"support": []map[string]string{
+				{"label": "反馈中心", "url": "/support/feedback"},
+				{"label": "隐私设置", "url": "/support/privacy"},
+				{"label": "上传规范", "url": "/support/upload-guidelines"},
+			},
+			"legal": []map[string]string{
+				{"label": "用户协议", "url": "/legal/terms"},
+				{"label": "隐私政策", "url": "/legal/privacy"},
+				{"label": "版权声明", "url": "/legal/copyright"},
+			},
+			"updates": []map[string]string{
+				{"label": "官方公告", "url": "/updates/news"},
+				{"label": "活动中心", "url": "/updates/events"},
+				{"label": "开发日志", "url": "/updates/changelog"},
+			},
+		},
+	}, map[string]string{"Authorization": "Bearer " + adminAccess})
+	if status != http.StatusBadRequest {
+		t.Fatalf("invalid footer url should return 400, got %d (%s)", status, invalidFooterResp.Message)
 	}
 
 	status, catResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/admin/site-settings/categories", map[string]interface{}{
