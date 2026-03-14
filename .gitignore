@@ -12,6 +12,8 @@ frontend/tsconfig.tsbuildinfo
 backend/data
 backend/storage
 backend/.env
+backend/scripts/node_modules
+backend/scripts/bun.lock
 
 # Logs
 *.log

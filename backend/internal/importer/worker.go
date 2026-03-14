@@ -489,6 +489,102 @@ func (w *Worker) importURLItem(
 		return permanentError{err: fmt.Errorf("source_url is required")}
 	}
 
+	if err := w.importURLFromResolvedSource(
+		ctx,
+		job,
+		item,
+		sourceURL,
+		categoryID,
+		tags,
+		visibility,
+		customTitle,
+		customDescription,
+		metadataArgs,
+		downloadArgs,
+		"ytdlp",
+		nil,
+	); err == nil {
+		return nil
+	} else if !isUnsupportedURLMetadataError(err) {
+		return err
+	}
+
+	if !w.app.Config.ImportPageResolverEnabled {
+		return permanentError{err: fmt.Errorf("import.url.page_resolver_unavailable: unsupported url and resolver is disabled")}
+	}
+
+	candidates, resolverResult, resolveErr := w.resolvePageManifestCandidates(ctx, sourceURL)
+	if resolveErr != nil {
+		return permanentError{err: fmt.Errorf("import.url.page_resolver_unavailable: %v", resolveErr)}
+	}
+
+	seen := make(map[string]struct{}, len(candidates)+1)
+	seen[strings.ToLower(strings.TrimSpace(sourceURL))] = struct{}{}
+	attemptErrors := make([]string, 0, len(candidates))
+	for idx, candidate := range candidates {
+		key := strings.ToLower(strings.TrimSpace(candidate))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		contextMeta := map[string]interface{}{
+			"page_url":       sourceURL,
+			"page_final_url": strings.TrimSpace(resolverResult.FinalURL),
+			"page_title":     strings.TrimSpace(resolverResult.Title),
+			"page_reason":    strings.TrimSpace(resolverResult.Reason),
+			"candidate_idx":  idx,
+		}
+		err := w.importURLFromResolvedSource(
+			ctx,
+			job,
+			item,
+			candidate,
+			categoryID,
+			tags,
+			visibility,
+			customTitle,
+			customDescription,
+			metadataArgs,
+			downloadArgs,
+			"page_manifest+yt-dlp",
+			contextMeta,
+		)
+		if err == nil {
+			return nil
+		}
+		attemptErrors = append(attemptErrors, truncateErr(err, 180))
+	}
+
+	if len(attemptErrors) == 0 {
+		return permanentError{err: fmt.Errorf("import.url.page_resolver_unavailable: no usable media candidates")}
+	}
+	return permanentError{err: fmt.Errorf("import.url.page_resolver_unavailable: fallback exhausted (%s)", strings.Join(attemptErrors, " | "))}
+}
+
+func (w *Worker) importURLFromResolvedSource(
+	ctx context.Context,
+	job claimedJob,
+	item selectedItem,
+	sourceURL string,
+	categoryID *int64,
+	tags []string,
+	visibility string,
+	customTitle string,
+	customDescription string,
+	metadataArgs []string,
+	downloadArgs []string,
+	resolverName string,
+	resolverContext map[string]interface{},
+) error {
+	sourceURL = strings.TrimSpace(sourceURL)
+	if sourceURL == "" {
+		return permanentError{err: fmt.Errorf("source_url is required")}
+	}
+
 	meta, err := w.extractURLMetadata(ctx, sourceURL, metadataArgs)
 	if err != nil {
 		return err
@@ -537,15 +633,21 @@ func (w *Worker) importURLItem(
 	if resolvedMediaURL == "" && len(meta.RequestedDownloads) > 0 {
 		resolvedMediaURL = strings.TrimSpace(meta.RequestedDownloads[0].URL)
 	}
-	resolverName := strings.TrimSpace(meta.ExtractorKey)
 	if resolverName == "" {
-		resolverName = strings.TrimSpace(meta.Extractor)
+		resolverName = "ytdlp"
 	}
-	resolverMetaJSON, _ := json.Marshal(map[string]interface{}{
-		"title":        strings.TrimSpace(meta.Title),
-		"duration_sec": int64(meta.Duration),
-		"webpage_url":  strings.TrimSpace(meta.WebpageURL),
-	})
+	resolverMeta := map[string]interface{}{
+		"title":         strings.TrimSpace(meta.Title),
+		"duration_sec":  int64(meta.Duration),
+		"webpage_url":   strings.TrimSpace(meta.WebpageURL),
+		"extractor":     strings.TrimSpace(meta.Extractor),
+		"extractor_key": strings.TrimSpace(meta.ExtractorKey),
+		"source_url":    sourceURL,
+	}
+	for key, value := range resolverContext {
+		resolverMeta[key] = value
+	}
+	resolverMetaJSON, _ := json.Marshal(resolverMeta)
 	if err := w.updateURLResolverFields(
 		ctx,
 		job.ID,
@@ -576,7 +678,13 @@ func (w *Worker) extractURLMetadata(ctx context.Context, sourceURL string, extra
 		if runCtx.Err() == context.DeadlineExceeded {
 			return ytDLPMetadata{}, fmt.Errorf("yt-dlp metadata timeout")
 		}
-		return ytDLPMetadata{}, fmt.Errorf("yt-dlp metadata failed: %w: %s", err, truncateOutput(out, 400))
+		outText := truncateOutput(out, 400)
+		if strings.Contains(strings.ToLower(string(out)), "unsupported url") {
+			return ytDLPMetadata{}, unsupportedURLMetadataError{
+				message: fmt.Sprintf("yt-dlp metadata failed: %v: %s", err, outText),
+			}
+		}
+		return ytDLPMetadata{}, fmt.Errorf("yt-dlp metadata failed: %w: %s", err, outText)
 	}
 
 	var meta ytDLPMetadata

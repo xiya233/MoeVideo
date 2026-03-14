@@ -24,6 +24,14 @@ mise run backend-dev
 
 Backend 默认地址：`http://localhost:8080`
 
+若要启用 URL 导入的页面解析 fallback（Playwright）：
+
+```bash
+cd backend/scripts
+bun install
+bunx playwright install chromium
+```
+
 初始化管理员（一次性）：
 
 ```bash

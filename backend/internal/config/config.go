@@ -9,29 +9,33 @@ import (
 )
 
 type Config struct {
-	Env              string
-	HTTPAddr         string
-	DBPath           string
-	JWTSecret        string
-	AccessTokenTTL   time.Duration
-	RefreshTokenTTL  time.Duration
-	StorageDriver    string
-	LocalStorageDir  string
-	PublicBaseURL    string
-	MaxUploadBytes   int64
-	UploadURLExpires time.Duration
-	FFmpegBin        string
-	FFprobeBin       string
-	YTDLPBin         string
-	TranscodePoll    time.Duration
-	TranscodeMaxTry  int
-	ImportPoll       time.Duration
-	ImportMaxTry     int
-	ImportTorrentMax int64
-	ImportMaxFiles   int
-	ImportURLTimeout time.Duration
-	ImportURLMaxDur  int64
-	ImportURLMaxFile int64
+	Env                       string
+	HTTPAddr                  string
+	DBPath                    string
+	JWTSecret                 string
+	AccessTokenTTL            time.Duration
+	RefreshTokenTTL           time.Duration
+	StorageDriver             string
+	LocalStorageDir           string
+	PublicBaseURL             string
+	MaxUploadBytes            int64
+	UploadURLExpires          time.Duration
+	FFmpegBin                 string
+	FFprobeBin                string
+	YTDLPBin                  string
+	TranscodePoll             time.Duration
+	TranscodeMaxTry           int
+	ImportPoll                time.Duration
+	ImportMaxTry              int
+	ImportTorrentMax          int64
+	ImportMaxFiles            int
+	ImportURLTimeout          time.Duration
+	ImportURLMaxDur           int64
+	ImportURLMaxFile          int64
+	ImportPageResolverEnabled bool
+	ImportPageResolverTimeout time.Duration
+	ImportPageResolverMax     int
+	ImportPageResolverCmd     string
 
 	S3Bucket          string
 	S3Region          string
@@ -62,6 +66,10 @@ func Load() (Config, error) {
 		FFmpegBin:         getEnv("FFMPEG_BIN", "ffmpeg"),
 		FFprobeBin:        getEnv("FFPROBE_BIN", "ffprobe"),
 		YTDLPBin:          getEnv("YTDLP_BIN", "yt-dlp"),
+		ImportPageResolverCmd: getEnv(
+			"IMPORT_PAGE_RESOLVER_CMD",
+			"bun scripts/page_manifest_resolver.mjs",
+		),
 	}
 
 	accessTTL, err := time.ParseDuration(getEnv("ACCESS_TOKEN_TTL", "15m"))
@@ -156,6 +164,27 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("IMPORT_URL_MAX_FILE_MB must be non-negative")
 	}
 	cfg.ImportURLMaxFile = importURLMaxFileMB * 1024 * 1024
+
+	importPageResolverEnabled := strings.ToLower(getEnv("IMPORT_PAGE_RESOLVER_ENABLED", "true"))
+	cfg.ImportPageResolverEnabled = importPageResolverEnabled == "1" || importPageResolverEnabled == "true" || importPageResolverEnabled == "yes"
+
+	importPageResolverTimeoutSec, err := strconv.ParseInt(getEnv("IMPORT_PAGE_RESOLVER_TIMEOUT_SEC", "25"), 10, 64)
+	if err != nil {
+		return cfg, fmt.Errorf("invalid IMPORT_PAGE_RESOLVER_TIMEOUT_SEC: %w", err)
+	}
+	if importPageResolverTimeoutSec <= 0 {
+		return cfg, fmt.Errorf("IMPORT_PAGE_RESOLVER_TIMEOUT_SEC must be positive")
+	}
+	cfg.ImportPageResolverTimeout = time.Duration(importPageResolverTimeoutSec) * time.Second
+
+	importPageResolverMax, err := strconv.Atoi(getEnv("IMPORT_PAGE_RESOLVER_MAX_CANDIDATES", "20"))
+	if err != nil {
+		return cfg, fmt.Errorf("invalid IMPORT_PAGE_RESOLVER_MAX_CANDIDATES: %w", err)
+	}
+	if importPageResolverMax <= 0 {
+		return cfg, fmt.Errorf("IMPORT_PAGE_RESOLVER_MAX_CANDIDATES must be positive")
+	}
+	cfg.ImportPageResolverMax = importPageResolverMax
 
 	maxUploadMB, err := strconv.ParseInt(getEnv("MAX_UPLOAD_MB", "2048"), 10, 64)
 	if err != nil {
