@@ -19,7 +19,7 @@ func TestSplitCommandArgs(t *testing.T) {
 }
 
 func TestParsePageManifestResolverOutput(t *testing.T) {
-	raw := []byte(`{"final_url":"https://example.com/watch/1","title":"demo","candidates":["https://cdn.example.com/master.m3u8"],"reason":"","challenge":false}`)
+	raw := []byte(`{"final_url":"https://example.com/watch/1","title":"demo","candidates":["https://cdn.example.com/master.m3u8"],"reason":""}`)
 	out, err := parsePageManifestResolverOutput(raw)
 	if err != nil {
 		t.Fatalf("parsePageManifestResolverOutput returned error: %v", err)

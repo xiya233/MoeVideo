@@ -99,20 +99,6 @@ function scoreCandidate(url) {
   return score;
 }
 
-function detectChallengeSignal(title, htmlSnippet) {
-  const text = `${title}\n${htmlSnippet}`.toLowerCase();
-  const markers = [
-    "cloudflare",
-    "just a moment",
-    "checking your browser",
-    "attention required",
-    "verify you are human",
-    "cf-challenge",
-    "captcha",
-  ];
-  return markers.some((marker) => text.includes(marker));
-}
-
 function collectFromText(text, baseURL, collector) {
   if (!text) return;
   for (const match of text.matchAll(ABS_MEDIA_RE)) {
@@ -198,12 +184,10 @@ async function collectCandidates(page, pageURL, maxCandidates) {
     .sort((a, b) => scoreCandidate(b) - scoreCandidate(a))
     .slice(0, Math.max(1, maxCandidates));
 
-  const challenge = detectChallengeSignal(pageData.title, pageData.htmlSnippet);
   return {
     finalURL: pageData.finalURL || page.url() || pageURL,
     title: pageData.title || "",
     candidates,
-    challenge,
   };
 }
 
@@ -224,12 +208,7 @@ async function main() {
     page.setDefaultTimeout(launchTimeout);
 
     const result = await collectCandidates(page, opts.url, opts.maxCandidates);
-    const reason =
-      result.challenge
-        ? "challenge page detected"
-        : result.candidates.length > 0
-          ? ""
-          : "no media candidates found";
+    const reason = result.candidates.length > 0 ? "" : "no media candidates found";
 
     process.stdout.write(
       JSON.stringify({
@@ -237,7 +216,6 @@ async function main() {
         title: result.title,
         candidates: result.candidates,
         reason,
-        challenge: result.challenge,
       }),
     );
   } finally {

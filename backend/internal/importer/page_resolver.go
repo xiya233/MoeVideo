@@ -38,7 +38,6 @@ type pageManifestResolverOutput struct {
 	Title      string   `json:"title"`
 	Candidates []string `json:"candidates"`
 	Reason     string   `json:"reason"`
-	Challenge  bool     `json:"challenge"`
 }
 
 func (w *Worker) resolvePageManifestCandidates(ctx context.Context, sourceURL string) ([]string, pageManifestResolverOutput, error) {
@@ -103,9 +102,6 @@ func (w *Worker) resolvePageManifestCandidates(ctx context.Context, sourceURL st
 	out, err := parsePageManifestResolverOutput(stdout.Bytes())
 	if err != nil {
 		return nil, pageManifestResolverOutput{}, fmt.Errorf("parse page resolver output: %w", err)
-	}
-	if out.Challenge {
-		return nil, out, fmt.Errorf("challenge page detected")
 	}
 
 	candidates := normalizeResolverCandidates(sourceURL, out, maxCandidates)

@@ -32,6 +32,8 @@ bun install
 bunx playwright install chromium
 ```
 
+说明：项目通过 npm alias 使用 `rebrowser-playwright@1.52.0`（包名保持 `playwright`）。
+
 初始化管理员（一次性）：
 
 ```bash
