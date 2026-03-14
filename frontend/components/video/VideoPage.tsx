@@ -1132,6 +1132,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
               sourceType={playerSource.type}
               sourceUrl={playerSource.url}
               poster={detail.video.cover_url}
+              vttThumbnailUrl={detail.playback.vtt_thumbnail_url}
               qualities={playerQualities}
               qualitySignature={playerQualitySignature}
               startTimeSec={playerStartSec}

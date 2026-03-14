@@ -67,6 +67,16 @@ func (f fakeEngine) GeneratePreviewWebP(_ context.Context, _ string, outputPath 
 	return os.WriteFile(outputPath, []byte("preview"), 0o644)
 }
 
+func (f fakeEngine) GenerateVTTThumbnail(_ context.Context, _ string, vttOutputPath, spriteOutputPath string) error {
+	if f.err != nil {
+		return f.err
+	}
+	if err := os.WriteFile(spriteOutputPath, []byte("sprite"), 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(vttOutputPath, []byte("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nsprite.jpg#xywh=0,0,160,90\n"), 0o644)
+}
+
 func buildWorkerTestApp(t *testing.T) (*app.App, string) {
 	t.Helper()
 
@@ -211,6 +221,20 @@ func TestWorkerRunOnceSuccess(t *testing.T) {
 	}
 	if hlsCount != 1 {
 		t.Fatalf("expected one hls asset row, got %d", hlsCount)
+	}
+
+	var (
+		thumbVTTKey    sql.NullString
+		thumbSpriteKey sql.NullString
+	)
+	if err := appContainer.DB.QueryRow(
+		`SELECT thumbnail_vtt_object_key, thumbnail_sprite_object_key FROM video_hls_assets WHERE video_id = ?`,
+		videoID,
+	).Scan(&thumbVTTKey, &thumbSpriteKey); err != nil {
+		t.Fatalf("query thumbnail keys: %v", err)
+	}
+	if !thumbVTTKey.Valid || !thumbSpriteKey.Valid {
+		t.Fatalf("expected thumbnail object keys to be generated")
 	}
 
 	var (

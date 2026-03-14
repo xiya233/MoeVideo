@@ -189,6 +189,7 @@ export function mapVideoDetail(value: unknown): VideoDetail {
       type: playbackType,
       hls_master_url: str(playback.hls_master_url) || undefined,
       mp4_url: str(playback.mp4_url) || undefined,
+      vtt_thumbnail_url: str(playback.vtt_thumbnail_url) || undefined,
       variants,
     },
     description: str(src.description),

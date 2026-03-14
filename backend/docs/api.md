@@ -74,6 +74,7 @@ Query params:
   - `type`: `hls | mp4 | ""`
   - optional `hls_master_url`
   - optional `mp4_url`
+  - optional `vtt_thumbnail_url`
   - optional `variants[]`
 
 Visibility rules:

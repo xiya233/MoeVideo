@@ -1353,11 +1353,15 @@ func TestVideoDetailPlaybackModeCompat(t *testing.T) {
 	variantsJSON := `[{"name":"360p","width":640,"height":360,"bandwidth":896000,"playlist_object_key":"hls/` + userID + `/` + videoID + `/360p/index.m3u8"}]`
 	now := util.FormatTime(time.Now().UTC())
 	_, err := container.DB.Exec(
-		`INSERT INTO video_hls_assets (video_id, provider, bucket, master_object_key, variants_json, segment_seconds, created_at, updated_at)
-		 VALUES (?, 'local', '', ?, ?, 4, ?, ?)`,
+		`INSERT INTO video_hls_assets (
+			video_id, provider, bucket, master_object_key, variants_json, segment_seconds,
+			thumbnail_vtt_object_key, thumbnail_sprite_object_key, created_at, updated_at
+		) VALUES (?, 'local', '', ?, ?, 4, ?, ?, ?, ?)`,
 		videoID,
 		"hls/"+userID+"/"+videoID+"/master.m3u8",
 		variantsJSON,
+		"hls/"+userID+"/"+videoID+"/thumbnails.vtt",
+		"hls/"+userID+"/"+videoID+"/sprite.jpg",
 		now,
 		now,
 	)
@@ -1375,6 +1379,7 @@ func TestVideoDetailPlaybackModeCompat(t *testing.T) {
 			Type         string `json:"type"`
 			HLSMasterURL string `json:"hls_master_url"`
 			MP4URL       string `json:"mp4_url"`
+			VTTThumbURL  string `json:"vtt_thumbnail_url"`
 			Variants     []struct {
 				Name string `json:"name"`
 				URL  string `json:"url"`
@@ -1398,6 +1403,9 @@ func TestVideoDetailPlaybackModeCompat(t *testing.T) {
 	}
 	if len(hlsData.Playback.Variants) == 0 || hlsData.Playback.Variants[0].URL == "" {
 		t.Fatalf("expected at least one hls variant url")
+	}
+	if hlsData.Playback.VTTThumbURL == "" {
+		t.Fatalf("expected vtt thumbnail url")
 	}
 }
 

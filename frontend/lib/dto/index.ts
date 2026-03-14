@@ -58,6 +58,7 @@ export type VideoDetail = {
     type: "" | "hls" | "mp4";
     hls_master_url?: string;
     mp4_url?: string;
+    vtt_thumbnail_url?: string;
     variants: Array<{
       name: string;
       width: number;

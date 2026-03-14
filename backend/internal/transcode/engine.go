@@ -31,6 +31,7 @@ type Engine interface {
 	BuildHLS(ctx context.Context, inputPath, outputDir string, segmentSeconds int64) (*BuildResult, error)
 	GenerateCover(ctx context.Context, inputPath, outputPath string) error
 	GeneratePreviewWebP(ctx context.Context, inputPath, outputPath string) error
+	GenerateVTTThumbnail(ctx context.Context, inputPath, vttOutputPath, spriteOutputPath string) error
 }
 
 type FFmpegEngine struct {
@@ -218,6 +219,80 @@ func (e *FFmpegEngine) GeneratePreviewWebP(ctx context.Context, inputPath, outpu
 	return nil
 }
 
+func (e *FFmpegEngine) GenerateVTTThumbnail(ctx context.Context, inputPath, vttOutputPath, spriteOutputPath string) error {
+	duration, err := e.probeDurationSec(ctx, inputPath)
+	if err != nil {
+		return fmt.Errorf("probe duration for vtt thumbnail: %w", err)
+	}
+	if duration <= 0 {
+		return fmt.Errorf("invalid video duration for vtt thumbnail: %.3f", duration)
+	}
+
+	const (
+		intervalSec = 10.0
+		thumbWidth  = 160
+		thumbHeight = 90
+		tileCols    = 10
+	)
+
+	frameCount := int(math.Ceil(duration / intervalSec))
+	if frameCount < 1 {
+		frameCount = 1
+	}
+	tileRows := int(math.Ceil(float64(frameCount) / float64(tileCols)))
+	if tileRows < 1 {
+		tileRows = 1
+	}
+
+	filter := fmt.Sprintf(
+		"fps=1/%.0f,scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black,tile=%dx%d",
+		intervalSec,
+		thumbWidth,
+		thumbHeight,
+		thumbWidth,
+		thumbHeight,
+		tileCols,
+		tileRows,
+	)
+	args := []string{
+		"-y",
+		"-i", inputPath,
+		"-vf", filter,
+		"-frames:v", "1",
+		"-q:v", "4",
+		spriteOutputPath,
+	}
+	if err := runCommand(ctx, e.ffmpegBin, args...); err != nil {
+		return fmt.Errorf("generate sprite jpg: %w", err)
+	}
+
+	spriteName := filepath.Base(spriteOutputPath)
+	var b strings.Builder
+	b.WriteString("WEBVTT\n\n")
+	for idx := 0; idx < frameCount; idx++ {
+		start := float64(idx) * intervalSec
+		if start >= duration {
+			break
+		}
+		end := float64(idx+1) * intervalSec
+		if end > duration {
+			end = duration
+		}
+		x := (idx % tileCols) * thumbWidth
+		y := (idx / tileCols) * thumbHeight
+		b.WriteString(formatVTTTimestamp(start))
+		b.WriteString(" --> ")
+		b.WriteString(formatVTTTimestamp(end))
+		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("%s#xywh=%d,%d,%d,%d\n\n", spriteName, x, y, thumbWidth, thumbHeight))
+	}
+
+	if err := os.WriteFile(vttOutputPath, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("write vtt thumbnail: %w", err)
+	}
+	return nil
+}
+
 func runCommand(ctx context.Context, bin string, args ...string) error {
 	output, err := exec.CommandContext(ctx, bin, args...).CombinedOutput()
 	if err != nil {
@@ -246,6 +321,40 @@ func (e *FFmpegEngine) pickH264Encoder(ctx context.Context) string {
 		return "libopenh264"
 	}
 	return "libx264"
+}
+
+func (e *FFmpegEngine) probeDurationSec(ctx context.Context, inputPath string) (float64, error) {
+	args := []string{
+		"-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		inputPath,
+	}
+	output, err := exec.CommandContext(ctx, e.ffprobeBin, args...).CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("ffprobe duration failed: %w (%s)", err, strings.TrimSpace(string(output)))
+	}
+	raw := strings.TrimSpace(string(output))
+	if raw == "" {
+		return 0, fmt.Errorf("empty duration output")
+	}
+	duration, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse duration %q: %w", raw, err)
+	}
+	return duration, nil
+}
+
+func formatVTTTimestamp(seconds float64) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	totalMillis := int64(math.Round(seconds * 1000))
+	hours := totalMillis / 3_600_000
+	minutes := (totalMillis % 3_600_000) / 60_000
+	secs := (totalMillis % 60_000) / 1000
+	millis := totalMillis % 1000
+	return fmt.Sprintf("%02d:%02d:%02d.%03d", hours, minutes, secs, millis)
 }
 
 func insertAfterValue(args []string, marker string, insert []string) []string {

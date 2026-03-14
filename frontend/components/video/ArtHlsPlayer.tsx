@@ -25,6 +25,7 @@ type ArtHlsPlayerProps = {
   sourceUrl: string;
   sourceType: "m3u8" | "mp4";
   poster?: string;
+  vttThumbnailUrl?: string;
   qualities?: PlayerQuality[];
   qualitySignature?: string;
   startTimeSec?: number;
@@ -100,6 +101,7 @@ export function ArtHlsPlayer({
   sourceUrl,
   sourceType,
   poster,
+  vttThumbnailUrl,
   qualities = [],
   qualitySignature,
   startTimeSec = 0,
@@ -187,10 +189,16 @@ export function ArtHlsPlayer({
       | null = null;
 
     void (async () => {
-      const [{ default: Artplayer }, { default: Hls }, { default: artplayerPluginDanmuku }] = await Promise.all([
+      const [
+        { default: Artplayer },
+        { default: Hls },
+        { default: artplayerPluginDanmuku },
+        { default: artplayerPluginVttThumbnail },
+      ] = await Promise.all([
         import("artplayer"),
         import("hls.js"),
         import("artplayer-plugin-danmuku"),
+        import("artplayer-plugin-vtt-thumbnail"),
       ]);
       if (disposed || !containerRef.current) {
         return;
@@ -244,6 +252,50 @@ export function ArtHlsPlayer({
             ]
           : [];
 
+      const plugins: Array<(art: any) => any> = [
+        artplayerPluginDanmuku({
+          danmuku: danmakuItemsRef.current.map(toPluginDanmu),
+          emitter: canEmitDanmakuRef.current,
+          maxLength: 200,
+          lockTime: 5,
+          beforeEmit: async (danmu) => {
+            const content = (danmu.text || "").trim();
+            if (!content) {
+              return false;
+            }
+            if (!onEmitDanmakuRef.current) {
+              return true;
+            }
+            try {
+              const sent = await onEmitDanmakuRef.current({
+                content,
+                time_sec: Math.max(0, Number(danmu.time) || 0),
+                mode: normalizeMode(danmu.mode),
+                color: normalizeColor(danmu.color),
+              });
+              if (sent) {
+                const input = containerRef.current?.querySelector<HTMLInputElement>(".apd-input");
+                if (input) {
+                  input.value = "";
+                  input.dispatchEvent(new Event("input", { bubbles: true }));
+                }
+              }
+            } catch {
+              // Keep emitter stable; failed sends are handled by caller.
+            }
+            // Sending result comes from WS replay to avoid duplicate render.
+            return false;
+          },
+        }),
+      ];
+      if (vttThumbnailUrl) {
+        plugins.push(
+          artplayerPluginVttThumbnail({
+            vtt: vttThumbnailUrl,
+          }),
+        );
+      }
+
       artInstance = new Artplayer({
         container: containerRef.current,
         url: sourceUrl,
@@ -263,42 +315,7 @@ export function ArtHlsPlayer({
         screenshot: true,
         setting: true,
         settings: qualitySettings,
-        plugins: [
-          artplayerPluginDanmuku({
-            danmuku: danmakuItemsRef.current.map(toPluginDanmu),
-            emitter: canEmitDanmakuRef.current,
-            maxLength: 200,
-            lockTime: 5,
-            beforeEmit: async (danmu) => {
-              const content = (danmu.text || "").trim();
-              if (!content) {
-                return false;
-              }
-              if (!onEmitDanmakuRef.current) {
-                return true;
-              }
-              try {
-                const sent = await onEmitDanmakuRef.current({
-                  content,
-                  time_sec: Math.max(0, Number(danmu.time) || 0),
-                  mode: normalizeMode(danmu.mode),
-                  color: normalizeColor(danmu.color),
-                });
-                if (sent) {
-                  const input = containerRef.current?.querySelector<HTMLInputElement>(".apd-input");
-                  if (input) {
-                    input.value = "";
-                    input.dispatchEvent(new Event("input", { bubbles: true }));
-                  }
-                }
-              } catch {
-                // Keep emitter stable; failed sends are handled by caller.
-              }
-              // Sending result comes from WS replay to avoid duplicate render.
-              return false;
-            },
-          }),
-        ],
+        plugins,
         moreVideoAttr: {
           crossOrigin: "anonymous",
         },
@@ -353,7 +370,7 @@ export function ArtHlsPlayer({
         artInstance.destroy(false);
       }
     };
-  }, [poster, resolvedQualitySignature, sourceType, sourceUrl]);
+  }, [poster, resolvedQualitySignature, sourceType, sourceUrl, vttThumbnailUrl]);
 
   useEffect(() => {
     const plugin = danmakuPluginRef.current;

@@ -5,6 +5,7 @@ Migration files:
 - `internal/db/migrations/0001_init.sql`
 - `internal/db/migrations/0002_hls_transcode.sql`
 - `internal/db/migrations/0003_playback_preview.sql`
+- `internal/db/migrations/0013_hls_thumbnails.sql`
 
 ## Runtime pragmas
 
@@ -35,6 +36,11 @@ Migration files:
 `videos` table additions:
 
 - `preview_media_id` (nullable FK to `media_objects`)
+
+`video_hls_assets` table additions:
+
+- `thumbnail_vtt_object_key` (nullable)
+- `thumbnail_sprite_object_key` (nullable)
 
 ## Constraints
 

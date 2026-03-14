@@ -208,6 +208,8 @@ type hlsAssetPayload struct {
 	MasterObjectKey string
 	VariantsJSON    string
 	SegmentSeconds  int64
+	ThumbnailVTTKey string
+	ThumbnailJPGKey string
 	UploaderID      string
 	Cover           *generatedMedia
 	Preview         *generatedMedia
@@ -358,12 +360,34 @@ LIMIT 1`,
 		}
 	}
 
+	thumbnailVTTKey := ""
+	thumbnailJPGKey := ""
+	thumbnailVTTPath := filepath.Join(supplementalDir, "thumbnails.vtt")
+	thumbnailJPGPath := filepath.Join(supplementalDir, "sprite.jpg")
+	if err := w.engine.GenerateVTTThumbnail(ctx, inputPath, thumbnailVTTPath, thumbnailJPGPath); err != nil {
+		w.logger.Printf("transcode job %s: generate vtt thumbnail failed (soft): %v", job.ID, err)
+	} else {
+		vttObjectKey := filepath.ToSlash(filepath.Join(rootObjectKey, "thumbnails.vtt"))
+		spriteObjectKey := filepath.ToSlash(filepath.Join(rootObjectKey, "sprite.jpg"))
+
+		if err := w.app.Storage.UploadFile(ctx, vttObjectKey, "text/vtt", thumbnailVTTPath); err != nil {
+			w.logger.Printf("transcode job %s: upload vtt thumbnail failed (soft): %v", job.ID, err)
+		} else if err := w.app.Storage.UploadFile(ctx, spriteObjectKey, "image/jpeg", thumbnailJPGPath); err != nil {
+			w.logger.Printf("transcode job %s: upload sprite thumbnail failed (soft): %v", job.ID, err)
+		} else {
+			thumbnailVTTKey = vttObjectKey
+			thumbnailJPGKey = spriteObjectKey
+		}
+	}
+
 	return &hlsAssetPayload{
 		Provider:        w.app.Storage.Driver(),
 		Bucket:          bucket,
 		MasterObjectKey: filepath.ToSlash(filepath.Join(rootObjectKey, buildResult.MasterPlaylist)),
 		VariantsJSON:    string(variantsJSON),
 		SegmentSeconds:  buildResult.SegmentSeconds,
+		ThumbnailVTTKey: thumbnailVTTKey,
+		ThumbnailJPGKey: thumbnailJPGKey,
 		UploaderID:      src.UploaderID,
 		Cover:           coverMedia,
 		Preview:         previewMedia,
@@ -380,14 +404,19 @@ func (w *Worker) markJobSuccess(ctx context.Context, job claimedJob, asset hlsAs
 	now := nowString()
 
 	_, err = tx.ExecContext(ctx, `
-INSERT INTO video_hls_assets (video_id, provider, bucket, master_object_key, variants_json, segment_seconds, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO video_hls_assets (
+	video_id, provider, bucket, master_object_key, variants_json, segment_seconds,
+	thumbnail_vtt_object_key, thumbnail_sprite_object_key, created_at, updated_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(video_id) DO UPDATE SET
     provider = excluded.provider,
     bucket = excluded.bucket,
     master_object_key = excluded.master_object_key,
     variants_json = excluded.variants_json,
     segment_seconds = excluded.segment_seconds,
+    thumbnail_vtt_object_key = excluded.thumbnail_vtt_object_key,
+    thumbnail_sprite_object_key = excluded.thumbnail_sprite_object_key,
     updated_at = excluded.updated_at`,
 		job.VideoID,
 		asset.Provider,
@@ -395,6 +424,8 @@ ON CONFLICT(video_id) DO UPDATE SET
 		asset.MasterObjectKey,
 		asset.VariantsJSON,
 		asset.SegmentSeconds,
+		nullableString(asset.ThumbnailVTTKey),
+		nullableString(asset.ThumbnailJPGKey),
 		now,
 		now,
 	)

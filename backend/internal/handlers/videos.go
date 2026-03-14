@@ -74,7 +74,8 @@ SELECT v.id, v.title, v.description, v.status, v.duration_sec, v.views_count, v.
        COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, ''),
        COALESCE(pm.provider, ''), COALESCE(pm.bucket, ''), COALESCE(pm.object_key, ''),
        COALESCE(sm.provider, ''), COALESCE(sm.bucket, ''), COALESCE(sm.object_key, ''),
-       COALESCE(hls.provider, ''), COALESCE(hls.bucket, ''), COALESCE(hls.master_object_key, ''), COALESCE(hls.variants_json, '')
+       COALESCE(hls.provider, ''), COALESCE(hls.bucket, ''), COALESCE(hls.master_object_key, ''), COALESCE(hls.variants_json, ''),
+       COALESCE(hls.thumbnail_vtt_object_key, ''), COALESCE(hls.thumbnail_sprite_object_key, '')
 FROM videos v
 JOIN users u ON u.id = v.uploader_id
 LEFT JOIN categories cat ON cat.id = v.category_id
@@ -96,6 +97,7 @@ LIMIT 1`
 		previewProvider, previewBucket, previewKey                             string
 		sourceProvider, sourceBucket, sourceKey                                string
 		hlsProvider, hlsBucket, hlsMasterKey, hlsVariantsJSON                  string
+		hlsThumbnailVTTKey, hlsThumbnailSpriteKey                              string
 	)
 
 	err := h.app.DB.QueryRowContext(c.UserContext(), query, videoID).Scan(
@@ -132,6 +134,8 @@ LIMIT 1`
 		&hlsBucket,
 		&hlsMasterKey,
 		&hlsVariantsJSON,
+		&hlsThumbnailVTTKey,
+		&hlsThumbnailSpriteKey,
 	)
 	if err != nil {
 		if isNotFound(err) {
@@ -235,6 +239,9 @@ ORDER BY t.name ASC`, videoID)
 	}
 	if len(variants) > 0 {
 		playback["variants"] = variants
+	}
+	if playbackStatus == "ready" && hlsThumbnailVTTKey != "" && hlsThumbnailSpriteKey != "" {
+		playback["vtt_thumbnail_url"] = mediaURL(h.app.Storage, hlsProvider, hlsBucket, hlsThumbnailVTTKey)
 	}
 
 	videoData := fiber.Map{
