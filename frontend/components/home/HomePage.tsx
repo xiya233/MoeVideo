@@ -14,6 +14,9 @@ import { mapHomeData, mapVideoCard } from "@/lib/dto/mappers";
 import { cn } from "@/lib/utils/cn";
 import { formatCount, formatDate } from "@/lib/utils/format";
 
+const FEATURED_TRANSITION_MS = 700;
+const FEATURED_REDUCED_MOTION_MS = 180;
+
 function formatDurationLabel(duration: number): string {
   const total = Math.max(0, Math.round(duration));
   const h = Math.floor(total / 3600);
@@ -104,6 +107,46 @@ function VideoGridCard({ video }: { video: VideoCard }) {
   );
 }
 
+function FeaturedHeroSlide({
+  video,
+  className,
+}: {
+  video: VideoCard | null;
+  className?: string;
+}) {
+  return (
+    <div className={cn("absolute inset-0", className)}>
+      {video?.cover_url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={video.cover_url} alt={video.title} className="h-full w-full object-cover" />
+      ) : (
+        <div className="h-full w-full bg-primary/10" />
+      )}
+
+      <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/60 via-transparent to-transparent p-8">
+        <span className="mb-3 w-fit rounded-full bg-primary px-3 py-1 text-xs font-bold text-white">
+          今日推荐
+        </span>
+        {video ? (
+          <>
+            <Link
+              href={`/videos/${video.id}`}
+              className="mb-2 line-clamp-2 text-2xl font-bold text-white [text-shadow:0_0_18px_rgba(61,184,245,0.55)] md:text-3xl"
+            >
+              {video.title}
+            </Link>
+            <p className="max-w-lg text-sm text-white/90">
+              来自 {video.author.username} · {formatCount(video.views_count)} 播放
+            </p>
+          </>
+        ) : (
+          <p className="text-sm text-white/80">暂无推荐视频</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 type HomePageProps = {
   query?: string;
   category?: string;
@@ -115,6 +158,7 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
   const loadMoreTriggerRef = useRef<HTMLDivElement | null>(null);
   const loadingMoreRef = useRef(false);
   const filterKeyRef = useRef("");
+  const featuredTransitionTimerRef = useRef<number | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -124,8 +168,12 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState("");
   const [initialLoaded, setInitialLoaded] = useState(false);
-  const [activeFeaturedIndex, setActiveFeaturedIndex] = useState(0);
+  const [currentFeaturedIndex, setCurrentFeaturedIndex] = useState(0);
+  const [nextFeaturedIndex, setNextFeaturedIndex] = useState<number | null>(null);
+  const [isFeaturedTransitioning, setIsFeaturedTransitioning] = useState(false);
+  const [transitionDirection, setTransitionDirection] = useState<"next" | "prev" | "dot">("next");
   const [carouselPaused, setCarouselPaused] = useState(false);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
   const q = query.trim();
   const categoryFilter = category.trim();
@@ -292,36 +340,142 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
     return home?.featured ? [home.featured] : [];
   }, [home?.featured, home?.featured_items]);
   const featuredSignature = useMemo(() => featuredItems.map((item) => item.id).join(","), [featuredItems]);
-  const activeFeatured = featuredItems.length > 0 ? featuredItems[Math.min(activeFeaturedIndex, featuredItems.length - 1)] : null;
+
+  const clearFeaturedTransitionTimer = useCallback(() => {
+    if (featuredTransitionTimerRef.current === null) {
+      return;
+    }
+    window.clearTimeout(featuredTransitionTimerRef.current);
+    featuredTransitionTimerRef.current = null;
+  }, []);
+
+  const safeCurrentFeaturedIndex = useMemo(() => {
+    if (featuredItems.length <= 0) {
+      return 0;
+    }
+    return Math.min(currentFeaturedIndex, featuredItems.length - 1);
+  }, [currentFeaturedIndex, featuredItems.length]);
+
+  const activeFeatured = featuredItems.length > 0 ? featuredItems[safeCurrentFeaturedIndex] : null;
+  const transitioningFeatured =
+    nextFeaturedIndex !== null && nextFeaturedIndex >= 0 && nextFeaturedIndex < featuredItems.length
+      ? featuredItems[nextFeaturedIndex]
+      : null;
+  const displayedFeaturedIndex =
+    isFeaturedTransitioning && nextFeaturedIndex !== null ? nextFeaturedIndex : safeCurrentFeaturedIndex;
+  const featuredEnterClass =
+    transitionDirection === "prev"
+      ? "hero-featured-enter-prev"
+      : transitionDirection === "dot"
+        ? "hero-featured-enter-dot"
+        : "hero-featured-enter-next";
+  const featuredExitClass =
+    transitionDirection === "prev"
+      ? "hero-featured-exit-prev"
+      : transitionDirection === "dot"
+        ? "hero-featured-exit-dot"
+        : "hero-featured-exit-next";
+
+  const startFeaturedTransition = useCallback(
+    (targetIndex: number, direction: "next" | "prev" | "dot") => {
+      if (featuredItems.length <= 1 || isFeaturedTransitioning) {
+        return;
+      }
+      const bounded = Math.max(0, Math.min(targetIndex, featuredItems.length - 1));
+      if (bounded === safeCurrentFeaturedIndex) {
+        return;
+      }
+
+      clearFeaturedTransitionTimer();
+      setTransitionDirection(direction);
+      setNextFeaturedIndex(bounded);
+      setIsFeaturedTransitioning(true);
+
+      const duration = prefersReducedMotion ? FEATURED_REDUCED_MOTION_MS : FEATURED_TRANSITION_MS;
+      featuredTransitionTimerRef.current = window.setTimeout(() => {
+        setCurrentFeaturedIndex(bounded);
+        setNextFeaturedIndex(null);
+        setIsFeaturedTransitioning(false);
+        featuredTransitionTimerRef.current = null;
+      }, duration);
+    },
+    [
+      clearFeaturedTransitionTimer,
+      featuredItems.length,
+      isFeaturedTransitioning,
+      prefersReducedMotion,
+      safeCurrentFeaturedIndex,
+    ],
+  );
 
   useEffect(() => {
-    setActiveFeaturedIndex(0);
-  }, [featuredSignature]);
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const onChange = () => setPrefersReducedMotion(media.matches);
+    onChange();
+    media.addEventListener("change", onChange);
+    return () => {
+      media.removeEventListener("change", onChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    clearFeaturedTransitionTimer();
+    setCurrentFeaturedIndex(0);
+    setNextFeaturedIndex(null);
+    setIsFeaturedTransitioning(false);
+    setTransitionDirection("next");
+  }, [clearFeaturedTransitionTimer, featuredSignature]);
+
+  useEffect(() => {
+    if (currentFeaturedIndex === safeCurrentFeaturedIndex) {
+      return;
+    }
+    setCurrentFeaturedIndex(safeCurrentFeaturedIndex);
+  }, [currentFeaturedIndex, safeCurrentFeaturedIndex]);
+
+  useEffect(() => {
+    return () => clearFeaturedTransitionTimer();
+  }, [clearFeaturedTransitionTimer]);
 
   useEffect(() => {
     if (carouselPaused || featuredItems.length <= 1) {
       return;
     }
     const timer = window.setInterval(() => {
-      setActiveFeaturedIndex((prev) => (prev + 1) % featuredItems.length);
+      if (isFeaturedTransitioning) {
+        return;
+      }
+      const targetIndex = (safeCurrentFeaturedIndex + 1) % featuredItems.length;
+      startFeaturedTransition(targetIndex, "next");
     }, 4000);
     return () => {
       window.clearInterval(timer);
     };
-  }, [carouselPaused, featuredItems.length]);
+  }, [
+    carouselPaused,
+    featuredItems.length,
+    isFeaturedTransitioning,
+    safeCurrentFeaturedIndex,
+    startFeaturedTransition,
+  ]);
 
   const goToNextFeatured = () => {
-    if (featuredItems.length <= 1) {
+    if (featuredItems.length <= 1 || isFeaturedTransitioning) {
       return;
     }
-    setActiveFeaturedIndex((prev) => (prev + 1) % featuredItems.length);
+    const targetIndex = (safeCurrentFeaturedIndex + 1) % featuredItems.length;
+    startFeaturedTransition(targetIndex, "next");
   };
 
   const goToPrevFeatured = () => {
-    if (featuredItems.length <= 1) {
+    if (featuredItems.length <= 1 || isFeaturedTransitioning) {
       return;
     }
-    setActiveFeaturedIndex((prev) => (prev - 1 + featuredItems.length) % featuredItems.length);
+    const targetIndex = (safeCurrentFeaturedIndex - 1 + featuredItems.length) % featuredItems.length;
+    startFeaturedTransition(targetIndex, "prev");
   };
 
   return (
@@ -344,37 +498,16 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
                 onMouseEnter={() => setCarouselPaused(true)}
                 onMouseLeave={() => setCarouselPaused(false)}
               >
-                {activeFeatured?.cover_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={activeFeatured.cover_url}
-                    alt={activeFeatured.title}
-                    className="h-full w-full object-cover transition-opacity duration-300"
-                  />
-                ) : (
-                  <div className="h-full w-full bg-primary/10" />
-                )}
+                <FeaturedHeroSlide
+                  video={activeFeatured}
+                  className={cn("hero-featured-layer z-10", isFeaturedTransitioning ? featuredExitClass : "opacity-100")}
+                />
 
-                <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/60 via-transparent to-transparent p-8">
-                  <span className="mb-3 w-fit rounded-full bg-primary px-3 py-1 text-xs font-bold text-white">
-                    今日推荐
-                  </span>
-                  {activeFeatured ? (
-                    <>
-                      <Link
-                        href={`/videos/${activeFeatured.id}`}
-                        className="mb-2 line-clamp-2 text-2xl font-bold text-white [text-shadow:0_0_18px_rgba(61,184,245,0.55)] md:text-3xl"
-                      >
-                        {activeFeatured.title}
-                      </Link>
-                      <p className="max-w-lg text-sm text-white/90">
-                        来自 {activeFeatured.author.username} · {formatCount(activeFeatured.views_count)} 播放
-                      </p>
-                    </>
-                  ) : (
-                    <p className="text-sm text-white/80">暂无推荐视频</p>
-                  )}
-                </div>
+                {isFeaturedTransitioning && transitioningFeatured ? (
+                  <FeaturedHeroSlide video={transitioningFeatured} className={cn("hero-featured-layer z-20", featuredEnterClass)} />
+                ) : null}
+
+                {isFeaturedTransitioning ? <span aria-hidden className="hero-featured-sweep z-30" /> : null}
 
                 {featuredItems.length > 1 ? (
                   <>
@@ -382,7 +515,8 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
                       type="button"
                       aria-label="上一张"
                       onClick={goToPrevFeatured}
-                      className="absolute left-4 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/35 text-white backdrop-blur-md transition hover:bg-black/55"
+                      disabled={isFeaturedTransitioning}
+                      className="absolute left-4 top-1/2 z-40 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/35 text-white backdrop-blur-md transition hover:bg-black/55"
                     >
                       <AppIcon name="chevron_left" size={18} />
                     </button>
@@ -390,23 +524,30 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
                       type="button"
                       aria-label="下一张"
                       onClick={goToNextFeatured}
-                      className="absolute right-4 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/35 text-white backdrop-blur-md transition hover:bg-black/55"
+                      disabled={isFeaturedTransitioning}
+                      className="absolute right-4 top-1/2 z-40 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/35 text-white backdrop-blur-md transition hover:bg-black/55"
                     >
                       <AppIcon name="chevron_right" size={18} />
                     </button>
                   </>
                 ) : null}
 
-                <div className="absolute bottom-4 right-8 flex gap-2">
+                <div className="absolute bottom-4 right-8 z-40 flex gap-2">
                   {(featuredItems.length > 0 ? featuredItems : Array.from({ length: 1 })).map((_, idx) => (
                     <button
                       key={idx}
                       type="button"
                       aria-label={`切换到第 ${idx + 1} 张`}
-                      onClick={() => setActiveFeaturedIndex(idx)}
+                      onClick={() =>
+                        startFeaturedTransition(
+                          idx,
+                          idx > safeCurrentFeaturedIndex ? "next" : idx < safeCurrentFeaturedIndex ? "prev" : "dot",
+                        )
+                      }
+                      disabled={isFeaturedTransitioning}
                       className={cn(
                         "h-2 w-2 rounded-full transition",
-                        idx === activeFeaturedIndex ? "bg-white" : "bg-white/50 hover:bg-white/70",
+                        idx === displayedFeaturedIndex ? "bg-white" : "bg-white/50 hover:bg-white/70",
                       )}
                     />
                   ))}
