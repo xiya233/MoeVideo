@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useEffect, type ReactNode } from "react";
+import { Suspense, useEffect, useState, type ReactNode } from "react";
 
 import { AuthDialog } from "@/components/auth/AuthDialog";
 import { AppIcon } from "@/components/common/AppIcon";
@@ -158,11 +158,19 @@ function SiteFooter({
 }
 
 export function SiteShell({ children }: { children: ReactNode }) {
+  const [mounted, setMounted] = useState(false);
   const siteSettingsQuery = usePublicSiteSettings();
   const siteTitle = siteSettingsQuery.data?.site_title?.trim() || "MoeVideo";
   const siteDescription = siteSettingsQuery.data?.site_description?.trim() || "MoeVideo VOD - Stitch design implementation";
   const siteLogoURL = siteSettingsQuery.data?.site_logo_url;
   const footerLinks = normalizeFooterLinks(siteSettingsQuery.data?.footer_links);
+  const displayedSiteTitle = mounted ? siteTitle : "MoeVideo";
+  const displayedSiteDescription = mounted ? siteDescription : "MoeVideo VOD - Stitch design implementation";
+  const displayedSiteLogoURL = mounted ? siteLogoURL : undefined;
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     document.title = siteTitle;
@@ -182,7 +190,12 @@ export function SiteShell({ children }: { children: ReactNode }) {
       </Suspense>
       <main className="mx-auto w-full max-w-[1400px] px-4 py-8 md:px-10">{children}</main>
       <Suspense>
-        <SiteFooter siteTitle={siteTitle} siteDescription={siteDescription} siteLogoURL={siteLogoURL} footerLinks={footerLinks} />
+        <SiteFooter
+          siteTitle={displayedSiteTitle}
+          siteDescription={displayedSiteDescription}
+          siteLogoURL={displayedSiteLogoURL}
+          footerLinks={footerLinks}
+        />
       </Suspense>
       <AuthDialog />
     </div>

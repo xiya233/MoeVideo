@@ -49,7 +49,6 @@ function HotRankingCard({ video, rank }: { video: VideoCard; rank: number }) {
           <AuthorInline
             username={video.author.username}
             avatarUrl={video.author.avatar_url}
-            href={video.author.id ? `/users/${video.author.id}` : undefined}
             avatarClassName="h-6 w-6"
             usernameClassName="text-xs text-slate-500"
           />
@@ -202,4 +201,3 @@ export function HotRankingsPage() {
     </div>
   );
 }
-
