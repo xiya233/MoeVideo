@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
 import { AppIcon, type IconName } from "@/components/common/AppIcon";
@@ -10,7 +10,7 @@ import { AuthorInline } from "@/components/common/AuthorInline";
 import { EmptyState } from "@/components/common/EmptyState";
 import { LoadingSkeleton } from "@/components/common/LoadingSkeleton";
 import type { HomeData, VideoCard } from "@/lib/dto";
-import { mapHomeData } from "@/lib/dto/mappers";
+import { mapHomeData, mapVideoCard } from "@/lib/dto/mappers";
 import { cn } from "@/lib/utils/cn";
 import { formatCount, formatDate } from "@/lib/utils/format";
 
@@ -112,17 +112,41 @@ type HomePageProps = {
 export function HomePage({ query = "", category = "" }: HomePageProps) {
   const { request } = useAuth();
   const router = useRouter();
+  const loadMoreTriggerRef = useRef<HTMLDivElement | null>(null);
+  const loadingMoreRef = useRef(false);
+  const filterKeyRef = useRef("");
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [home, setHome] = useState<HomeData | null>(null);
+  const [videos, setVideos] = useState<VideoCard[]>([]);
+  const [nextCursor, setNextCursor] = useState("");
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState("");
+  const [initialLoaded, setInitialLoaded] = useState(false);
 
   const q = query.trim();
   const categoryFilter = category.trim();
+  const filterKey = `${q}::${categoryFilter}`;
+
+  useEffect(() => {
+    filterKeyRef.current = filterKey;
+  }, [filterKey]);
 
   const fetchHome = useCallback(async () => {
+    const requestFilterKey = filterKey;
+    filterKeyRef.current = requestFilterKey;
+    loadingMoreRef.current = false;
     setLoading(true);
     setError("");
+    setLoadMoreError("");
+    setLoadingMore(false);
+    setInitialLoaded(false);
+    setVideos([]);
+    setNextCursor("");
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
 
     const params = new URLSearchParams();
     if (q) {
@@ -136,19 +160,113 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
       const data = await request<HomeData>(`/home${params.toString() ? `?${params.toString()}` : ""}`, {
         auth: false,
       });
-      setHome(mapHomeData(data));
+      if (filterKeyRef.current !== requestFilterKey) {
+        return;
+      }
+      const mappedHome = mapHomeData(data);
+      setHome(mappedHome);
+      setVideos(mappedHome.videos);
+      setNextCursor(mappedHome.next_cursor ?? "");
+      setInitialLoaded(true);
     } catch (err) {
+      if (filterKeyRef.current !== requestFilterKey) {
+        return;
+      }
       const message = err instanceof Error ? err.message : "加载首页失败";
       setError(message);
       setHome(null);
+      setVideos([]);
+      setNextCursor("");
     } finally {
-      setLoading(false);
+      if (filterKeyRef.current === requestFilterKey) {
+        setLoading(false);
+      }
     }
-  }, [categoryFilter, q, request]);
+  }, [categoryFilter, filterKey, q, request]);
 
   useEffect(() => {
     void fetchHome();
   }, [fetchHome]);
+
+  const fetchMoreVideos = useCallback(async () => {
+    if (loading || error || loadingMoreRef.current || !nextCursor) {
+      return;
+    }
+    const requestFilterKey = filterKey;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    setLoadMoreError("");
+
+    const params = new URLSearchParams();
+    params.set("cursor", nextCursor);
+    params.set("limit", "20");
+    if (q) {
+      params.set("q", q);
+    }
+    if (categoryFilter) {
+      params.set("category", categoryFilter);
+    }
+
+    try {
+      const data = await request<{ items: unknown[]; next_cursor?: string }>(`/videos?${params.toString()}`, {
+        auth: false,
+      });
+      if (filterKeyRef.current !== requestFilterKey) {
+        return;
+      }
+
+      const incoming = (data.items ?? []).map(mapVideoCard);
+      setVideos((prev) => {
+        if (incoming.length === 0) {
+          return prev;
+        }
+        const seen = new Set(prev.map((item) => item.id));
+        const merged = [...prev];
+        for (const item of incoming) {
+          if (seen.has(item.id)) {
+            continue;
+          }
+          seen.add(item.id);
+          merged.push(item);
+        }
+        return merged;
+      });
+      setNextCursor(data.next_cursor ?? "");
+    } catch (err) {
+      if (filterKeyRef.current !== requestFilterKey) {
+        return;
+      }
+      setLoadMoreError(err instanceof Error ? err.message : "加载更多失败");
+    } finally {
+      if (filterKeyRef.current === requestFilterKey) {
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+      }
+    }
+  }, [categoryFilter, error, filterKey, loading, nextCursor, q, request]);
+
+  useEffect(() => {
+    const trigger = loadMoreTriggerRef.current;
+    if (!trigger || !initialLoaded || loading || error || !nextCursor) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) {
+          return;
+        }
+        void fetchMoreVideos();
+      },
+      {
+        root: null,
+        rootMargin: "800px 0px",
+        threshold: 0,
+      },
+    );
+    observer.observe(trigger);
+    return () => observer.disconnect();
+  }, [error, fetchMoreVideos, initialLoaded, loading, nextCursor]);
 
   const setCategoryFilter = (value: string) => {
     const params = new URLSearchParams();
@@ -305,14 +423,43 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
             })}
           </section>
 
-          {(home?.videos?.length ?? 0) === 0 ? (
+          {videos.length === 0 ? (
             <EmptyState title="暂无视频" description="试试更换分类或搜索关键词。" />
           ) : (
-            <section className="grid grid-cols-1 gap-x-6 gap-y-10 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-              {(home?.videos ?? []).map((video) => (
-                <VideoGridCard key={video.id} video={video} />
-              ))}
-            </section>
+            <>
+              <section className="grid grid-cols-1 gap-x-6 gap-y-10 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+                {videos.map((video) => (
+                  <VideoGridCard key={video.id} video={video} />
+                ))}
+              </section>
+
+              {loadingMore ? (
+                <section className="grid grid-cols-1 gap-x-6 gap-y-10 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+                  {Array.from({ length: 4 }).map((_, idx) => (
+                    <LoadingSkeleton key={idx} className="aspect-video rounded-xl" />
+                  ))}
+                </section>
+              ) : null}
+
+              {loadMoreError ? (
+                <div className="flex flex-col items-center gap-3 rounded-xl border border-red-100 bg-red-50/60 p-4 text-sm text-red-600">
+                  <p>{loadMoreError}</p>
+                  <button
+                    type="button"
+                    onClick={() => void fetchMoreVideos()}
+                    className="rounded-lg border border-red-200 bg-white px-4 py-1.5 font-semibold text-red-600 transition hover:bg-red-50"
+                  >
+                    重试加载
+                  </button>
+                </div>
+              ) : null}
+
+              {!nextCursor && videos.length > 0 && initialLoaded ? (
+                <p className="py-2 text-center text-sm text-slate-400">没有更多视频了</p>
+              ) : null}
+
+              <div ref={loadMoreTriggerRef} aria-hidden className="h-px w-full" />
+            </>
           )}
         </>
       ) : null}

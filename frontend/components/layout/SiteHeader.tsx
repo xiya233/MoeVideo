@@ -17,6 +17,7 @@ export function SiteHeader() {
   const { ready, user, openAuthDialog, logout } = useAuth();
   const siteSettingsQuery = usePublicSiteSettings();
 
+  const [mounted, setMounted] = useState(false);
   const [searchValue, setSearchValue] = useState("");
   const [logoutPending, setLogoutPending] = useState(false);
 
@@ -26,6 +27,10 @@ export function SiteHeader() {
   );
   const siteLogoURL = siteSettingsQuery.data?.site_logo_url || "";
   const registerEnabled = siteSettingsQuery.data?.register_enabled ?? true;
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     setSearchValue(searchParams.get("q") ?? "");
@@ -44,6 +49,66 @@ export function SiteHeader() {
     } finally {
       setLogoutPending(false);
     }
+  };
+
+  const renderAuthSlot = () => {
+    if (!mounted || !ready) {
+      return (
+        <div className="flex items-center gap-2">
+          <div className="h-9 w-28 animate-pulse rounded-full bg-slate-100" />
+          <div className="h-9 w-16 animate-pulse rounded-xl bg-slate-100" />
+        </div>
+      );
+    }
+
+    if (user) {
+      return (
+        <>
+          <Link href="/me" className="hidden items-center gap-2 rounded-full bg-primary/10 px-3 py-1 sm:flex">
+            <div className="h-7 w-7 overflow-hidden rounded-full bg-white">
+              {user.avatar_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={user.avatar_url} alt={user.username} className="h-full w-full object-cover" />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center text-xs font-bold text-primary">
+                  {user.username.slice(0, 1).toUpperCase()}
+                </div>
+              )}
+            </div>
+            <span className="max-w-[120px] truncate text-sm font-medium text-slate-700">{user.username}</span>
+          </Link>
+          <button
+            type="button"
+            onClick={onLogout}
+            disabled={logoutPending}
+            className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition-colors hover:border-primary/30 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {logoutPending ? "退出中..." : "退出"}
+          </button>
+        </>
+      );
+    }
+
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => openAuthDialog("login")}
+          className="rounded-full px-5 py-2 text-sm font-bold text-primary transition-all hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
+        >
+          登录
+        </button>
+        {registerEnabled ? (
+          <button
+            type="button"
+            onClick={() => openAuthDialog("register")}
+            className="rounded-full bg-primary px-5 py-2 text-sm font-bold text-white shadow-lg shadow-primary/25 transition-all hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 focus-visible:ring-offset-2"
+          >
+            注册
+          </button>
+        ) : null}
+      </>
+    );
   };
 
   return (
@@ -136,55 +201,7 @@ export function SiteHeader() {
 
           <div className="mx-1 hidden h-6 w-[1px] bg-slate-200 sm:block" />
 
-          {!ready ? (
-            <div className="flex items-center gap-2">
-              <div className="h-9 w-28 animate-pulse rounded-full bg-slate-100" />
-              <div className="h-9 w-16 animate-pulse rounded-xl bg-slate-100" />
-            </div>
-          ) : user ? (
-            <>
-              <Link href="/me" className="hidden items-center gap-2 rounded-full bg-primary/10 px-3 py-1 sm:flex">
-                <div className="h-7 w-7 overflow-hidden rounded-full bg-white">
-                  {user.avatar_url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={user.avatar_url} alt={user.username} className="h-full w-full object-cover" />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center text-xs font-bold text-primary">
-                      {user.username.slice(0, 1).toUpperCase()}
-                    </div>
-                  )}
-                </div>
-                <span className="max-w-[120px] truncate text-sm font-medium text-slate-700">{user.username}</span>
-              </Link>
-              <button
-                type="button"
-                onClick={onLogout}
-                disabled={logoutPending}
-                className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition-colors hover:border-primary/30 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {logoutPending ? "退出中..." : "退出"}
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={() => openAuthDialog("login")}
-                className="rounded-full px-5 py-2 text-sm font-bold text-primary transition-all hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
-              >
-                登录
-              </button>
-              {registerEnabled ? (
-                <button
-                  type="button"
-                  onClick={() => openAuthDialog("register")}
-                  className="rounded-full bg-primary px-5 py-2 text-sm font-bold text-white shadow-lg shadow-primary/25 transition-all hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 focus-visible:ring-offset-2"
-                >
-                  注册
-                </button>
-              ) : null}
-            </>
-          )}
+          {renderAuthSlot()}
         </div>
       </div>
     </header>
