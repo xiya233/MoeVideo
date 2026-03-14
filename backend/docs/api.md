@@ -93,6 +93,10 @@ Visibility rules:
 - `POST /videos`
 - `DELETE /videos/{videoId}`
 
+`POST /videos` request constraints:
+
+- `category_id` is required and must reference an active category.
+
 ### Upload limits
 
 - max size configurable by `MAX_UPLOAD_MB` (default 2048 MB)
@@ -128,6 +132,19 @@ Behavior:
 - upsert progress for current user
 - when `completed=true` or near video end, progress is cleared
 - response: `{ "saved": true, "position_sec": 120 }`
+
+## Import
+
+- `POST /imports/torrent/inspect`
+- `POST /imports/torrent/start`
+- `POST /imports/url/start`
+- `GET /imports`
+- `GET /imports/{jobId}`
+
+Request constraints:
+
+- `POST /imports/torrent/start` requires `category_id` and selected files.
+- `POST /imports/url/start` requires `category_id`.
 
 ## Admin (admin only)
 

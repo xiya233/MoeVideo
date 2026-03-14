@@ -311,6 +311,24 @@ func prepareVideoForUser(t *testing.T, container *app.App, userID string) string
 	return videoID
 }
 
+func createActiveCategory(t *testing.T, container *app.App, slug, name string) int64 {
+	t.Helper()
+
+	res, err := container.DB.Exec(
+		`INSERT INTO categories (slug, name, sort_order, is_active) VALUES (?, ?, 0, 1)`,
+		slug,
+		name,
+	)
+	if err != nil {
+		t.Fatalf("insert category: %v", err)
+	}
+	categoryID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("read category id: %v", err)
+	}
+	return categoryID
+}
+
 func TestCommentNestedReplyRejected(t *testing.T) {
 	srv, container := newTestServer(t)
 	userID, access, _ := registerUser(t, srv, "bob", "bob@example.com", "password123")
@@ -1044,6 +1062,7 @@ func TestVideoCardIncludesPreviewWebPURL(t *testing.T) {
 func TestCreateVideoEnqueueProcessingAndDetailVisibility(t *testing.T) {
 	srv, container := newTestServer(t)
 	userID, access, _ := registerUser(t, srv, "eva", "eva@example.com", "password123")
+	categoryID := createActiveCategory(t, container, "eva-cat", "Eva Category")
 
 	now := util.FormatTime(time.Now().UTC())
 	mediaID := "media-" + uuid.NewString()
@@ -1062,6 +1081,7 @@ func TestCreateVideoEnqueueProcessingAndDetailVisibility(t *testing.T) {
 	status, createResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos", map[string]interface{}{
 		"title":           "processing video",
 		"description":     "queued",
+		"category_id":     categoryID,
 		"source_media_id": mediaID,
 		"visibility":      "public",
 	}, map[string]string{"Authorization": "Bearer " + access})
@@ -1128,6 +1148,35 @@ func TestCreateVideoEnqueueProcessingAndDetailVisibility(t *testing.T) {
 	}
 	if detailData.Playback.Type != "" {
 		t.Fatalf("expected empty playback type during processing, got %q", detailData.Playback.Type)
+	}
+}
+
+func TestCreateVideoRequiresCategoryID(t *testing.T) {
+	srv, container := newTestServer(t)
+	userID, access, _ := registerUser(t, srv, "video-no-category", "video-no-category@example.com", "password123")
+
+	now := util.FormatTime(time.Now().UTC())
+	mediaID := "media-" + uuid.NewString()
+	_, err := container.DB.Exec(
+		`INSERT INTO media_objects (id, provider, bucket, object_key, original_filename, mime_type, size_bytes, duration_sec, created_by, created_at)
+		 VALUES (?, 'local', '', ?, 'source.mp4', 'video/mp4', 2048, 90, ?, ?)`,
+		mediaID,
+		"videos/"+userID+"/seed/source.mp4",
+		userID,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("insert source media: %v", err)
+	}
+
+	status, resp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos", map[string]interface{}{
+		"title":           "processing video",
+		"description":     "queued",
+		"source_media_id": mediaID,
+		"visibility":      "public",
+	}, map[string]string{"Authorization": "Bearer " + access})
+	if status != http.StatusBadRequest {
+		t.Fatalf("missing category_id should return 400, got %d (%s)", status, resp.Message)
 	}
 }
 
@@ -1349,6 +1398,7 @@ func TestDanmakuPrivateVideoAccessControl(t *testing.T) {
 func TestURLImportStartCreatesQueuedJob(t *testing.T) {
 	srv, container := newTestServer(t)
 	_, accessToken, _ := registerUser(t, srv, "url-importer", "url-importer@example.com", "password123")
+	categoryID := createActiveCategory(t, container, "url-import-cat", "URL Import Category")
 
 	authHeader := map[string]string{"Authorization": "Bearer " + accessToken}
 
@@ -1359,8 +1409,16 @@ func TestURLImportStartCreatesQueuedJob(t *testing.T) {
 		t.Fatalf("invalid url should return 400, got %d", status)
 	}
 
+	status, missingCategoryResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/imports/url/start", map[string]interface{}{
+		"url": "https://example.com/video/no-category",
+	}, authHeader)
+	if status != http.StatusBadRequest {
+		t.Fatalf("missing category_id should return 400, got %d (%s)", status, missingCategoryResp.Message)
+	}
+
 	status, startResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/imports/url/start", map[string]interface{}{
 		"url":         "https://example.com/video/123",
+		"category_id": categoryID,
 		"title":       "URL 自定义标题",
 		"description": "URL 自定义描述",
 		"visibility":  "unlisted",
@@ -1468,6 +1526,7 @@ func TestStartTorrentImportPersistsCustomMetadata(t *testing.T) {
 	srv, container := newTestServer(t)
 	container.Config.ImportMaxFiles = 20
 	userID, accessToken, _ := registerUser(t, srv, "torrent-meta", "torrent-meta@example.com", "password123")
+	categoryID := createActiveCategory(t, container, "torrent-meta-cat", "Torrent Meta Category")
 	now := util.FormatTime(time.Now().UTC())
 	jobID := "import-job-" + uuid.NewString()
 	itemID := "import-item-" + uuid.NewString()
@@ -1506,9 +1565,18 @@ func TestStartTorrentImportPersistsCustomMetadata(t *testing.T) {
 		t.Fatalf("insert draft import item: %v", err)
 	}
 
+	status, missingCategoryResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/imports/torrent/start", map[string]interface{}{
+		"job_id":                jobID,
+		"selected_file_indexes": []int{0},
+	}, map[string]string{"Authorization": "Bearer " + accessToken})
+	if status != http.StatusBadRequest {
+		t.Fatalf("missing category_id should return 400, got %d (%s)", status, missingCategoryResp.Message)
+	}
+
 	status, resp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/imports/torrent/start", map[string]interface{}{
 		"job_id":                jobID,
 		"selected_file_indexes": []int{0},
+		"category_id":           categoryID,
 		"title":                 "单文件标题",
 		"title_prefix":          "批量前缀",
 		"description":           "统一描述",

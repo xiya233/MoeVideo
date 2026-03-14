@@ -273,6 +273,10 @@ export function ImportPage() {
       setStartError("至少勾选一个视频文件");
       return;
     }
+    if (!categoryID) {
+      setStartError("请选择分类");
+      return;
+    }
 
     setStartPending(true);
     setStartError("");
@@ -282,7 +286,7 @@ export function ImportPage() {
       await importsApi.startTorrent(request, {
         job_id: inspectJob.id,
         selected_file_indexes: Array.from(selectedIndexes).sort((a, b) => a - b),
-        category_id: categoryID ? Number(categoryID) : undefined,
+        category_id: Number(categoryID),
         tags: normalizeTags(tagInput),
         visibility,
         title: importTitle.trim() || undefined,
@@ -309,6 +313,10 @@ export function ImportPage() {
       setURLError("请输入视频页面 URL");
       return;
     }
+    if (!categoryID) {
+      setURLError("请选择分类");
+      return;
+    }
 
     setURLPending(true);
     setURLError("");
@@ -318,7 +326,7 @@ export function ImportPage() {
     try {
       const result = await importsApi.startURL(request, {
         url: trimmedURL,
-        category_id: categoryID ? Number(categoryID) : undefined,
+        category_id: Number(categoryID),
         tags: normalizeTags(tagInput),
         visibility,
         title: importTitle.trim() || undefined,
@@ -502,7 +510,7 @@ export function ImportPage() {
                     onChange={(event) => setCategoryID(event.target.value)}
                     disabled={loadingCategories}
                   >
-                    <option value="">不指定</option>
+                    <option value="">请选择分类</option>
                     {categories.map((item) => (
                       <option key={item.id} value={item.id}>
                         {item.name}
@@ -651,7 +659,7 @@ export function ImportPage() {
                   onChange={(event) => setCategoryID(event.target.value)}
                   disabled={loadingCategories}
                 >
-                  <option value="">不指定</option>
+                  <option value="">请选择分类</option>
                   {categories.map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.name}

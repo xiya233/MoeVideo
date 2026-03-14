@@ -591,6 +591,9 @@ func (h *Handler) CreateVideo(c *fiber.Ctx) error {
 	if req.SourceMediaID == "" {
 		return response.Error(c, fiber.StatusBadRequest, "source_media_id is required")
 	}
+	if req.CategoryID == nil {
+		return response.Error(c, fiber.StatusBadRequest, "category_id is required")
+	}
 	if req.Visibility == "" {
 		req.Visibility = "public"
 	}
@@ -620,14 +623,12 @@ func (h *Handler) CreateVideo(c *fiber.Ctx) error {
 			return response.Error(c, fiber.StatusInternalServerError, "failed to validate cover media")
 		}
 	}
-	if req.CategoryID != nil {
-		var exists int
-		if err := tx.QueryRowContext(c.UserContext(), `SELECT 1 FROM categories WHERE id = ? AND is_active = 1 LIMIT 1`, *req.CategoryID).Scan(&exists); err != nil {
-			if isNotFound(err) {
-				return response.Error(c, fiber.StatusBadRequest, "category_id is invalid")
-			}
-			return response.Error(c, fiber.StatusInternalServerError, "failed to validate category")
+	var exists int
+	if err := tx.QueryRowContext(c.UserContext(), `SELECT 1 FROM categories WHERE id = ? AND is_active = 1 LIMIT 1`, *req.CategoryID).Scan(&exists); err != nil {
+		if isNotFound(err) {
+			return response.Error(c, fiber.StatusBadRequest, "category_id is invalid")
 		}
+		return response.Error(c, fiber.StatusInternalServerError, "failed to validate category")
 	}
 
 	videoID := newID()

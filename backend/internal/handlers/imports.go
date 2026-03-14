@@ -278,6 +278,9 @@ func (h *Handler) StartTorrentImport(c *fiber.Ctx) error {
 	if err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to encode tags")
 	}
+	if req.CategoryID == nil {
+		return response.Error(c, fiber.StatusBadRequest, "category_id is required")
+	}
 
 	tx, err := h.app.DB.BeginTx(c.UserContext(), nil)
 	if err != nil {
@@ -307,14 +310,12 @@ LIMIT 1`, req.JobID).Scan(&status, &existingUID)
 		return response.Error(c, fiber.StatusConflict, "import job is not in draft status")
 	}
 
-	if req.CategoryID != nil {
-		var exists int
-		if err := tx.QueryRowContext(c.UserContext(), `SELECT 1 FROM categories WHERE id = ? AND is_active = 1 LIMIT 1`, *req.CategoryID).Scan(&exists); err != nil {
-			if isNotFound(err) {
-				return response.Error(c, fiber.StatusBadRequest, "category_id is invalid")
-			}
-			return response.Error(c, fiber.StatusInternalServerError, "failed to validate category")
+	var exists int
+	if err := tx.QueryRowContext(c.UserContext(), `SELECT 1 FROM categories WHERE id = ? AND is_active = 1 LIMIT 1`, *req.CategoryID).Scan(&exists); err != nil {
+		if isNotFound(err) {
+			return response.Error(c, fiber.StatusBadRequest, "category_id is invalid")
 		}
+		return response.Error(c, fiber.StatusInternalServerError, "failed to validate category")
 	}
 
 	existingIndexes := map[int]struct{}{}
@@ -436,6 +437,9 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 	if err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to encode tags")
 	}
+	if req.CategoryID == nil {
+		return response.Error(c, fiber.StatusBadRequest, "category_id is required")
+	}
 
 	tx, err := h.app.DB.BeginTx(c.UserContext(), nil)
 	if err != nil {
@@ -443,14 +447,12 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback()
 
-	if req.CategoryID != nil {
-		var exists int
-		if err := tx.QueryRowContext(c.UserContext(), `SELECT 1 FROM categories WHERE id = ? AND is_active = 1 LIMIT 1`, *req.CategoryID).Scan(&exists); err != nil {
-			if isNotFound(err) {
-				return response.Error(c, fiber.StatusBadRequest, "category_id is invalid")
-			}
-			return response.Error(c, fiber.StatusInternalServerError, "failed to validate category")
+	var exists int
+	if err := tx.QueryRowContext(c.UserContext(), `SELECT 1 FROM categories WHERE id = ? AND is_active = 1 LIMIT 1`, *req.CategoryID).Scan(&exists); err != nil {
+		if isNotFound(err) {
+			return response.Error(c, fiber.StatusBadRequest, "category_id is invalid")
 		}
+		return response.Error(c, fiber.StatusInternalServerError, "failed to validate category")
 	}
 
 	ytdlpMode, ytdlpMetaArgsJSON, ytdlpDownArgsJSON, err := h.resolveYTDLPSnapshotForJob(c.UserContext(), tx)

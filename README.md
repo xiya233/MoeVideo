@@ -64,3 +64,7 @@ mise run backend-test
 - 数据模型文档：`backend/docs/schema.md`
 - yt-dlp 参数配置文档：`backend/docs/ytdlp-settings.md`
 - SQL 迁移：`backend/internal/db/migrations/0001_init.sql`
+
+## Behavior Notes
+
+- 上传发布、URL 导入、BT 导入现在都要求必须选择分类（`category_id` 必填）。

@@ -236,6 +236,10 @@ export function UploadPage() {
       setErrorText("请填写视频标题");
       return;
     }
+    if (!categoryId) {
+      setErrorText("请选择分类");
+      return;
+    }
 
     setSubmitting(true);
     setErrorText("");
@@ -251,7 +255,7 @@ export function UploadPage() {
         body: {
           title: title.trim(),
           description: description.trim(),
-          category_id: categoryId ? Number(categoryId) : null,
+          category_id: Number(categoryId),
           cover_media_id: coverMedia?.media_object_id,
           source_media_id: videoMedia.media_object_id,
           tags,
@@ -449,7 +453,7 @@ export function UploadPage() {
           </div>
 
           <div>
-            <span className="mb-2 ml-1 block text-sm font-bold text-slate-700">全部分类</span>
+            <span className="mb-2 ml-1 block text-sm font-bold text-slate-700">分类</span>
             <select
               className={`${fieldClass} appearance-none`}
               value={categoryId}

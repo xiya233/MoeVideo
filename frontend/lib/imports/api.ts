@@ -29,7 +29,7 @@ export const importsApi = {
     payload: {
       job_id: string;
       selected_file_indexes: number[];
-      category_id?: number;
+      category_id: number;
       tags?: string[];
       visibility?: "public" | "private" | "unlisted";
       title?: string;
@@ -48,7 +48,7 @@ export const importsApi = {
     request: ApiRequest,
     payload: {
       url: string;
-      category_id?: number;
+      category_id: number;
       tags?: string[];
       visibility?: "public" | "private" | "unlisted";
       title?: string;
