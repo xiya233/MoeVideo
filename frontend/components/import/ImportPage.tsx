@@ -1232,20 +1232,19 @@ export function ImportPage() {
                         {job.completed_files}/{job.selected_files} 完成 · 失败 {job.failed_files}
                       </p>
                     </button>
-                    <span className="shrink-0 text-xs font-semibold text-slate-600">{formatStatus(job.status, job.draft_expired)}</span>
-                  </div>
-                  {job.source_type === "torrent" && job.status === "draft" ? (
-                    <div className="mt-3 flex justify-end">
-                      <button
-                        type="button"
-                        onClick={() => void resumeDraftJob(job.id)}
-                        disabled={Boolean(job.draft_expired)}
-                        className="rounded-lg border border-primary/30 px-3 py-1.5 text-xs font-semibold text-primary transition hover:border-primary hover:bg-primary/5 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400 disabled:hover:bg-transparent"
-                      >
-                        {job.draft_expired ? "已过期，仅可删除" : "继续导入"}
-                      </button>
+                    <div className="shrink-0 flex items-center gap-2">
+                      {job.source_type === "torrent" && job.status === "draft" && !job.draft_expired ? (
+                        <button
+                          type="button"
+                          onClick={() => void resumeDraftJob(job.id)}
+                          className="rounded-lg border border-primary/30 px-3 py-1.5 text-xs font-semibold text-primary transition hover:border-primary hover:bg-primary/5"
+                        >
+                          继续导入
+                        </button>
+                      ) : null}
+                      <span className="text-xs font-semibold text-slate-600">{formatStatus(job.status, job.draft_expired)}</span>
                     </div>
-                  ) : null}
+                  </div>
                 </div>
               ))}
             </div>
