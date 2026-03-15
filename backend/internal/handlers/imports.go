@@ -547,6 +547,10 @@ func (h *Handler) ListImportJobs(c *fiber.Ctx) error {
 	uid := currentUserID(c)
 	limit := pagination.ClampLimit(c.Query("limit"), defaultLimit, maxLimit)
 	cursorRaw := strings.TrimSpace(c.Query("cursor"))
+	sourceType := strings.ToLower(strings.TrimSpace(c.Query("source_type")))
+	if sourceType != "" && sourceType != "url" && sourceType != "torrent" {
+		return response.Error(c, fiber.StatusBadRequest, "invalid source_type")
+	}
 
 	query := `
 SELECT id, source_type, COALESCE(source_filename, ''), COALESCE(info_hash, ''), status,
@@ -561,6 +565,10 @@ SELECT id, source_type, COALESCE(source_filename, ''), COALESCE(info_hash, ''), 
 FROM video_import_jobs
 WHERE user_id = ?`
 	args := []interface{}{uid}
+	if sourceType != "" {
+		query += " AND source_type = ?"
+		args = append(args, sourceType)
+	}
 
 	if cursorRaw != "" {
 		var cur importListCursor
@@ -707,6 +715,10 @@ func (h *Handler) ClearFinishedImportJobs(c *fiber.Ctx) error {
 	if scope == "" {
 		scope = "finished"
 	}
+	sourceType := strings.ToLower(strings.TrimSpace(c.Query("source_type")))
+	if sourceType != "" && sourceType != "url" && sourceType != "torrent" {
+		return response.Error(c, fiber.StatusBadRequest, "invalid source_type")
+	}
 	var (
 		query string
 		args  []interface{}
@@ -734,6 +746,10 @@ func (h *Handler) ClearFinishedImportJobs(c *fiber.Ctx) error {
 		args = []interface{}{uid, nowString()}
 	default:
 		return response.Error(c, fiber.StatusBadRequest, "invalid scope")
+	}
+	if sourceType != "" {
+		query += " AND source_type = ?"
+		args = append(args, sourceType)
 	}
 	res, err := h.app.DB.ExecContext(c.UserContext(), query, args...)
 	if err != nil {

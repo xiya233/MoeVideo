@@ -1611,7 +1611,7 @@ func TestDanmakuPrivateVideoAccessControl(t *testing.T) {
 
 func TestURLImportStartCreatesQueuedJob(t *testing.T) {
 	srv, container := newTestServer(t)
-	_, accessToken, _ := registerUser(t, srv, "url-importer", "url-importer@example.com", "password123")
+	userID, accessToken, _ := registerUser(t, srv, "url-importer", "url-importer@example.com", "password123")
 	categoryID := createActiveCategory(t, container, "url-import-cat", "URL Import Category")
 
 	authHeader := map[string]string{"Authorization": "Bearer " + accessToken}
@@ -1681,6 +1681,74 @@ func TestURLImportStartCreatesQueuedJob(t *testing.T) {
 	}
 	if listData.Items[0].Status != "queued" {
 		t.Fatalf("expected queued status, got %s", listData.Items[0].Status)
+	}
+
+	now := util.FormatTime(time.Now().UTC())
+	torrentJobID := uuid.NewString()
+	if _, err := container.DB.Exec(`
+INSERT INTO video_import_jobs (
+	id, user_id, source_type, source_filename, info_hash, torrent_data, status,
+	category_id, tags_json, visibility, attempts, max_attempts,
+	total_files, selected_files, completed_files, failed_files, progress,
+	available_at, started_at, finished_at, expires_at, error_message,
+	created_at, updated_at
+) VALUES (?, ?, 'torrent', 'filter-test.torrent', 'beefdead', X'00', 'queued',
+	?, '[]', 'public', 0, 3,
+	1, 1, 0, 0, 0,
+	?, NULL, NULL, ?, NULL,
+	?, ?)`,
+		torrentJobID, userID, categoryID, now, util.FormatTime(time.Now().UTC().Add(24*time.Hour)), now, now,
+	); err != nil {
+		t.Fatalf("insert torrent import job for source_type filter: %v", err)
+	}
+
+	status, listURLResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/imports?source_type=url", nil, authHeader)
+	if status != http.StatusOK {
+		t.Fatalf("list imports source_type=url should return 200, got %d (%s)", status, listURLResp.Message)
+	}
+	var listURLData struct {
+		Items []struct {
+			ID         string `json:"id"`
+			SourceType string `json:"source_type"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(listURLResp.Data, &listURLData); err != nil {
+		t.Fatalf("parse imports source_type=url response: %v", err)
+	}
+	if len(listURLData.Items) == 0 {
+		t.Fatalf("source_type=url list should not be empty")
+	}
+	for _, item := range listURLData.Items {
+		if item.SourceType != "url" {
+			t.Fatalf("source_type=url list contains non-url item: %+v", item)
+		}
+	}
+
+	status, listTorrentResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/imports?source_type=torrent", nil, authHeader)
+	if status != http.StatusOK {
+		t.Fatalf("list imports source_type=torrent should return 200, got %d (%s)", status, listTorrentResp.Message)
+	}
+	var listTorrentData struct {
+		Items []struct {
+			ID         string `json:"id"`
+			SourceType string `json:"source_type"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(listTorrentResp.Data, &listTorrentData); err != nil {
+		t.Fatalf("parse imports source_type=torrent response: %v", err)
+	}
+	if len(listTorrentData.Items) == 0 {
+		t.Fatalf("source_type=torrent list should not be empty")
+	}
+	for _, item := range listTorrentData.Items {
+		if item.SourceType != "torrent" {
+			t.Fatalf("source_type=torrent list contains non-torrent item: %+v", item)
+		}
+	}
+
+	status, invalidFilterResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/imports?source_type=invalid", nil, authHeader)
+	if status != http.StatusBadRequest {
+		t.Fatalf("invalid source_type should return 400, got %d (%s)", status, invalidFilterResp.Message)
 	}
 
 	status, detailResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/imports/"+startData.JobID, nil, authHeader)
@@ -1840,6 +1908,118 @@ INSERT INTO video_import_items (
 	}
 	if deletedItemsCount != 0 {
 		t.Fatalf("expected deleted jobs items to cascade delete, got %d", deletedItemsCount)
+	}
+}
+
+func TestClearFinishedImportJobsWithSourceTypeFilter(t *testing.T) {
+	srv, container := newTestServer(t)
+	userID, accessToken, _ := registerUser(t, srv, "imports-clear-type-owner", "imports-clear-type-owner@example.com", "password123")
+
+	now := time.Now().UTC()
+	nowStr := util.FormatTime(now)
+	expiredAt := util.FormatTime(now.Add(-2 * time.Hour))
+	futureExpiresAt := util.FormatTime(now.Add(24 * time.Hour))
+
+	insertJob := func(jobID, sourceType, status, expiresAt string) {
+		t.Helper()
+		if _, err := container.DB.Exec(`
+INSERT INTO video_import_jobs (
+	id, user_id, source_type, status, tags_json, visibility,
+	total_files, selected_files, completed_files, failed_files, progress,
+	available_at, expires_at, created_at, updated_at
+) VALUES (?, ?, ?, ?, '[]', 'public', 1, 1, 0, 0, 0, ?, ?, ?, ?)`,
+			jobID, userID, sourceType, status, nowStr, expiresAt, nowStr, nowStr,
+		); err != nil {
+			t.Fatalf("insert import job %s: %v", jobID, err)
+		}
+		if _, err := container.DB.Exec(`
+INSERT INTO video_import_items (
+	id, job_id, file_index, file_path, file_size_bytes, selected, status, created_at, updated_at
+) VALUES (?, ?, 0, ?, 100, 1, 'pending', ?, ?)`,
+			uuid.NewString(), jobID, "source.mp4", nowStr, nowStr,
+		); err != nil {
+			t.Fatalf("insert import item for job %s: %v", jobID, err)
+		}
+	}
+
+	urlFinishedID := uuid.NewString()
+	torrentFinishedID := uuid.NewString()
+	torrentExpiredDraftID := uuid.NewString()
+	torrentActiveDraftID := uuid.NewString()
+	insertJob(urlFinishedID, "url", "succeeded", futureExpiresAt)
+	insertJob(torrentFinishedID, "torrent", "failed", futureExpiresAt)
+	insertJob(torrentExpiredDraftID, "torrent", "draft", expiredAt)
+	insertJob(torrentActiveDraftID, "torrent", "draft", futureExpiresAt)
+
+	status, invalidResp := doJSONRequest(t, srv, http.MethodDelete, "/api/v1/imports?scope=finished&source_type=invalid", nil, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("invalid source_type should return 400, got %d (%s)", status, invalidResp.Message)
+	}
+
+	status, clearURLResp := doJSONRequest(t, srv, http.MethodDelete, "/api/v1/imports?scope=finished&source_type=url", nil, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("clear url finished should return 200, got %d (%s)", status, clearURLResp.Message)
+	}
+	var clearURLData struct {
+		Deleted int64 `json:"deleted"`
+	}
+	if err := json.Unmarshal(clearURLResp.Data, &clearURLData); err != nil {
+		t.Fatalf("parse clear url response: %v", err)
+	}
+	if clearURLData.Deleted != 1 {
+		t.Fatalf("expected deleted=1 for url finished clear, got %d", clearURLData.Deleted)
+	}
+
+	var urlFinishedRemaining int64
+	if err := container.DB.QueryRow(`SELECT COUNT(1) FROM video_import_jobs WHERE id = ?`, urlFinishedID).Scan(&urlFinishedRemaining); err != nil {
+		t.Fatalf("count url finished job: %v", err)
+	}
+	if urlFinishedRemaining != 0 {
+		t.Fatalf("expected url finished job deleted")
+	}
+
+	var torrentFinishedRemaining int64
+	if err := container.DB.QueryRow(`SELECT COUNT(1) FROM video_import_jobs WHERE id = ?`, torrentFinishedID).Scan(&torrentFinishedRemaining); err != nil {
+		t.Fatalf("count torrent finished job: %v", err)
+	}
+	if torrentFinishedRemaining != 1 {
+		t.Fatalf("expected torrent finished job to remain after url clear")
+	}
+
+	status, clearTorrentExpiredResp := doJSONRequest(t, srv, http.MethodDelete, "/api/v1/imports?scope=expired&source_type=torrent", nil, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("clear torrent expired should return 200, got %d (%s)", status, clearTorrentExpiredResp.Message)
+	}
+	var clearTorrentExpiredData struct {
+		Deleted int64 `json:"deleted"`
+	}
+	if err := json.Unmarshal(clearTorrentExpiredResp.Data, &clearTorrentExpiredData); err != nil {
+		t.Fatalf("parse clear torrent expired response: %v", err)
+	}
+	if clearTorrentExpiredData.Deleted != 1 {
+		t.Fatalf("expected deleted=1 for torrent expired clear, got %d", clearTorrentExpiredData.Deleted)
+	}
+
+	var expiredDraftRemaining int64
+	if err := container.DB.QueryRow(`SELECT COUNT(1) FROM video_import_jobs WHERE id = ?`, torrentExpiredDraftID).Scan(&expiredDraftRemaining); err != nil {
+		t.Fatalf("count expired draft job: %v", err)
+	}
+	if expiredDraftRemaining != 0 {
+		t.Fatalf("expected expired torrent draft deleted")
+	}
+
+	var activeDraftRemaining int64
+	if err := container.DB.QueryRow(`SELECT COUNT(1) FROM video_import_jobs WHERE id = ?`, torrentActiveDraftID).Scan(&activeDraftRemaining); err != nil {
+		t.Fatalf("count active draft job: %v", err)
+	}
+	if activeDraftRemaining != 1 {
+		t.Fatalf("expected active torrent draft to remain")
 	}
 }
 

@@ -20,6 +20,28 @@ import { cn } from "@/lib/utils/cn";
 
 const POLL_INTERVAL = 2000;
 const MAX_PREVIEW_JOBS = 10;
+type ImportSourceType = "url" | "torrent";
+type TypedJobState = {
+  items: ImportJob[];
+  nextCursor: string;
+  loading: boolean;
+  loadingMore: boolean;
+  loadMoreError: string;
+  error: string;
+  loaded: boolean;
+};
+
+function createEmptyJobState(): TypedJobState {
+  return {
+    items: [],
+    nextCursor: "",
+    loading: false,
+    loadingMore: false,
+    loadMoreError: "",
+    error: "",
+    loaded: false,
+  };
+}
 
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -133,12 +155,11 @@ export function ImportPage() {
   const [activeJobDetail, setActiveJobDetail] = useState<ImportJobDetailData | null>(null);
   const [activeJobError, setActiveJobError] = useState("");
 
-  const [jobs, setJobs] = useState<ImportJob[]>([]);
-  const [jobsNextCursor, setJobsNextCursor] = useState("");
-  const [jobsLoadingMore, setJobsLoadingMore] = useState(false);
-  const [jobsLoadMoreError, setJobsLoadMoreError] = useState("");
+  const [jobsByType, setJobsByType] = useState<Record<ImportSourceType, TypedJobState>>({
+    url: createEmptyJobState(),
+    torrent: createEmptyJobState(),
+  });
   const [jobsClearingScope, setJobsClearingScope] = useState<"finished" | "expired" | null>(null);
-  const [jobsError, setJobsError] = useState("");
 
   const pollRef = useRef<number | null>(null);
   const fieldClass =
@@ -167,58 +188,95 @@ export function ImportPage() {
     }
   }, [request]);
 
-  const loadJobs = useCallback(async () => {
-    if (!session) {
-      setJobs([]);
-      setJobsNextCursor("");
-      setJobsLoadMoreError("");
-      return;
-    }
-    setJobsError("");
-    setJobsLoadMoreError("");
-    try {
-      const dataRaw = await importsApi.listJobs(request, { limit: MAX_PREVIEW_JOBS });
-      const data = mapImportJobsData(dataRaw as ImportJobsData);
-      setJobs(data.items);
-      setJobsNextCursor(data.next_cursor ?? "");
-    } catch (err) {
-      setJobs([]);
-      setJobsNextCursor("");
-      setJobsError(err instanceof Error ? err.message : "任务列表加载失败");
-    }
-  }, [request, session]);
+  const loadJobsBySourceType = useCallback(
+    async (sourceType: ImportSourceType, cursor?: string) => {
+      if (!session) {
+        setJobsByType({
+          url: createEmptyJobState(),
+          torrent: createEmptyJobState(),
+        });
+        return;
+      }
+
+      const isLoadMore = Boolean(cursor);
+      setJobsByType((prev) => {
+        const current = prev[sourceType];
+        return {
+          ...prev,
+          [sourceType]: {
+            ...current,
+            loading: isLoadMore ? current.loading : true,
+            loadingMore: isLoadMore,
+            loadMoreError: isLoadMore ? "" : current.loadMoreError,
+            error: isLoadMore ? current.error : "",
+          },
+        };
+      });
+
+      try {
+        const dataRaw = await importsApi.listJobs(request, {
+          limit: MAX_PREVIEW_JOBS,
+          cursor,
+          source_type: sourceType,
+        });
+        const data = mapImportJobsData(dataRaw as ImportJobsData);
+
+        setJobsByType((prev) => {
+          const current = prev[sourceType];
+          let nextItems: ImportJob[] = data.items;
+          if (isLoadMore) {
+            const seen = new Set(current.items.map((item) => item.id));
+            nextItems = [...current.items];
+            for (const item of data.items) {
+              if (seen.has(item.id)) {
+                continue;
+              }
+              seen.add(item.id);
+              nextItems.push(item);
+            }
+          }
+
+          return {
+            ...prev,
+            [sourceType]: {
+              ...current,
+              items: nextItems,
+              nextCursor: data.next_cursor ?? "",
+              loading: false,
+              loadingMore: false,
+              loadMoreError: "",
+              error: "",
+              loaded: true,
+            },
+          };
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : isLoadMore ? "加载更多失败" : "任务列表加载失败";
+        setJobsByType((prev) => {
+          const current = prev[sourceType];
+          return {
+            ...prev,
+            [sourceType]: {
+              ...current,
+              loading: false,
+              loadingMore: false,
+              loadMoreError: isLoadMore ? message : "",
+              error: isLoadMore ? current.error : message,
+            },
+          };
+        });
+      }
+    },
+    [request, session],
+  );
 
   const loadMoreJobs = useCallback(async () => {
-    if (!session || jobsLoadingMore || !jobsNextCursor) {
+    const current = jobsByType[importMode];
+    if (!session || current.loadingMore || !current.nextCursor) {
       return;
     }
-    setJobsLoadingMore(true);
-    setJobsLoadMoreError("");
-    try {
-      const dataRaw = await importsApi.listJobs(request, {
-        limit: MAX_PREVIEW_JOBS,
-        cursor: jobsNextCursor,
-      });
-      const data = mapImportJobsData(dataRaw as ImportJobsData);
-      setJobs((prev) => {
-        const seen = new Set(prev.map((item) => item.id));
-        const merged = [...prev];
-        for (const item of data.items) {
-          if (seen.has(item.id)) {
-            continue;
-          }
-          seen.add(item.id);
-          merged.push(item);
-        }
-        return merged;
-      });
-      setJobsNextCursor(data.next_cursor ?? "");
-    } catch (err) {
-      setJobsLoadMoreError(err instanceof Error ? err.message : "加载更多失败");
-    } finally {
-      setJobsLoadingMore(false);
-    }
-  }, [jobsLoadingMore, jobsNextCursor, request, session]);
+    await loadJobsBySourceType(importMode, current.nextCursor);
+  }, [jobsByType, importMode, loadJobsBySourceType, session]);
 
   const loadJobDetail = useCallback(
     async (jobID: string) => {
@@ -233,11 +291,26 @@ export function ImportPage() {
 
   useEffect(() => {
     if (!session) {
+      setJobsByType({
+        url: createEmptyJobState(),
+        torrent: createEmptyJobState(),
+      });
       return;
     }
     void loadCategories();
-    void loadJobs();
-  }, [loadCategories, loadJobs, session]);
+  }, [loadCategories, session]);
+
+  const currentJobsState = jobsByType[importMode];
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    if (currentJobsState.loaded || currentJobsState.loading) {
+      return;
+    }
+    void loadJobsBySourceType(importMode);
+  }, [currentJobsState.loaded, currentJobsState.loading, importMode, loadJobsBySourceType, session]);
 
   useEffect(() => {
     return () => {
@@ -254,7 +327,7 @@ export function ImportPage() {
             const next = await loadJobDetail(jobID);
             if (!isJobPollingStatus(next.job.status)) {
               stopPolling();
-              await loadJobs();
+              await loadJobsBySourceType(next.job.source_type);
             }
           } catch (err) {
             setActiveJobError(err instanceof Error ? err.message : "导入任务刷新失败");
@@ -262,7 +335,7 @@ export function ImportPage() {
         })();
       }, POLL_INTERVAL);
     },
-    [loadJobDetail, loadJobs, stopPolling],
+    [loadJobDetail, loadJobsBySourceType, stopPolling],
   );
 
   const onInspectTorrent = async () => {
@@ -299,7 +372,7 @@ export function ImportPage() {
       } else {
         stopPolling();
       }
-      await loadJobs();
+      await loadJobsBySourceType("torrent");
     } catch (err) {
       setInspectJob(null);
       setInspectItems([]);
@@ -349,7 +422,7 @@ export function ImportPage() {
       if (isJobPollingStatus(detail.job.status)) {
         openPolling(inspectJob.id);
       }
-      await loadJobs();
+      await loadJobsBySourceType("torrent");
     } catch (err) {
       setStartError(err instanceof Error ? err.message : "开始导入失败");
     } finally {
@@ -389,7 +462,7 @@ export function ImportPage() {
       } else {
         stopPolling();
       }
-      await loadJobs();
+      await loadJobsBySourceType("url");
     } catch (err) {
       setURLError(err instanceof Error ? err.message : "URL 导入失败");
     } finally {
@@ -455,7 +528,14 @@ export function ImportPage() {
       applyDraftToEditor(detail);
       stopPolling();
     } catch (err) {
-      setJobsError(err instanceof Error ? err.message : "恢复草稿失败");
+      const message = err instanceof Error ? err.message : "恢复草稿失败";
+      setJobsByType((prev) => ({
+        ...prev,
+        [importMode]: {
+          ...prev[importMode],
+          error: message,
+        },
+      }));
     }
   };
 
@@ -463,29 +543,38 @@ export function ImportPage() {
     if (!session || jobsClearingScope) {
       return;
     }
+    if (scope === "expired" && importMode !== "torrent") {
+      return;
+    }
     const confirmText =
       scope === "expired"
-        ? "确认清理所有已过期草稿吗？此操作不可撤销。"
-        : "确认清理所有已结束导入记录吗？此操作不可撤销。";
+        ? "确认清理当前 BT 类型的已过期草稿吗？此操作不可撤销。"
+        : `确认清理当前${importMode === "url" ? " URL " : " BT "}类型的已结束导入记录吗？此操作不可撤销。`;
     if (!window.confirm(confirmText)) {
       return;
     }
     setJobsClearingScope(scope);
-    setJobsError("");
-    setJobsLoadMoreError("");
+    setJobsByType((prev) => ({
+      ...prev,
+      [importMode]: { ...prev[importMode], error: "", loadMoreError: "" },
+    }));
     try {
-      await importsApi.clearFinishedJobs(request, scope);
+      await importsApi.clearFinishedJobs(request, scope, importMode);
       if (
         activeJobDetail &&
+        activeJobDetail.job.source_type === importMode &&
         ((scope === "finished" && !isJobPollingStatus(activeJobDetail.job.status) && activeJobDetail.job.status !== "draft") ||
-          (scope === "expired" && activeJobDetail.job.status === "draft" && activeJobDetail.job.draft_expired))
+          (scope === "expired" &&
+            activeJobDetail.job.source_type === "torrent" &&
+            activeJobDetail.job.status === "draft" &&
+            activeJobDetail.job.draft_expired))
       ) {
         stopPolling();
         setActiveJobID("");
         setActiveJobDetail(null);
         setActiveJobError("");
       }
-      if (scope === "expired" && inspectJob?.id) {
+      if (scope === "expired" && importMode === "torrent" && inspectJob?.id) {
         try {
           const draftDetail = await loadJobDetail(inspectJob.id);
           if (draftDetail.job.draft_expired) {
@@ -500,9 +589,20 @@ export function ImportPage() {
           setSelectedIndexes(new Set());
         }
       }
-      await loadJobs();
+      setJobsByType((prev) => ({
+        ...prev,
+        [importMode]: createEmptyJobState(),
+      }));
+      await loadJobsBySourceType(importMode);
     } catch (err) {
-      setJobsError(err instanceof Error ? err.message : "清理导入记录失败");
+      const message = err instanceof Error ? err.message : "清理导入记录失败";
+      setJobsByType((prev) => ({
+        ...prev,
+        [importMode]: {
+          ...prev[importMode],
+          error: message,
+        },
+      }));
     } finally {
       setJobsClearingScope(null);
     }
@@ -945,34 +1045,38 @@ export function ImportPage() {
 
       <section className={cardClass}>
         <div className="mb-4 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-bold text-slate-900">最近导入任务</h2>
+          <h2 className="text-lg font-bold text-slate-900">{importMode === "url" ? "最近 URL 导入任务" : "最近 BT 导入任务"}</h2>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void clearJobsByScope("expired")}
-              disabled={Boolean(jobsClearingScope)}
-              className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {jobsClearingScope === "expired" ? "清理中..." : "清理已过期草稿"}
-            </button>
+            {importMode === "torrent" ? (
+              <button
+                type="button"
+                onClick={() => void clearJobsByScope("expired")}
+                disabled={Boolean(jobsClearingScope)}
+                className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {jobsClearingScope === "expired" ? "清理中..." : "清理当前类型已过期草稿"}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => void clearJobsByScope("finished")}
               disabled={Boolean(jobsClearingScope)}
               className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {jobsClearingScope === "finished" ? "清理中..." : "清理已结束记录"}
+              {jobsClearingScope === "finished" ? "清理中..." : "清理当前类型已结束记录"}
             </button>
           </div>
         </div>
-        {jobsError ? <p className="mb-3 text-sm text-rose-600">{jobsError}</p> : null}
+        {currentJobsState.error ? <p className="mb-3 text-sm text-rose-600">{currentJobsState.error}</p> : null}
 
-        {jobs.length === 0 ? (
+        {currentJobsState.loading ? (
+          <p className="text-sm text-slate-500">任务列表加载中...</p>
+        ) : currentJobsState.items.length === 0 ? (
           <EmptyState title="暂无导入记录" description="导入任务提交后会显示在这里。" />
         ) : (
           <>
             <div className="space-y-3">
-              {jobs.map((job) => (
+              {currentJobsState.items.map((job) => (
                 <div
                   key={job.id}
                   className="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 transition hover:border-primary/40"
@@ -1013,16 +1117,16 @@ export function ImportPage() {
                 </div>
               ))}
             </div>
-            {jobsLoadMoreError ? <p className="mt-3 text-sm text-rose-600">{jobsLoadMoreError}</p> : null}
-            {jobsNextCursor ? (
+            {currentJobsState.loadMoreError ? <p className="mt-3 text-sm text-rose-600">{currentJobsState.loadMoreError}</p> : null}
+            {currentJobsState.nextCursor ? (
               <div className="mt-4 flex justify-center">
                 <button
                   type="button"
                   onClick={() => void loadMoreJobs()}
-                  disabled={jobsLoadingMore}
+                  disabled={currentJobsState.loadingMore}
                   className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {jobsLoadingMore ? "加载中..." : "加载更多"}
+                  {currentJobsState.loadingMore ? "加载中..." : "加载更多"}
                 </button>
               </div>
             ) : null}

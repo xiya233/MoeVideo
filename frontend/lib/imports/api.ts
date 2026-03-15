@@ -62,12 +62,19 @@ export const importsApi = {
     });
   },
 
-  listJobs(request: ApiRequest, params: { cursor?: string; limit?: number }) {
+  listJobs(request: ApiRequest, params: { cursor?: string; limit?: number; source_type?: "url" | "torrent" }) {
     return request<ImportJobsData>(`/imports${buildQuery(params)}`, { auth: true });
   },
 
-  clearFinishedJobs(request: ApiRequest, scope?: "finished" | "expired" | "all_clearable") {
-    const query = scope ? `?scope=${encodeURIComponent(scope)}` : "";
+  clearFinishedJobs(
+    request: ApiRequest,
+    scope?: "finished" | "expired" | "all_clearable",
+    source_type?: "url" | "torrent",
+  ) {
+    const query = buildQuery({
+      scope,
+      source_type,
+    });
     return request<{ deleted: number }>(`/imports${query}`, {
       method: "DELETE",
       auth: true,
