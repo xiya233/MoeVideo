@@ -65,7 +65,10 @@ mise run backend-test
 - API 文档：`backend/docs/api.md`
 - 数据模型文档：`backend/docs/schema.md`
 - yt-dlp 参数配置文档：`backend/docs/ytdlp-settings.md`
+- Debian 13 生产部署文档：`docs/deploy-production-debian13.md`
 - SQL 迁移：`backend/internal/db/migrations/0001_init.sql`
+
+生产部署建议：可使用 `mise` 安装并锁定工具链版本（Go/Bun），服务运行请使用 `systemd` 原生命令（不要用 `mise run`）。
 
 ## Behavior Notes
 
