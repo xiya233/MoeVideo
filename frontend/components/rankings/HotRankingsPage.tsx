@@ -156,7 +156,7 @@ export function HotRankingsPage() {
         </Link>
         <h1 className="flex items-center gap-2 text-2xl font-bold text-slate-900">
           <AppIcon name="local_fire_department" className="text-orange-500" size={22} />
-          完整热度排行榜
+          热度排行榜
         </h1>
         <p className="mt-2 text-sm text-slate-500">按热度分值排序，持续滚动加载更多热门视频。</p>
       </header>

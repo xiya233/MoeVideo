@@ -1453,6 +1453,62 @@ export function VideoPage({ videoId }: VideoPageProps) {
       </div>
 
       <aside className="w-full space-y-4 lg:w-96">
+        <section className="rounded-xl border border-primary/10 bg-white/80 shadow-sm">
+          <button
+            type="button"
+            onClick={() => setDanmakuPanelOpen((prev) => !prev)}
+            className="flex w-full items-center justify-between px-4 py-3 text-left"
+          >
+            <span className="text-sm font-semibold text-slate-800">弹幕列表</span>
+            <span className="text-xs font-medium text-primary">{danmakuPanelOpen ? "收起" : "展开"}</span>
+          </button>
+          {danmakuPanelOpen ? (
+            <div className="space-y-3 border-t border-primary/10 px-3 pb-3 pt-2">
+              <div className="grid grid-cols-[56px_1fr_112px] gap-2 px-1 text-[11px] font-semibold text-slate-500">
+                <span>视频时间</span>
+                <span>弹幕内容</span>
+                <span className="text-right">发送时间</span>
+              </div>
+
+              {danmakuListLoading ? (
+                <div className="space-y-2">
+                  <LoadingSkeleton className="h-8" />
+                  <LoadingSkeleton className="h-8" />
+                  <LoadingSkeleton className="h-8" />
+                </div>
+              ) : danmakuListError ? (
+                <EmptyState title="弹幕加载失败" description={danmakuListError} />
+              ) : danmakuListItems.length === 0 ? (
+                <EmptyState title="暂无弹幕" description="成为第一个发送弹幕的人吧。" />
+              ) : (
+                <div className="space-y-1">
+                  {danmakuListItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className="grid grid-cols-[56px_1fr_112px] items-start gap-2 rounded-lg px-1 py-1.5 text-[11px] text-slate-700 hover:bg-primary/5"
+                    >
+                      <span className="font-mono text-slate-500">{formatDurationLabel(item.time_sec)}</span>
+                      <span className="line-clamp-1 break-all">{item.content}</span>
+                      <span className="text-right text-slate-400">{formatDateMinute(item.created_at)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {danmakuNextCursor ? (
+                <button
+                  type="button"
+                  onClick={() => void loadMoreDanmaku()}
+                  disabled={danmakuListLoadingMore}
+                  className="w-full rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {danmakuListLoadingMore ? "加载中..." : "加载更多"}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
+
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-lg font-bold">推荐视频</h3>
           <button
@@ -1511,62 +1567,6 @@ export function VideoPage({ videoId }: VideoPageProps) {
             <EmptyState title="暂无推荐视频" description="稍后再试试看。" />
           ) : null}
         </div>
-
-        <section className="rounded-xl border border-primary/10 bg-white/80 shadow-sm">
-          <button
-            type="button"
-            onClick={() => setDanmakuPanelOpen((prev) => !prev)}
-            className="flex w-full items-center justify-between px-4 py-3 text-left"
-          >
-            <span className="text-sm font-semibold text-slate-800">弹幕列表</span>
-            <span className="text-xs font-medium text-primary">{danmakuPanelOpen ? "收起" : "展开"}</span>
-          </button>
-          {danmakuPanelOpen ? (
-            <div className="space-y-3 border-t border-primary/10 px-3 pb-3 pt-2">
-              <div className="grid grid-cols-[56px_1fr_112px] gap-2 px-1 text-[11px] font-semibold text-slate-500">
-                <span>视频时间</span>
-                <span>弹幕内容</span>
-                <span className="text-right">发送时间</span>
-              </div>
-
-              {danmakuListLoading ? (
-                <div className="space-y-2">
-                  <LoadingSkeleton className="h-8" />
-                  <LoadingSkeleton className="h-8" />
-                  <LoadingSkeleton className="h-8" />
-                </div>
-              ) : danmakuListError ? (
-                <EmptyState title="弹幕加载失败" description={danmakuListError} />
-              ) : danmakuListItems.length === 0 ? (
-                <EmptyState title="暂无弹幕" description="成为第一个发送弹幕的人吧。" />
-              ) : (
-                <div className="space-y-1">
-                  {danmakuListItems.map((item) => (
-                    <div
-                      key={item.id}
-                      className="grid grid-cols-[56px_1fr_112px] items-start gap-2 rounded-lg px-1 py-1.5 text-[11px] text-slate-700 hover:bg-primary/5"
-                    >
-                      <span className="font-mono text-slate-500">{formatDurationLabel(item.time_sec)}</span>
-                      <span className="line-clamp-1 break-all">{item.content}</span>
-                      <span className="text-right text-slate-400">{formatDateMinute(item.created_at)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {danmakuNextCursor ? (
-                <button
-                  type="button"
-                  onClick={() => void loadMoreDanmaku()}
-                  disabled={danmakuListLoadingMore}
-                  className="w-full rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {danmakuListLoadingMore ? "加载中..." : "加载更多"}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-        </section>
       </aside>
     </div>
   );
