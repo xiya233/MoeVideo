@@ -7,6 +7,8 @@ import type { DanmakuItem } from "@/lib/dto";
 
 const DEFAULT_PLAYER_THEME = "#3db8f5";
 const REALTIME_DANMAKU_OFFSET_SEC = 0.15;
+const ENDED_REPLAY_EPSILON_SEC = 0.2;
+const ENDED_PAUSE_EPSILON_SEC = 0.05;
 
 type PlayerQuality = {
   html: string;
@@ -40,6 +42,7 @@ type ArtHlsPlayerProps = {
 
 type ArtplayerInstance = {
   destroy: (removeHtml?: boolean) => void;
+  play?: () => Promise<void>;
   switchQuality?: (url: string) => Promise<void>;
   on?: (eventName: string, callback: () => void) => void;
   video?: HTMLVideoElement;
@@ -95,6 +98,49 @@ function qualityLabel(html: string | HTMLElement): string {
     return html;
   }
   return html.textContent?.trim() || "";
+}
+
+function mediaDurationSec(video: HTMLMediaElement): number {
+  return Number.isFinite(video.duration) ? video.duration : 0;
+}
+
+function isEndedReplayState(video: HTMLMediaElement): boolean {
+  const duration = mediaDurationSec(video);
+  if (duration <= 0) {
+    return false;
+  }
+  return video.ended || video.currentTime >= duration - ENDED_REPLAY_EPSILON_SEC;
+}
+
+function isEndedPauseState(video: HTMLMediaElement): boolean {
+  const duration = mediaDurationSec(video);
+  if (duration <= 0) {
+    return false;
+  }
+  return video.ended || video.currentTime >= duration - ENDED_PAUSE_EPSILON_SEC;
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const maybeError = error as { name?: unknown };
+  return maybeError.name === "AbortError";
+}
+
+function waitForCanPlay(video: HTMLMediaElement): Promise<void> {
+  if (video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const handleReady = () => {
+      video.removeEventListener("canplay", handleReady);
+      video.removeEventListener("loadeddata", handleReady);
+      resolve();
+    };
+    video.addEventListener("canplay", handleReady, { once: true });
+    video.addEventListener("loadeddata", handleReady, { once: true });
+  });
 }
 
 export function ArtHlsPlayer({
@@ -328,6 +374,36 @@ export function ArtHlsPlayer({
 
       const video = artInstance.video as HTMLVideoElement;
       videoRef.current = video;
+
+      const patchableVideo = video as HTMLVideoElement & { play: () => Promise<void> };
+      const originalPlay = patchableVideo.play.bind(video);
+      const originalPlayMethod = patchableVideo.play;
+      let replayRetrying = false;
+
+      const safePlay: typeof patchableVideo.play = async () => {
+        const shouldReplayFromStart = isEndedReplayState(video);
+        if (shouldReplayFromStart) {
+          video.currentTime = 0;
+        }
+
+        try {
+          return await originalPlay();
+        } catch (error) {
+          if (!shouldReplayFromStart || replayRetrying || !isAbortError(error)) {
+            throw error;
+          }
+          replayRetrying = true;
+          try {
+            await waitForCanPlay(video);
+            return await originalPlay();
+          } finally {
+            replayRetrying = false;
+          }
+        }
+      };
+
+      patchableVideo.play = safePlay;
+
       const pendingLatest = pendingLatestDanmakuRef.current;
       if (danmakuPluginRef.current && pendingLatest?.id && latestDanmakuIDRef.current !== pendingLatest.id) {
         latestDanmakuIDRef.current = pendingLatest.id;
@@ -336,13 +412,16 @@ export function ArtHlsPlayer({
       }
 
       const handleTimeUpdate = () => {
-        onTimeUpdateRef.current?.(video.currentTime || 0, Number.isFinite(video.duration) ? video.duration : 0);
+        onTimeUpdateRef.current?.(video.currentTime || 0, mediaDurationSec(video));
       };
       const handlePause = () => {
-        onPauseRef.current?.(video.currentTime || 0, Number.isFinite(video.duration) ? video.duration : 0);
+        if (isEndedPauseState(video)) {
+          return;
+        }
+        onPauseRef.current?.(video.currentTime || 0, mediaDurationSec(video));
       };
       const handleEnded = () => {
-        onEndedRef.current?.(Number.isFinite(video.duration) ? video.duration : 0);
+        onEndedRef.current?.(mediaDurationSec(video));
       };
 
       video.addEventListener("timeupdate", handleTimeUpdate);
@@ -350,6 +429,9 @@ export function ArtHlsPlayer({
       video.addEventListener("ended", handleEnded);
 
       const cleanupListeners = () => {
+        if (patchableVideo.play === safePlay) {
+          patchableVideo.play = originalPlayMethod;
+        }
         video.removeEventListener("timeupdate", handleTimeUpdate);
         video.removeEventListener("pause", handlePause);
         video.removeEventListener("ended", handleEnded);
