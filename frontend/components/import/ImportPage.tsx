@@ -1179,7 +1179,7 @@ export function ImportPage() {
                 disabled={Boolean(jobsClearingScope)}
                 className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {jobsClearingScope === "expired" ? "清理中..." : "清理当前类型已过期草稿"}
+                {jobsClearingScope === "expired" ? "清理中..." : "清理已过期BT任务"}
               </button>
             ) : null}
             <button
@@ -1188,7 +1188,7 @@ export function ImportPage() {
               disabled={Boolean(jobsClearingScope)}
               className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {jobsClearingScope === "finished" ? "清理中..." : "清理当前类型已结束记录"}
+              {jobsClearingScope === "finished" ? "清理中..." : importMode === "url" ? "清理已完成URL任务" : "清理已完成BT任务"}
             </button>
           </div>
         </div>
