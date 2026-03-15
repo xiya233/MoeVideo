@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/gofiber/fiber/v2"
@@ -19,6 +20,7 @@ import (
 	"moevideo/backend/internal/db"
 	"moevideo/backend/internal/handlers"
 	"moevideo/backend/internal/importer"
+	"moevideo/backend/internal/middleware"
 	"moevideo/backend/internal/response"
 	"moevideo/backend/internal/storage"
 	"moevideo/backend/internal/transcode"
@@ -84,11 +86,13 @@ func main() {
 	})
 
 	server.Use(recover.New())
+	allowOrigins := strings.Join(cfg.CORSAllowedOrigins, ",")
 	server.Use(cors.New(cors.Config{
-		AllowOrigins:  "*",
-		AllowMethods:  "GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD",
-		AllowHeaders:  "Origin,Content-Type,Accept,Authorization,Range",
-		ExposeHeaders: "Content-Length,Content-Range,Accept-Ranges",
+		AllowOrigins:     allowOrigins,
+		AllowMethods:     "GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD",
+		AllowHeaders:     "Origin,Content-Type,Accept,Authorization,Range",
+		ExposeHeaders:    "Content-Length,Content-Range,Accept-Ranges",
+		AllowCredentials: true,
 	}))
 
 	server.Get("/healthz", func(c *fiber.Ctx) error {
@@ -100,6 +104,7 @@ func main() {
 	}
 
 	api := server.Group("/api/v1")
+	api.Use(middleware.RequireSameOriginWrites(cfg))
 	handlers.RegisterRoutes(api, appContainer)
 
 	workerCtx, cancelWorker := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -34,6 +34,53 @@ type apiResponse struct {
 	Data    json.RawMessage `json:"data"`
 }
 
+func doJSONRequestRaw(
+	t *testing.T,
+	srv *fiber.App,
+	method,
+	path string,
+	body interface{},
+	headers map[string]string,
+) (int, apiResponse, *http.Response) {
+	t.Helper()
+
+	var payload io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		payload = bytes.NewReader(b)
+	}
+	if payload == nil {
+		payload = http.NoBody
+	}
+
+	req := httptest.NewRequest(method, path, payload)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := srv.Test(req, -1)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+
+	var out apiResponse
+	if err := json.Unmarshal(bodyBytes, &out); err != nil {
+		t.Fatalf("unmarshal response: %v, body=%s", err, string(bodyBytes))
+	}
+
+	return resp.StatusCode, out, resp
+}
+
 func newTestServer(t *testing.T) (*fiber.App, *app.App) {
 	t.Helper()
 
@@ -101,41 +148,20 @@ func newTestServer(t *testing.T) (*fiber.App, *app.App) {
 
 func doJSONRequest(t *testing.T, srv *fiber.App, method, path string, body interface{}, headers map[string]string) (int, apiResponse) {
 	t.Helper()
+	status, out, _ := doJSONRequestRaw(t, srv, method, path, body, headers)
+	return status, out
+}
 
-	var payload io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("marshal body: %v", err)
+func cookieValueFromResponse(resp *http.Response, name string) string {
+	if resp == nil {
+		return ""
+	}
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == name {
+			return cookie.Value
 		}
-		payload = bytes.NewReader(b)
 	}
-	if payload == nil {
-		payload = http.NoBody
-	}
-
-	req := httptest.NewRequest(method, path, payload)
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-
-	resp, err := srv.Test(req, -1)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read response: %v", err)
-	}
-
-	var out apiResponse
-	if err := json.Unmarshal(bodyBytes, &out); err != nil {
-		t.Fatalf("unmarshal response: %v, body=%s", err, string(bodyBytes))
-	}
-	return resp.StatusCode, out
+	return ""
 }
 
 func issueCaptcha(t *testing.T, srv *fiber.App, scene string) (captchaID, captchaCode string) {
@@ -163,7 +189,7 @@ func registerUser(t *testing.T, srv *fiber.App, username, email, password string
 	t.Helper()
 
 	captchaID, captchaCode := issueCaptcha(t, srv, "register")
-	status, resp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/register", map[string]interface{}{
+	status, resp, httpResp := doJSONRequestRaw(t, srv, http.MethodPost, "/api/v1/auth/register", map[string]interface{}{
 		"username":         username,
 		"email":            email,
 		"password":         password,
@@ -179,15 +205,16 @@ func registerUser(t *testing.T, srv *fiber.App, username, email, password string
 		User struct {
 			ID string `json:"id"`
 		} `json:"user"`
-		Tokens struct {
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
-		} `json:"tokens"`
 	}
 	if err := json.Unmarshal(resp.Data, &payload); err != nil {
 		t.Fatalf("parse register response: %v", err)
 	}
-	return payload.User.ID, payload.Tokens.AccessToken, payload.Tokens.RefreshToken
+	accessToken = cookieValueFromResponse(httpResp, "access_token")
+	refreshToken = cookieValueFromResponse(httpResp, "refresh_token")
+	if accessToken == "" || refreshToken == "" {
+		t.Fatalf("register should set access_token and refresh_token cookies")
+	}
+	return payload.User.ID, accessToken, refreshToken
 }
 
 func TestAuthFlow(t *testing.T) {
@@ -207,7 +234,7 @@ func TestAuthFlow(t *testing.T) {
 	}
 
 	emailCaptchaID, emailCaptchaCode := issueCaptcha(t, srv, "login")
-	status, loginByEmail := doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{
+	status, loginByEmail, loginResp := doJSONRequestRaw(t, srv, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{
 		"account":      "alice@example.com",
 		"password":     "password123",
 		"captcha_id":   emailCaptchaID,
@@ -218,40 +245,48 @@ func TestAuthFlow(t *testing.T) {
 	}
 
 	var loginData struct {
-		Tokens struct {
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
-		} `json:"tokens"`
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
 	}
 	if err := json.Unmarshal(loginByEmail.Data, &loginData); err != nil {
 		t.Fatalf("parse login response: %v", err)
 	}
+	loginAccess := cookieValueFromResponse(loginResp, "access_token")
+	loginRefresh := cookieValueFromResponse(loginResp, "refresh_token")
+	if loginAccess == "" || loginRefresh == "" {
+		t.Fatalf("login should set access_token and refresh_token cookies")
+	}
 
-	status, refreshResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/refresh", map[string]interface{}{
-		"refresh_token": refresh,
-	}, nil)
+	status, refreshResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/refresh", nil, map[string]string{
+		"Authorization": "Bearer " + loginAccess,
+		"Cookie":        "refresh_token=" + refresh,
+	})
 	if status != http.StatusOK {
 		t.Fatalf("refresh should succeed, got %d", status)
 	}
 	var refreshed struct {
-		Tokens struct {
-			RefreshToken string `json:"refresh_token"`
-		} `json:"tokens"`
+		Refreshed bool `json:"refreshed"`
 	}
 	if err := json.Unmarshal(refreshResp.Data, &refreshed); err != nil {
 		t.Fatalf("parse refresh response: %v", err)
 	}
+	if !refreshed.Refreshed {
+		t.Fatalf("refresh response should include refreshed=true")
+	}
 
-	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/logout", map[string]interface{}{
-		"refresh_token": loginData.Tokens.RefreshToken,
-	}, map[string]string{"Authorization": "Bearer " + loginData.Tokens.AccessToken})
+	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/logout", nil, map[string]string{
+		"Authorization": "Bearer " + loginAccess,
+		"Cookie":        "refresh_token=" + loginRefresh,
+	})
 	if status != http.StatusOK {
 		t.Fatalf("logout should succeed, got %d", status)
 	}
 
-	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/refresh", map[string]interface{}{
-		"refresh_token": loginData.Tokens.RefreshToken,
-	}, nil)
+	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/refresh", nil, map[string]string{
+		"Authorization": "Bearer " + loginAccess,
+		"Cookie":        "refresh_token=" + loginRefresh,
+	})
 	if status != http.StatusUnauthorized {
 		t.Fatalf("revoked refresh should fail with 401, got %d", status)
 	}

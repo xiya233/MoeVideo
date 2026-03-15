@@ -25,13 +25,5 @@ export type RequestOptions = {
 };
 
 export type RequestContext = {
-  getAccessToken: () => string | null;
-  getRefreshToken: () => string | null;
-  onTokensRefreshed: (tokens: {
-    accessToken: string;
-    accessExpiresAt: string;
-    refreshToken: string;
-    refreshExpiresAt: string;
-  }) => void;
   onAuthFailed: () => void;
 };

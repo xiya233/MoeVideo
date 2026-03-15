@@ -15,6 +15,11 @@ type Config struct {
 	JWTSecret                 string
 	AccessTokenTTL            time.Duration
 	RefreshTokenTTL           time.Duration
+	AuthCookieDomain          string
+	AuthCookieSecure          bool
+	AuthCookieSameSite        string
+	AuthCookiePath            string
+	CORSAllowedOrigins        []string
 	StorageDriver             string
 	LocalStorageDir           string
 	PublicBaseURL             string
@@ -49,10 +54,15 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		Env:               getEnv("APP_ENV", "development"),
-		HTTPAddr:          getEnv("HTTP_ADDR", ":8080"),
-		DBPath:            getEnv("DB_PATH", "./data/moevideo.db"),
-		JWTSecret:         getEnv("JWT_SECRET", "change-me-in-production"),
+		Env:              getEnv("APP_ENV", "development"),
+		HTTPAddr:         getEnv("HTTP_ADDR", ":8080"),
+		DBPath:           getEnv("DB_PATH", "./data/moevideo.db"),
+		JWTSecret:        getEnv("JWT_SECRET", "change-me-in-production"),
+		AuthCookieDomain: strings.TrimSpace(getEnv("AUTH_COOKIE_DOMAIN", "")),
+		AuthCookiePath:   getEnv("AUTH_COOKIE_PATH", "/"),
+		AuthCookieSameSite: strings.ToLower(
+			strings.TrimSpace(getEnv("AUTH_COOKIE_SAMESITE", "lax")),
+		),
 		StorageDriver:     strings.ToLower(getEnv("STORAGE_DRIVER", "local")),
 		LocalStorageDir:   getEnv("LOCAL_STORAGE_DIR", "./storage/local"),
 		PublicBaseURL:     strings.TrimRight(getEnv("PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
@@ -71,6 +81,29 @@ func Load() (Config, error) {
 			"bun scripts/page_manifest_resolver.mjs",
 		),
 	}
+
+	cookieSecureRaw := strings.ToLower(strings.TrimSpace(getEnv("AUTH_COOKIE_SECURE", "")))
+	switch cookieSecureRaw {
+	case "1", "true", "yes":
+		cfg.AuthCookieSecure = true
+	case "0", "false", "no":
+		cfg.AuthCookieSecure = false
+	default:
+		cfg.AuthCookieSecure = cfg.Env == "production"
+	}
+	if cfg.Env == "production" {
+		cfg.AuthCookieSecure = true
+	}
+
+	switch cfg.AuthCookieSameSite {
+	case "strict", "lax", "none":
+	default:
+		return cfg, fmt.Errorf("invalid AUTH_COOKIE_SAMESITE: %s", cfg.AuthCookieSameSite)
+	}
+	if cfg.AuthCookiePath == "" {
+		cfg.AuthCookiePath = "/"
+	}
+	cfg.CORSAllowedOrigins = parseCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"))
 
 	accessTTL, err := time.ParseDuration(getEnv("ACCESS_TOKEN_TTL", "15m"))
 	if err != nil {
@@ -212,4 +245,17 @@ func getEnv(key, fallback string) string {
 		return val
 	}
 	return fallback
+}
+
+func parseCSV(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out
 }

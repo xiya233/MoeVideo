@@ -10,15 +10,17 @@ import (
 )
 
 const (
-	localUserID   = "auth_user_id"
-	localUsername = "auth_username"
+	localUserID            = "auth_user_id"
+	localUsername          = "auth_username"
+	AccessTokenCookieName  = "access_token"
+	RefreshTokenCookieName = "refresh_token"
 )
 
 func RequireAuth(a *app.App) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		token := bearerToken(c.Get("Authorization"))
+		token := tokenFromRequest(c)
 		if token == "" {
-			return response.Error(c, fiber.StatusUnauthorized, "missing bearer token")
+			return response.Error(c, fiber.StatusUnauthorized, "missing access token")
 		}
 		claims, err := a.JWT.ParseAccessToken(token)
 		if err != nil {
@@ -32,7 +34,7 @@ func RequireAuth(a *app.App) fiber.Handler {
 
 func OptionalAuth(a *app.App) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		token := bearerToken(c.Get("Authorization"))
+		token := tokenFromRequest(c)
 		if token == "" {
 			return c.Next()
 		}
@@ -44,6 +46,13 @@ func OptionalAuth(a *app.App) fiber.Handler {
 		c.Locals(localUsername, claims.Username)
 		return c.Next()
 	}
+}
+
+func tokenFromRequest(c *fiber.Ctx) string {
+	if token := strings.TrimSpace(c.Cookies(AccessTokenCookieName)); token != "" {
+		return token
+	}
+	return bearerToken(c.Get("Authorization"))
 }
 
 func CurrentUserID(c *fiber.Ctx) string {

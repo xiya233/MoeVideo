@@ -31,32 +31,12 @@ export function createApiClient(ctx: RequestContext) {
     }
 
     refreshPromise = (async () => {
-      const refreshToken = ctx.getRefreshToken();
-      if (!refreshToken) {
-        return false;
-      }
-
       try {
         const res = await fetch(`${API_BASE}/auth/refresh`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: asJsonBody({ refresh_token: refreshToken }),
+          credentials: "include",
         });
-        const envelope = await parseEnvelope<{
-          tokens: {
-            access_token: string;
-            access_expires_at: string;
-            refresh_token: string;
-            refresh_expires_at: string;
-          };
-        }>(res);
-
-        ctx.onTokensRefreshed({
-          accessToken: envelope.data.tokens.access_token,
-          accessExpiresAt: envelope.data.tokens.access_expires_at,
-          refreshToken: envelope.data.tokens.refresh_token,
-          refreshExpiresAt: envelope.data.tokens.refresh_expires_at,
-        });
+        await parseEnvelope<{ refreshed: boolean }>(res);
         return true;
       } catch {
         ctx.onAuthFailed();
@@ -76,19 +56,13 @@ export function createApiClient(ctx: RequestContext) {
       ...(options.headers ?? {}),
     };
 
-    if (options.auth !== false) {
-      const accessToken = ctx.getAccessToken();
-      if (accessToken) {
-        headers.Authorization = `Bearer ${accessToken}`;
-      }
-    }
-
     try {
       const res = await fetch(`${API_BASE}${path}`, {
         method,
         headers,
         body: options.body !== undefined ? asJsonBody(options.body) : undefined,
         cache: "no-store",
+        credentials: "include",
       });
 
       const envelope = await parseEnvelope<T>(res);

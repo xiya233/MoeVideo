@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 
 	"moevideo/backend/internal/auth"
+	"moevideo/backend/internal/middleware"
 	"moevideo/backend/internal/models"
 	"moevideo/backend/internal/response"
 	"moevideo/backend/internal/util"
@@ -28,14 +30,6 @@ type loginRequest struct {
 	Password    string `json:"password"`
 	CaptchaID   string `json:"captcha_id"`
 	CaptchaCode string `json:"captcha_code"`
-}
-
-type refreshRequest struct {
-	RefreshToken string `json:"refresh_token"`
-}
-
-type logoutRequest struct {
-	RefreshToken string `json:"refresh_token"`
 }
 
 func (h *Handler) Register(c *fiber.Ctx) error {
@@ -97,6 +91,7 @@ func (h *Handler) Register(c *fiber.Ctx) error {
 	if err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to create session")
 	}
+	h.setSessionCookies(c, tokens)
 
 	user, err := fetchUserBrief(h.app.DB, h.app.Storage, userID, true)
 	if err != nil {
@@ -104,8 +99,7 @@ func (h *Handler) Register(c *fiber.Ctx) error {
 	}
 
 	return response.Created(c, fiber.Map{
-		"user":   user,
-		"tokens": tokens,
+		"user": user,
 	})
 }
 
@@ -151,27 +145,24 @@ func (h *Handler) Login(c *fiber.Ctx) error {
 	if err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to create session")
 	}
+	h.setSessionCookies(c, tokens)
 	user, err := fetchUserBrief(h.app.DB, h.app.Storage, userID, true)
 	if err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to load user")
 	}
 
 	return response.OK(c, fiber.Map{
-		"user":   user,
-		"tokens": tokens,
+		"user": user,
 	})
 }
 
 func (h *Handler) Refresh(c *fiber.Ctx) error {
-	var req refreshRequest
-	if err := c.BodyParser(&req); err != nil {
-		return response.Error(c, fiber.StatusBadRequest, "invalid request body")
-	}
-	if strings.TrimSpace(req.RefreshToken) == "" {
+	refreshToken := strings.TrimSpace(c.Cookies(middleware.RefreshTokenCookieName))
+	if refreshToken == "" {
 		return response.Error(c, fiber.StatusBadRequest, "refresh_token is required")
 	}
 
-	hash := util.SHA256Hex(req.RefreshToken)
+	hash := util.SHA256Hex(refreshToken)
 	var userID, username, expiresAt string
 	row := h.app.DB.QueryRow(
 		`SELECT rt.user_id, u.username, rt.expires_at
@@ -212,21 +203,19 @@ func (h *Handler) Refresh(c *fiber.Ctx) error {
 	if err := tx.Commit(); err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to commit refresh")
 	}
+	h.setSessionCookies(c, tokens)
 
-	return response.OK(c, fiber.Map{"tokens": tokens})
+	return response.OK(c, fiber.Map{"refreshed": true})
 }
 
 func (h *Handler) Logout(c *fiber.Ctx) error {
-	var req logoutRequest
-	if err := c.BodyParser(&req); err != nil {
-		return response.Error(c, fiber.StatusBadRequest, "invalid request body")
-	}
-	if strings.TrimSpace(req.RefreshToken) == "" {
+	refreshToken := strings.TrimSpace(c.Cookies(middleware.RefreshTokenCookieName))
+	if refreshToken == "" {
 		return response.Error(c, fiber.StatusBadRequest, "refresh_token is required")
 	}
 
 	uid := currentUserID(c)
-	hash := util.SHA256Hex(req.RefreshToken)
+	hash := util.SHA256Hex(refreshToken)
 	res, err := h.app.DB.Exec(
 		`UPDATE auth_refresh_tokens
 		 SET revoked_at = ?
@@ -242,6 +231,7 @@ func (h *Handler) Logout(c *fiber.Ctx) error {
 	if affected == 0 {
 		return response.Error(c, fiber.StatusNotFound, "refresh token not found")
 	}
+	h.clearSessionCookies(c)
 	return response.OK(c, fiber.Map{"revoked": true})
 }
 
@@ -294,4 +284,75 @@ func (h *Handler) issueSessionTx(ctx context.Context, tx *sql.Tx, userID, userna
 		RefreshToken:     refreshToken,
 		RefreshExpiresAt: util.FormatTime(refreshExpiresAt),
 	}, nil
+}
+
+func (h *Handler) setSessionCookies(c *fiber.Ctx, pair models.TokenPair) {
+	accessExpiresAt, err := util.ParseTime(pair.AccessExpiresAt)
+	if err != nil {
+		accessExpiresAt = nowUTC().Add(h.app.Config.AccessTokenTTL)
+	}
+	refreshExpiresAt, err := util.ParseTime(pair.RefreshExpiresAt)
+	if err != nil {
+		refreshExpiresAt = nowUTC().Add(h.app.Config.RefreshTokenTTL)
+	}
+
+	sameSite := cookieSameSite(h.app.Config.AuthCookieSameSite)
+	c.Cookie(&fiber.Cookie{
+		Name:     middleware.AccessTokenCookieName,
+		Value:    pair.AccessToken,
+		Domain:   h.app.Config.AuthCookieDomain,
+		Path:     h.app.Config.AuthCookiePath,
+		Expires:  accessExpiresAt,
+		HTTPOnly: true,
+		Secure:   h.app.Config.AuthCookieSecure,
+		SameSite: sameSite,
+	})
+	c.Cookie(&fiber.Cookie{
+		Name:     middleware.RefreshTokenCookieName,
+		Value:    pair.RefreshToken,
+		Domain:   h.app.Config.AuthCookieDomain,
+		Path:     h.app.Config.AuthCookiePath,
+		Expires:  refreshExpiresAt,
+		HTTPOnly: true,
+		Secure:   h.app.Config.AuthCookieSecure,
+		SameSite: sameSite,
+	})
+}
+
+func (h *Handler) clearSessionCookies(c *fiber.Ctx) {
+	sameSite := cookieSameSite(h.app.Config.AuthCookieSameSite)
+	expired := time.Unix(0, 0).UTC()
+	c.Cookie(&fiber.Cookie{
+		Name:     middleware.AccessTokenCookieName,
+		Value:    "",
+		Domain:   h.app.Config.AuthCookieDomain,
+		Path:     h.app.Config.AuthCookiePath,
+		Expires:  expired,
+		MaxAge:   -1,
+		HTTPOnly: true,
+		Secure:   h.app.Config.AuthCookieSecure,
+		SameSite: sameSite,
+	})
+	c.Cookie(&fiber.Cookie{
+		Name:     middleware.RefreshTokenCookieName,
+		Value:    "",
+		Domain:   h.app.Config.AuthCookieDomain,
+		Path:     h.app.Config.AuthCookiePath,
+		Expires:  expired,
+		MaxAge:   -1,
+		HTTPOnly: true,
+		Secure:   h.app.Config.AuthCookieSecure,
+		SameSite: sameSite,
+	})
+}
+
+func cookieSameSite(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "strict":
+		return "Strict"
+	case "none":
+		return "None"
+	default:
+		return "Lax"
+	}
 }

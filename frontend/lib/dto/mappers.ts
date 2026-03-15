@@ -306,7 +306,6 @@ export function mapDanmakuListData(value: unknown): DanmakuListData {
 export function mapLoginRegisterData(value: unknown): LoginOrRegisterData {
   const src = obj(value);
   const user = obj(src.user);
-  const tokens = obj(src.tokens);
   return {
     user: {
       id: str(user.id),
@@ -322,12 +321,6 @@ export function mapLoginRegisterData(value: unknown): LoginOrRegisterData {
       public_favorites: bool(user.public_favorites),
       public_following: bool(user.public_following),
       public_followers: bool(user.public_followers),
-    },
-    tokens: {
-      access_token: str(tokens.access_token),
-      access_expires_at: str(tokens.access_expires_at),
-      refresh_token: str(tokens.refresh_token),
-      refresh_expires_at: str(tokens.refresh_expires_at),
     },
   };
 }

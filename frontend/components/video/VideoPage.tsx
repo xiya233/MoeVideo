@@ -56,7 +56,7 @@ function formatDurationLabel(duration: number): string {
 
 const PROGRESS_KEY_PREFIX = "moevideo.progress.v1:";
 
-function resolveDanmakuWSURL(videoId: string, accessToken?: string): string {
+function resolveDanmakuWSURL(videoId: string): string {
   const base = API_BASE.trim();
   let wsBase = base;
   if (base.startsWith("http://")) {
@@ -73,11 +73,7 @@ function resolveDanmakuWSURL(videoId: string, accessToken?: string): string {
   }
 
   const normalizedBase = wsBase.replace(/\/+$/, "");
-  const url = new URL(`${normalizedBase}/videos/${videoId}/danmaku/ws`);
-  if (accessToken) {
-    url.searchParams.set("access_token", accessToken);
-  }
-  return url.toString();
+  return new URL(`${normalizedBase}/videos/${videoId}/danmaku/ws`).toString();
 }
 
 function progressStorageKey(videoId: string): string {
@@ -205,7 +201,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
   const progressRef = useRef<{ positionSec: number; durationSec: number }>({ positionSec: 0, durationSec: 0 });
   const lastPersistedSecRef = useRef(-1);
   const persistingProgressRef = useRef(false);
-  const lastSessionTokenRef = useRef<string | null>(null);
+  const lastSessionUserIDRef = useRef<string | null>(null);
   const stableQualitiesRef = useRef<{ signature: string; items: PlayerQualityItem[] }>({
     signature: "",
     items: [],
@@ -436,22 +432,6 @@ export function VideoPage({ videoId }: VideoPageProps) {
   }, [fetchPageData, ready]);
 
   useEffect(() => {
-    if (!ready) {
-      return;
-    }
-    const token = session?.tokens.accessToken ?? "";
-    if (lastSessionTokenRef.current === null) {
-      lastSessionTokenRef.current = token;
-      return;
-    }
-    if (lastSessionTokenRef.current === token) {
-      return;
-    }
-    lastSessionTokenRef.current = token;
-    void refreshDetailStatus();
-  }, [ready, refreshDetailStatus, session?.tokens.accessToken]);
-
-  useEffect(() => {
     if (!followHint) {
       return;
     }
@@ -462,6 +442,22 @@ export function VideoPage({ videoId }: VideoPageProps) {
       window.clearTimeout(timer);
     };
   }, [followHint]);
+
+  useEffect(() => {
+    if (!ready) {
+      return;
+    }
+    const userID = session?.user.id ?? "";
+    if (lastSessionUserIDRef.current === null) {
+      lastSessionUserIDRef.current = userID;
+      return;
+    }
+    if (lastSessionUserIDRef.current === userID) {
+      return;
+    }
+    lastSessionUserIDRef.current = userID;
+    void refreshDetailStatus();
+  }, [ready, refreshDetailStatus, session?.user.id]);
 
   useEffect(() => {
     if (!detail || detail.status !== "processing") {
@@ -505,8 +501,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
       if (disposed) {
         return;
       }
-      const accessToken = session?.tokens.accessToken ?? "";
-      const socket = new WebSocket(resolveDanmakuWSURL(videoId, accessToken || undefined));
+      const socket = new WebSocket(resolveDanmakuWSURL(videoId));
       wsRef.current = socket;
 
       socket.onopen = () => {
@@ -558,7 +553,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
         wsRef.current = null;
       }
     };
-  }, [detail?.status, ingestDanmaku, session?.tokens.accessToken, videoId]);
+  }, [detail?.status, ingestDanmaku, videoId]);
 
   useEffect(() => {
     if (!detail || detail.status !== "published" || hasTrackedView.current) {

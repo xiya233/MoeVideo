@@ -263,19 +263,8 @@ export type LoginOrRegisterData = {
     public_following?: boolean;
     public_followers?: boolean;
   };
-  tokens: {
-    access_token: string;
-    access_expires_at: string;
-    refresh_token: string;
-    refresh_expires_at: string;
-  };
 };
 
 export type RefreshData = {
-  tokens: {
-    access_token: string;
-    access_expires_at: string;
-    refresh_token: string;
-    refresh_expires_at: string;
-  };
+  refreshed: boolean;
 };

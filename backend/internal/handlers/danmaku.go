@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
 
+	"moevideo/backend/internal/middleware"
 	"moevideo/backend/internal/pagination"
 	"moevideo/backend/internal/response"
 )
@@ -384,7 +386,10 @@ func (h *Handler) SubscribeVideoDanmakuWS(c *websocket.Conn) {
 }
 
 func (h *Handler) resolveWSViewerID(c *websocket.Conn) string {
-	accessToken := strings.TrimSpace(c.Query("access_token"))
+	accessToken := strings.TrimSpace(cookieValueFromHeader(c.Headers("Cookie"), middleware.AccessTokenCookieName))
+	if accessToken == "" {
+		accessToken = strings.TrimSpace(c.Query("access_token"))
+	}
 	if accessToken == "" {
 		accessToken = extractBearerToken(c.Headers("Authorization"))
 	}
@@ -396,6 +401,17 @@ func (h *Handler) resolveWSViewerID(c *websocket.Conn) string {
 		return ""
 	}
 	return claims.UserID
+}
+
+func cookieValueFromHeader(raw, key string) string {
+	header := http.Header{}
+	header.Set("Cookie", raw)
+	req := http.Request{Header: header}
+	cookie, err := req.Cookie(key)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cookie.Value)
 }
 
 func (h *Handler) loadVideoVisibility(ctx context.Context, videoID string) (videoVisibility, error) {
