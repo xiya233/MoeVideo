@@ -55,7 +55,10 @@ function formatBytes(value: number): string {
   return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-function formatStatus(status: ImportJob["status"]): string {
+function formatStatus(status: ImportJob["status"], draftExpired = false): string {
+  if (status === "draft" && draftExpired) {
+    return "已过期";
+  }
   switch (status) {
     case "draft":
       return "待开始";
@@ -74,8 +77,8 @@ function formatStatus(status: ImportJob["status"]): string {
   }
 }
 
-function isJobActive(status: ImportJob["status"]): boolean {
-  return status === "draft" || status === "queued" || status === "downloading";
+function isJobPollingStatus(status: ImportJob["status"]): boolean {
+  return status === "queued" || status === "downloading";
 }
 
 function itemStatusLabel(status: ImportItem["status"]): string {
@@ -134,7 +137,7 @@ export function ImportPage() {
   const [jobsNextCursor, setJobsNextCursor] = useState("");
   const [jobsLoadingMore, setJobsLoadingMore] = useState(false);
   const [jobsLoadMoreError, setJobsLoadMoreError] = useState("");
-  const [jobsClearing, setJobsClearing] = useState(false);
+  const [jobsClearingScope, setJobsClearingScope] = useState<"finished" | "expired" | null>(null);
   const [jobsError, setJobsError] = useState("");
 
   const pollRef = useRef<number | null>(null);
@@ -249,7 +252,7 @@ export function ImportPage() {
         void (async () => {
           try {
             const next = await loadJobDetail(jobID);
-            if (!isJobActive(next.job.status)) {
+            if (!isJobPollingStatus(next.job.status)) {
               stopPolling();
               await loadJobs();
             }
@@ -287,10 +290,11 @@ export function ImportPage() {
       setInspectJob(mapImportJob(result.job));
       const mappedItems = (result.items ?? []).map(mapImportItem);
       setInspectItems(mappedItems);
-      setSelectedIndexes(new Set(mappedItems.map((item) => item.file_index)));
+      const persistedSelected = mappedItems.filter((item) => item.selected).map((item) => item.file_index);
+      setSelectedIndexes(new Set(persistedSelected.length > 0 ? persistedSelected : mappedItems.map((item) => item.file_index)));
       setActiveJobID(result.job.id);
       const detail = await loadJobDetail(result.job.id);
-      if (isJobActive(detail.job.status)) {
+      if (isJobPollingStatus(detail.job.status)) {
         openPolling(result.job.id);
       } else {
         stopPolling();
@@ -309,6 +313,10 @@ export function ImportPage() {
   const onStartImport = async () => {
     if (!inspectJob) {
       setStartError("请先完成种子解析");
+      return;
+    }
+    if (inspectJob.draft_expired) {
+      setStartError("草稿已过期，请重新解析种子");
       return;
     }
     if (selectedIndexes.size === 0) {
@@ -338,7 +346,7 @@ export function ImportPage() {
 
       setActiveJobID(inspectJob.id);
       const detail = await loadJobDetail(inspectJob.id);
-      if (isJobActive(detail.job.status)) {
+      if (isJobPollingStatus(detail.job.status)) {
         openPolling(inspectJob.id);
       }
       await loadJobs();
@@ -376,7 +384,7 @@ export function ImportPage() {
       });
       setActiveJobID(result.job_id);
       const detail = await loadJobDetail(result.job_id);
-      if (isJobActive(detail.job.status)) {
+      if (isJobPollingStatus(detail.job.status)) {
         openPolling(result.job_id);
       } else {
         stopPolling();
@@ -411,29 +419,92 @@ export function ImportPage() {
     return activeJobDetail;
   }, [activeJobDetail, activeJobID]);
 
-  const clearFinishedJobs = async () => {
-    if (!session || jobsClearing) {
+  const applyDraftToEditor = (detail: ImportJobDetailData) => {
+    const draftItems = detail.items;
+    const persistedSelected = draftItems.filter((item) => item.selected).map((item) => item.file_index);
+    const selected =
+      persistedSelected.length > 0 ? persistedSelected : draftItems.map((item) => item.file_index);
+
+    setImportMode("torrent");
+    setInspectJob(detail.job);
+    setInspectItems(draftItems);
+    setSelectedIndexes(new Set(selected));
+    setCategoryID(detail.job.category_id ? String(detail.job.category_id) : "");
+    setTagInput(detail.job.tags.join(","));
+    setVisibility(detail.job.visibility);
+    setImportTitle(detail.job.custom_title ?? "");
+    setImportTitlePrefix(detail.job.custom_title_prefix ?? "");
+    setImportDescription(detail.job.custom_description ?? "");
+    setInspectError("");
+    setStartError("");
+    setURLError("");
+  };
+
+  const resumeDraftJob = async (jobID: string) => {
+    try {
+      setActiveJobID(jobID);
+      const detail = await loadJobDetail(jobID);
+      if (detail.job.source_type !== "torrent" || detail.job.status !== "draft") {
+        setStartError("当前任务不是可继续的 BT 草稿");
+        return;
+      }
+      if (detail.job.draft_expired) {
+        setStartError("草稿已过期，请重新解析种子");
+        return;
+      }
+      applyDraftToEditor(detail);
+      stopPolling();
+    } catch (err) {
+      setJobsError(err instanceof Error ? err.message : "恢复草稿失败");
+    }
+  };
+
+  const clearJobsByScope = async (scope: "finished" | "expired") => {
+    if (!session || jobsClearingScope) {
       return;
     }
-    if (!window.confirm("确认清理所有已结束导入记录吗？此操作不可撤销。")) {
+    const confirmText =
+      scope === "expired"
+        ? "确认清理所有已过期草稿吗？此操作不可撤销。"
+        : "确认清理所有已结束导入记录吗？此操作不可撤销。";
+    if (!window.confirm(confirmText)) {
       return;
     }
-    setJobsClearing(true);
+    setJobsClearingScope(scope);
     setJobsError("");
     setJobsLoadMoreError("");
     try {
-      await importsApi.clearFinishedJobs(request);
-      if (activeJobDetail && !isJobActive(activeJobDetail.job.status)) {
+      await importsApi.clearFinishedJobs(request, scope);
+      if (
+        activeJobDetail &&
+        ((scope === "finished" && !isJobPollingStatus(activeJobDetail.job.status) && activeJobDetail.job.status !== "draft") ||
+          (scope === "expired" && activeJobDetail.job.status === "draft" && activeJobDetail.job.draft_expired))
+      ) {
         stopPolling();
         setActiveJobID("");
         setActiveJobDetail(null);
         setActiveJobError("");
       }
+      if (scope === "expired" && inspectJob?.id) {
+        try {
+          const draftDetail = await loadJobDetail(inspectJob.id);
+          if (draftDetail.job.draft_expired) {
+            setInspectJob(null);
+            setInspectItems([]);
+            setSelectedIndexes(new Set());
+            setStartError("当前草稿已过期，请重新解析种子");
+          }
+        } catch {
+          setInspectJob(null);
+          setInspectItems([]);
+          setSelectedIndexes(new Set());
+        }
+      }
       await loadJobs();
     } catch (err) {
       setJobsError(err instanceof Error ? err.message : "清理导入记录失败");
     } finally {
-      setJobsClearing(false);
+      setJobsClearingScope(null);
     }
   };
 
@@ -784,7 +855,7 @@ export function ImportPage() {
               <button
                 type="button"
                 onClick={() => void onStartImport()}
-                disabled={startPending || inspectItems.length === 0}
+                disabled={startPending || inspectItems.length === 0 || Boolean(inspectJob?.draft_expired)}
                 className="rounded-xl bg-primary px-5 py-2 text-sm font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {startPending ? "提交中..." : "开始导入"}
@@ -806,12 +877,14 @@ export function ImportPage() {
                   ? "bg-emerald-100 text-emerald-700"
                   : activeDetail.job.status === "partial"
                     ? "bg-amber-100 text-amber-700"
+                    : activeDetail.job.status === "draft" && activeDetail.job.draft_expired
+                      ? "bg-slate-200 text-slate-700"
                     : activeDetail.job.status === "failed"
                       ? "bg-rose-100 text-rose-700"
                       : "bg-sky-100 text-sky-700",
               )}
             >
-              {formatStatus(activeDetail.job.status)}
+              {formatStatus(activeDetail.job.status, activeDetail.job.draft_expired)}
             </span>
           ) : null}
         </div>
@@ -873,14 +946,24 @@ export function ImportPage() {
       <section className={cardClass}>
         <div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="text-lg font-bold text-slate-900">最近导入任务</h2>
-          <button
-            type="button"
-            onClick={() => void clearFinishedJobs()}
-            disabled={jobsClearing}
-            className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {jobsClearing ? "清理中..." : "清理已结束记录"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void clearJobsByScope("expired")}
+              disabled={Boolean(jobsClearingScope)}
+              className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {jobsClearingScope === "expired" ? "清理中..." : "清理已过期草稿"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void clearJobsByScope("finished")}
+              disabled={Boolean(jobsClearingScope)}
+              className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {jobsClearingScope === "finished" ? "清理中..." : "清理已结束记录"}
+            </button>
+          </div>
         </div>
         {jobsError ? <p className="mb-3 text-sm text-rose-600">{jobsError}</p> : null}
 
@@ -890,28 +973,44 @@ export function ImportPage() {
           <>
             <div className="space-y-3">
               {jobs.map((job) => (
-                <button
+                <div
                   key={job.id}
-                  type="button"
-                  className="flex w-full items-center justify-between rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-left transition hover:border-primary/40"
-                  onClick={() => {
-                    setActiveJobID(job.id);
-                    void loadJobDetail(job.id);
-                    if (isJobActive(job.status)) {
-                      openPolling(job.id);
-                    } else {
-                      stopPolling();
-                    }
-                  }}
+                  className="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 transition hover:border-primary/40"
                 >
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-slate-800">{importJobTitle(job)}</p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {job.completed_files}/{job.selected_files} 完成 · 失败 {job.failed_files}
-                    </p>
+                  <div className="flex items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 text-left"
+                      onClick={() => {
+                        setActiveJobID(job.id);
+                        void loadJobDetail(job.id);
+                        if (isJobPollingStatus(job.status)) {
+                          openPolling(job.id);
+                        } else {
+                          stopPolling();
+                        }
+                      }}
+                    >
+                      <p className="truncate text-sm font-medium text-slate-800">{importJobTitle(job)}</p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {job.completed_files}/{job.selected_files} 完成 · 失败 {job.failed_files}
+                      </p>
+                    </button>
+                    <span className="shrink-0 text-xs font-semibold text-slate-600">{formatStatus(job.status, job.draft_expired)}</span>
                   </div>
-                  <span className="text-xs font-semibold text-slate-600">{formatStatus(job.status)}</span>
-                </button>
+                  {job.source_type === "torrent" && job.status === "draft" ? (
+                    <div className="mt-3 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => void resumeDraftJob(job.id)}
+                        disabled={Boolean(job.draft_expired)}
+                        className="rounded-lg border border-primary/30 px-3 py-1.5 text-xs font-semibold text-primary transition hover:border-primary hover:bg-primary/5 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400 disabled:hover:bg-transparent"
+                      >
+                        {job.draft_expired ? "已过期，仅可删除" : "继续导入"}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               ))}
             </div>
             {jobsLoadMoreError ? <p className="mt-3 text-sm text-rose-600">{jobsLoadMoreError}</p> : null}

@@ -66,8 +66,9 @@ export const importsApi = {
     return request<ImportJobsData>(`/imports${buildQuery(params)}`, { auth: true });
   },
 
-  clearFinishedJobs(request: ApiRequest) {
-    return request<{ deleted: number }>("/imports", {
+  clearFinishedJobs(request: ApiRequest, scope?: "finished" | "expired" | "all_clearable") {
+    const query = scope ? `?scope=${encodeURIComponent(scope)}` : "";
+    return request<{ deleted: number }>(`/imports${query}`, {
       method: "DELETE",
       auth: true,
     });

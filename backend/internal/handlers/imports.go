@@ -112,6 +112,7 @@ func (h *Handler) InspectTorrentImport(c *fiber.Ctx) error {
 			FileIndex: idx,
 			FilePath:  displayPath,
 			FileSize:  fi.Length,
+			Selected:  true,
 			Status:    "pending",
 		})
 	}
@@ -142,7 +143,7 @@ INSERT INTO video_import_jobs (
 	created_at, updated_at
 ) VALUES (?, ?, 'torrent', ?, ?, ?, 'draft',
 	NULL, '[]', 'public', 0, ?,
-	?, 0, 0, 0, 0,
+	?, ?, 0, 0, 0,
 	?, NULL, NULL, ?, NULL,
 	?, ?)
 `,
@@ -152,6 +153,7 @@ INSERT INTO video_import_jobs (
 		infoHash,
 		torrentBytes,
 		maxAttempts,
+		len(candidates),
 		len(candidates),
 		nowStr,
 		expiresAt,
@@ -168,7 +170,7 @@ INSERT INTO video_import_items (
 	id, job_id, file_index, file_path, file_size_bytes,
 	selected, status, error_message, media_object_id, video_id,
 	created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, 0, 'pending', NULL, NULL, NULL, ?, ?)
+) VALUES (?, ?, ?, ?, ?, 1, 'pending', NULL, NULL, NULL, ?, ?)
 `,
 			item.ID,
 			jobID,
@@ -202,22 +204,26 @@ INSERT INTO video_import_items (
 
 	return response.Created(c, fiber.Map{
 		"job": fiber.Map{
-			"id":              jobID,
-			"source_type":     "torrent",
-			"source_filename": req.Filename,
-			"info_hash":       infoHash,
-			"status":          "draft",
-			"visibility":      "public",
-			"tags":            []string{},
-			"total_files":     len(candidates),
-			"selected_files":  0,
-			"completed_files": 0,
-			"failed_files":    0,
-			"progress":        0,
-			"available_at":    nowStr,
-			"expires_at":      expiresAt,
-			"created_at":      nowStr,
-			"updated_at":      nowStr,
+			"id":                  jobID,
+			"source_type":         "torrent",
+			"source_filename":     req.Filename,
+			"info_hash":           infoHash,
+			"custom_title":        nil,
+			"custom_title_prefix": nil,
+			"custom_description":  "",
+			"status":              "draft",
+			"draft_expired":       false,
+			"visibility":          "public",
+			"tags":                []string{},
+			"total_files":         len(candidates),
+			"selected_files":      len(candidates),
+			"completed_files":     0,
+			"failed_files":        0,
+			"progress":            0,
+			"available_at":        nowStr,
+			"expires_at":          expiresAt,
+			"created_at":          nowStr,
+			"updated_at":          nowStr,
 		},
 		"items": itemPayload,
 	})
@@ -291,12 +297,13 @@ func (h *Handler) StartTorrentImport(c *fiber.Ctx) error {
 	var (
 		status      string
 		existingUID string
+		expiresAt   string
 	)
 	err = tx.QueryRowContext(c.UserContext(), `
-SELECT status, user_id
+SELECT status, user_id, COALESCE(expires_at, '')
 FROM video_import_jobs
 WHERE id = ?
-LIMIT 1`, req.JobID).Scan(&status, &existingUID)
+LIMIT 1`, req.JobID).Scan(&status, &existingUID, &expiresAt)
 	if err != nil {
 		if isNotFound(err) {
 			return response.Error(c, fiber.StatusNotFound, "import job not found")
@@ -308,6 +315,9 @@ LIMIT 1`, req.JobID).Scan(&status, &existingUID)
 	}
 	if status != "draft" {
 		return response.Error(c, fiber.StatusConflict, "import job is not in draft status")
+	}
+	if isImportDraftExpired(status, expiresAt, nowUTC()) {
+		return response.Error(c, fiber.StatusConflict, "import draft is expired, please inspect torrent again")
 	}
 
 	var exists int
@@ -542,6 +552,7 @@ func (h *Handler) ListImportJobs(c *fiber.Ctx) error {
 SELECT id, source_type, COALESCE(source_filename, ''), COALESCE(info_hash, ''), status,
        COALESCE(source_url, ''), COALESCE(resolved_media_url, ''), COALESCE(resolver_name, ''),
        COALESCE(ytdlp_param_mode, 'safe'),
+       COALESCE(custom_title, ''), COALESCE(custom_title_prefix, ''), COALESCE(custom_description, ''),
        COALESCE(category_id, 0), tags_json, visibility,
        total_files, selected_files, completed_files, failed_files, progress,
        COALESCE(available_at, ''), COALESCE(started_at, ''), COALESCE(finished_at, ''),
@@ -581,6 +592,9 @@ WHERE user_id = ?`
 		ResolvedURL   string
 		ResolverName  string
 		YTDLPMode     string
+		CustomTitle   string
+		CustomPrefix  string
+		CustomDesc    string
 		CategoryID    int64
 		TagsJSON      string
 		Visibility    string
@@ -611,6 +625,9 @@ WHERE user_id = ?`
 			&item.ResolvedURL,
 			&item.ResolverName,
 			&item.YTDLPMode,
+			&item.CustomTitle,
+			&item.CustomPrefix,
+			&item.CustomDesc,
 			&item.CategoryID,
 			&item.TagsJSON,
 			&item.Visibility,
@@ -647,32 +664,37 @@ WHERE user_id = ?`
 	}
 
 	items := make([]fiber.Map, 0, len(jobs))
+	now := nowUTC()
 	for _, job := range jobs {
 		items = append(items, fiber.Map{
-			"id":                 job.ID,
-			"source_type":        job.SourceType,
-			"source_filename":    job.SourceFile,
-			"info_hash":          job.InfoHash,
-			"source_url":         job.SourceURL,
-			"resolved_media_url": job.ResolvedURL,
-			"resolver_name":      job.ResolverName,
-			"ytdlp_param_mode":   job.YTDLPMode,
-			"status":             job.Status,
-			"category_id":        nullableCategory(job.CategoryID),
-			"tags":               parseImportTags(job.TagsJSON),
-			"visibility":         job.Visibility,
-			"total_files":        job.TotalFiles,
-			"selected_files":     job.SelectedFiles,
-			"completed_files":    job.Completed,
-			"failed_files":       job.Failed,
-			"progress":           job.Progress,
-			"available_at":       job.AvailableAt,
-			"started_at":         job.StartedAt,
-			"finished_at":        job.FinishedAt,
-			"expires_at":         job.ExpiresAt,
-			"error_message":      job.ErrorMessage,
-			"created_at":         job.CreatedAt,
-			"updated_at":         job.UpdatedAt,
+			"id":                  job.ID,
+			"source_type":         job.SourceType,
+			"source_filename":     job.SourceFile,
+			"info_hash":           job.InfoHash,
+			"source_url":          job.SourceURL,
+			"resolved_media_url":  job.ResolvedURL,
+			"resolver_name":       job.ResolverName,
+			"ytdlp_param_mode":    job.YTDLPMode,
+			"custom_title":        nullableString(job.CustomTitle),
+			"custom_title_prefix": nullableString(job.CustomPrefix),
+			"custom_description":  job.CustomDesc,
+			"status":              job.Status,
+			"draft_expired":       isImportDraftExpired(job.Status, job.ExpiresAt, now),
+			"category_id":         nullableCategory(job.CategoryID),
+			"tags":                parseImportTags(job.TagsJSON),
+			"visibility":          job.Visibility,
+			"total_files":         job.TotalFiles,
+			"selected_files":      job.SelectedFiles,
+			"completed_files":     job.Completed,
+			"failed_files":        job.Failed,
+			"progress":            job.Progress,
+			"available_at":        job.AvailableAt,
+			"started_at":          job.StartedAt,
+			"finished_at":         job.FinishedAt,
+			"expires_at":          job.ExpiresAt,
+			"error_message":       job.ErrorMessage,
+			"created_at":          job.CreatedAt,
+			"updated_at":          job.UpdatedAt,
 		})
 	}
 
@@ -681,13 +703,39 @@ WHERE user_id = ?`
 
 func (h *Handler) ClearFinishedImportJobs(c *fiber.Ctx) error {
 	uid := currentUserID(c)
-	res, err := h.app.DB.ExecContext(
-		c.UserContext(),
-		`DELETE FROM video_import_jobs
-		 WHERE user_id = ?
-		   AND status IN ('succeeded', 'partial', 'failed')`,
-		uid,
+	scope := strings.TrimSpace(strings.ToLower(c.Query("scope")))
+	if scope == "" {
+		scope = "finished"
+	}
+	var (
+		query string
+		args  []interface{}
 	)
+	switch scope {
+	case "finished":
+		query = `DELETE FROM video_import_jobs
+		 WHERE user_id = ?
+		   AND status IN ('succeeded', 'partial', 'failed')`
+		args = []interface{}{uid}
+	case "expired":
+		query = `DELETE FROM video_import_jobs
+		 WHERE user_id = ?
+		   AND status = 'draft'
+		   AND expires_at <> ''
+		   AND expires_at < ?`
+		args = []interface{}{uid, nowString()}
+	case "all_clearable":
+		query = `DELETE FROM video_import_jobs
+		 WHERE user_id = ?
+		   AND (
+		    status IN ('succeeded', 'partial', 'failed')
+		    OR (status = 'draft' AND expires_at <> '' AND expires_at < ?)
+		   )`
+		args = []interface{}{uid, nowString()}
+	default:
+		return response.Error(c, fiber.StatusBadRequest, "invalid scope")
+	}
+	res, err := h.app.DB.ExecContext(c.UserContext(), query, args...)
 	if err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to clear import jobs")
 	}
@@ -711,6 +759,9 @@ func (h *Handler) GetImportJobDetail(c *fiber.Ctx) error {
 		resolvedMedia  string
 		resolverName   string
 		ytdlpMode      string
+		customTitle    string
+		customPrefix   string
+		customDesc     string
 		status         string
 		categoryID     sql.NullInt64
 		tagsJSON       string
@@ -733,6 +784,7 @@ func (h *Handler) GetImportJobDetail(c *fiber.Ctx) error {
 SELECT user_id, source_type, COALESCE(source_filename, ''), COALESCE(info_hash, ''),
        COALESCE(source_url, ''), COALESCE(resolved_media_url, ''), COALESCE(resolver_name, ''),
        COALESCE(ytdlp_param_mode, 'safe'),
+       COALESCE(custom_title, ''), COALESCE(custom_title_prefix, ''), COALESCE(custom_description, ''),
        status,
        category_id, tags_json, visibility,
        total_files, selected_files, completed_files, failed_files, progress,
@@ -749,6 +801,9 @@ LIMIT 1`, jobID).Scan(
 		&resolvedMedia,
 		&resolverName,
 		&ytdlpMode,
+		&customTitle,
+		&customPrefix,
+		&customDesc,
 		&status,
 		&categoryID,
 		&tagsJSON,
@@ -842,30 +897,34 @@ ORDER BY file_index ASC`, jobID)
 
 	return response.OK(c, fiber.Map{
 		"job": fiber.Map{
-			"id":                 jobID,
-			"source_type":        sourceType,
-			"source_filename":    sourceFilename,
-			"info_hash":          infoHash,
-			"source_url":         sourceURL,
-			"resolved_media_url": resolvedMedia,
-			"resolver_name":      resolverName,
-			"ytdlp_param_mode":   ytdlpMode,
-			"status":             status,
-			"category_id":        nullableCategoryFromNull(categoryID),
-			"tags":               parseImportTags(tagsJSON),
-			"visibility":         visibility,
-			"total_files":        totalFiles,
-			"selected_files":     selectedFiles,
-			"completed_files":    completedFiles,
-			"failed_files":       failedFiles,
-			"progress":           progress,
-			"available_at":       maybeString(availableAt),
-			"started_at":         maybeString(startedAt),
-			"finished_at":        maybeString(finishedAt),
-			"expires_at":         maybeString(expiresAt),
-			"error_message":      maybeString(errorMessage),
-			"created_at":         createdAt,
-			"updated_at":         updatedAt,
+			"id":                  jobID,
+			"source_type":         sourceType,
+			"source_filename":     sourceFilename,
+			"info_hash":           infoHash,
+			"source_url":          sourceURL,
+			"resolved_media_url":  resolvedMedia,
+			"resolver_name":       resolverName,
+			"ytdlp_param_mode":    ytdlpMode,
+			"custom_title":        nullableString(customTitle),
+			"custom_title_prefix": nullableString(customPrefix),
+			"custom_description":  customDesc,
+			"status":              status,
+			"draft_expired":       isImportDraftExpired(status, maybeString(expiresAt), nowUTC()),
+			"category_id":         nullableCategoryFromNull(categoryID),
+			"tags":                parseImportTags(tagsJSON),
+			"visibility":          visibility,
+			"total_files":         totalFiles,
+			"selected_files":      selectedFiles,
+			"completed_files":     completedFiles,
+			"failed_files":        failedFiles,
+			"progress":            progress,
+			"available_at":        maybeString(availableAt),
+			"started_at":          maybeString(startedAt),
+			"finished_at":         maybeString(finishedAt),
+			"expires_at":          maybeString(expiresAt),
+			"error_message":       maybeString(errorMessage),
+			"created_at":          createdAt,
+			"updated_at":          updatedAt,
 		},
 		"items":             items,
 		"created_video_ids": createdVideoIDs,
@@ -1125,4 +1184,19 @@ func nullableCategoryFromNull(v sql.NullInt64) interface{} {
 		return nil
 	}
 	return v.Int64
+}
+
+func isImportDraftExpired(status, expiresAt string, now time.Time) bool {
+	if status != "draft" {
+		return false
+	}
+	expiresAt = strings.TrimSpace(expiresAt)
+	if expiresAt == "" {
+		return false
+	}
+	expires, err := util.ParseTime(expiresAt)
+	if err != nil {
+		return false
+	}
+	return now.After(expires)
 }

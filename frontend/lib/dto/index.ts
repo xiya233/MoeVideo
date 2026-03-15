@@ -182,7 +182,11 @@ export type ImportJob = {
   resolved_media_url?: string;
   resolver_name?: string;
   ytdlp_param_mode?: "safe" | "advanced";
+  custom_title?: string;
+  custom_title_prefix?: string;
+  custom_description?: string;
   status: ImportJobStatus;
+  draft_expired?: boolean;
   category_id?: number;
   tags: string[];
   visibility: "public" | "private" | "unlisted";

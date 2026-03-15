@@ -2039,6 +2039,195 @@ func TestStartTorrentImportPersistsCustomMetadata(t *testing.T) {
 	}
 }
 
+func TestStartTorrentImportRejectsExpiredDraft(t *testing.T) {
+	srv, container := newTestServer(t)
+	container.Config.ImportMaxFiles = 20
+	userID, accessToken, _ := registerUser(t, srv, "torrent-expired", "torrent-expired@example.com", "password123")
+	categoryID := createActiveCategory(t, container, "torrent-expired-cat", "Torrent Expired Category")
+
+	now := time.Now().UTC()
+	nowStr := util.FormatTime(now)
+	jobID := "import-job-" + uuid.NewString()
+	itemID := "import-item-" + uuid.NewString()
+
+	if _, err := container.DB.Exec(
+		`INSERT INTO video_import_jobs (
+			id, user_id, source_type, source_filename, info_hash, torrent_data, status,
+			category_id, tags_json, visibility, attempts, max_attempts,
+			total_files, selected_files, completed_files, failed_files, progress,
+			available_at, started_at, finished_at, expires_at, error_message,
+			created_at, updated_at
+		) VALUES (?, ?, 'torrent', 'expired.torrent', 'deadbeef', X'00', 'draft',
+			NULL, '[]', 'public', 0, 3,
+			1, 1, 0, 0, 0,
+			?, NULL, NULL, ?, NULL,
+			?, ?)`,
+		jobID,
+		userID,
+		nowStr,
+		util.FormatTime(now.Add(-time.Minute)),
+		nowStr,
+		nowStr,
+	); err != nil {
+		t.Fatalf("insert expired draft import job: %v", err)
+	}
+	if _, err := container.DB.Exec(
+		`INSERT INTO video_import_items (
+			id, job_id, file_index, file_path, file_size_bytes, selected, status,
+			error_message, media_object_id, video_id, created_at, updated_at
+		) VALUES (?, ?, 0, 'sample.mp4', 1024, 1, 'pending', NULL, NULL, NULL, ?, ?)`,
+		itemID,
+		jobID,
+		nowStr,
+		nowStr,
+	); err != nil {
+		t.Fatalf("insert draft import item: %v", err)
+	}
+
+	status, startResp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/imports/torrent/start", map[string]interface{}{
+		"job_id":                jobID,
+		"selected_file_indexes": []int{0},
+		"category_id":           categoryID,
+	}, map[string]string{"Authorization": "Bearer " + accessToken})
+	if status != http.StatusConflict {
+		t.Fatalf("expired draft start should return 409, got %d (%s)", status, startResp.Message)
+	}
+	if !strings.Contains(startResp.Message, "expired") {
+		t.Fatalf("expected expired message, got %s", startResp.Message)
+	}
+
+	status, detailResp := doJSONRequest(t, srv, http.MethodGet, "/api/v1/imports/"+jobID, nil, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("detail request should return 200, got %d (%s)", status, detailResp.Message)
+	}
+	var detailData struct {
+		Job struct {
+			DraftExpired bool   `json:"draft_expired"`
+			Status       string `json:"status"`
+		} `json:"job"`
+	}
+	if err := json.Unmarshal(detailResp.Data, &detailData); err != nil {
+		t.Fatalf("parse import detail payload: %v", err)
+	}
+	if detailData.Job.Status != "draft" {
+		t.Fatalf("expected job status draft, got %s", detailData.Job.Status)
+	}
+	if !detailData.Job.DraftExpired {
+		t.Fatalf("expected draft_expired=true")
+	}
+}
+
+func TestClearImportJobsWithScopeExpiredAndAllClearable(t *testing.T) {
+	srv, container := newTestServer(t)
+	userID, accessToken, _ := registerUser(t, srv, "imports-scope-owner", "imports-scope-owner@example.com", "password123")
+
+	now := time.Now().UTC()
+	nowStr := util.FormatTime(now)
+
+	insertJob := func(jobID, status, expiresAt string) {
+		t.Helper()
+		if _, err := container.DB.Exec(`
+INSERT INTO video_import_jobs (
+	id, user_id, source_type, status, tags_json, visibility,
+	total_files, selected_files, completed_files, failed_files, progress,
+	available_at, expires_at, created_at, updated_at
+) VALUES (?, ?, 'url', ?, '[]', 'public', 1, 1, 0, 0, 0, ?, ?, ?, ?)`,
+			jobID, userID, status, nowStr, expiresAt, nowStr, nowStr,
+		); err != nil {
+			t.Fatalf("insert import job %s: %v", jobID, err)
+		}
+		if _, err := container.DB.Exec(`
+INSERT INTO video_import_items (
+	id, job_id, file_index, file_path, file_size_bytes, selected, status, created_at, updated_at
+) VALUES (?, ?, 0, ?, 100, 1, 'pending', ?, ?)`,
+			uuid.NewString(), jobID, "source.mp4", nowStr, nowStr,
+		); err != nil {
+			t.Fatalf("insert import item for job %s: %v", jobID, err)
+		}
+	}
+
+	expiredDraftID := uuid.NewString()
+	activeDraftID := uuid.NewString()
+	finishedID := uuid.NewString()
+	insertJob(expiredDraftID, "draft", util.FormatTime(now.Add(-time.Hour)))
+	insertJob(activeDraftID, "draft", util.FormatTime(now.Add(24*time.Hour)))
+	insertJob(finishedID, "succeeded", util.FormatTime(now.Add(24*time.Hour)))
+
+	status, invalidResp := doJSONRequest(t, srv, http.MethodDelete, "/api/v1/imports?scope=oops", nil, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("invalid scope should return 400, got %d (%s)", status, invalidResp.Message)
+	}
+
+	status, clearExpiredResp := doJSONRequest(t, srv, http.MethodDelete, "/api/v1/imports?scope=expired", nil, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("clear expired scope should return 200, got %d (%s)", status, clearExpiredResp.Message)
+	}
+	var expiredData struct {
+		Deleted int64 `json:"deleted"`
+	}
+	if err := json.Unmarshal(clearExpiredResp.Data, &expiredData); err != nil {
+		t.Fatalf("parse clear expired response: %v", err)
+	}
+	if expiredData.Deleted != 1 {
+		t.Fatalf("expected deleted=1 for expired scope, got %d", expiredData.Deleted)
+	}
+
+	var draftCount int64
+	if err := container.DB.QueryRow(
+		`SELECT COUNT(1) FROM video_import_jobs WHERE user_id = ? AND status = 'draft'`,
+		userID,
+	).Scan(&draftCount); err != nil {
+		t.Fatalf("count draft jobs: %v", err)
+	}
+	if draftCount != 1 {
+		t.Fatalf("expected one active draft remaining, got %d", draftCount)
+	}
+
+	status, clearAllResp := doJSONRequest(t, srv, http.MethodDelete, "/api/v1/imports?scope=all_clearable", nil, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("clear all_clearable scope should return 200, got %d (%s)", status, clearAllResp.Message)
+	}
+	var allData struct {
+		Deleted int64 `json:"deleted"`
+	}
+	if err := json.Unmarshal(clearAllResp.Data, &allData); err != nil {
+		t.Fatalf("parse clear all response: %v", err)
+	}
+	if allData.Deleted != 1 {
+		t.Fatalf("expected deleted=1 for all_clearable scope, got %d", allData.Deleted)
+	}
+
+	var finishedCount int64
+	if err := container.DB.QueryRow(
+		`SELECT COUNT(1) FROM video_import_jobs WHERE user_id = ? AND status IN ('succeeded', 'partial', 'failed')`,
+		userID,
+	).Scan(&finishedCount); err != nil {
+		t.Fatalf("count finished jobs: %v", err)
+	}
+	if finishedCount != 0 {
+		t.Fatalf("expected no finished jobs left, got %d", finishedCount)
+	}
+
+	var activeDraftCount int64
+	if err := container.DB.QueryRow(
+		`SELECT COUNT(1) FROM video_import_jobs WHERE id = ? AND status = 'draft'`,
+		activeDraftID,
+	).Scan(&activeDraftCount); err != nil {
+		t.Fatalf("count active draft by id: %v", err)
+	}
+	if activeDraftCount != 1 {
+		t.Fatalf("expected active draft to remain after all_clearable, got %d", activeDraftCount)
+	}
+}
+
 func TestUpdateVideoByOwner(t *testing.T) {
 	srv, container := newTestServer(t)
 	ownerID, ownerAccess, _ := registerUser(t, srv, "video-owner", "video-owner@example.com", "password123")
