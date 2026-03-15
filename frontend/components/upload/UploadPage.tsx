@@ -324,9 +324,8 @@ export function UploadPage() {
           </div>
           <div className="flex flex-col items-center gap-2">
             <p className="text-center text-xl font-bold text-slate-900">点击或拖拽视频至此上传</p>
-            <p className="text-center text-sm text-slate-500">支持 MP4, MOV, AVI, WEBM，文件大小不超过 2GB</p>
-            <p className="text-center text-xs text-slate-400">
-              也支持 MKV / FLV / MPEG / MPG / 3GP / M4V / TS
+            <p className="text-center text-sm text-slate-500">
+              支持 MP4 / MOV / AVI / WEBM / MKV / FLV / MPEG / MPG / 3GP / M4V / TS 文件大小不超过 2GB
             </p>
             {videoFile ? <p className="text-sm font-semibold text-primary">已选择：{videoFile.name}</p> : null}
           </div>

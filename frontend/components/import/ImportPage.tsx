@@ -137,6 +137,7 @@ export function ImportPage() {
   const fieldClass =
     "w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-70";
   const fieldLabelClass = "text-xs font-semibold uppercase tracking-wide text-slate-500";
+  const cardClass = "rounded-xl border border-primary/5 bg-white p-6 shadow-sm md:p-10";
 
   const selectedCount = selectedIndexes.size;
 
@@ -371,7 +372,7 @@ export function ImportPage() {
 
   if (!ready) {
     return (
-      <div className="mx-auto w-full max-w-6xl rounded-xl border border-primary/10 bg-white p-10 shadow-sm">
+      <div className="mx-auto w-full max-w-5xl rounded-xl border border-primary/10 bg-white p-10 shadow-sm">
         <div className="space-y-4">
           <div className="h-8 w-52 animate-pulse rounded-lg bg-slate-100" />
           <div className="h-5 w-80 animate-pulse rounded-lg bg-slate-100" />
@@ -383,7 +384,7 @@ export function ImportPage() {
 
   if (!session) {
     return (
-      <div className="mx-auto w-full max-w-6xl rounded-xl border border-primary/10 bg-white p-10 shadow-sm">
+      <div className="mx-auto w-full max-w-5xl rounded-xl border border-primary/10 bg-white p-10 shadow-sm">
         <EmptyState title="请先登录后再导入" description="导入视频需要登录态，登录后可提交 URL 或 BT 种子任务。" />
         <div className="mt-6 flex justify-center">
           <button
@@ -399,8 +400,8 @@ export function ImportPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-6">
-      <section className="rounded-2xl border border-primary/10 bg-white p-6 shadow-sm md:p-8">
+    <div className="mx-auto w-full max-w-5xl space-y-6">
+      <section className={cardClass}>
         <div className="mb-4 flex items-center gap-2">
           <AppIcon name="input" className="text-primary" />
           <h1 className="text-xl font-bold text-slate-900">导入视频</h1>
@@ -560,7 +561,7 @@ export function ImportPage() {
       </section>
 
       {importMode === "torrent" ? (
-        <section className="rounded-2xl border border-primary/10 bg-white p-6 shadow-sm md:p-8">
+        <section className={cardClass}>
         <div className="mb-4 flex items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-bold text-slate-900">Step 2. 勾选导入与发布设置</h2>
@@ -727,7 +728,7 @@ export function ImportPage() {
         </section>
       ) : null}
 
-      <section className="rounded-2xl border border-primary/10 bg-white p-6 shadow-sm md:p-8">
+      <section className={cardClass}>
         <div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="text-lg font-bold text-slate-900">导入任务进度</h2>
           {activeDetail ? (
@@ -802,7 +803,7 @@ export function ImportPage() {
         )}
       </section>
 
-      <section className="rounded-2xl border border-primary/10 bg-white p-6 shadow-sm md:p-8">
+      <section className={cardClass}>
         <h2 className="mb-4 text-lg font-bold text-slate-900">最近导入任务</h2>
         {jobsError ? <p className="mb-3 text-sm text-rose-600">{jobsError}</p> : null}
 
