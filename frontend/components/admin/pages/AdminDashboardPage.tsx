@@ -1,8 +1,9 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useAuth } from "@/components/auth/AuthProvider";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { adminApi } from "@/lib/admin/api";
 
@@ -21,9 +22,16 @@ function MetricCard({ title, value }: { title: string; value: number }) {
 
 export function AdminDashboardPage() {
   const { request } = useAuth();
+  const queryClient = useQueryClient();
   const overviewQuery = useQuery({
     queryKey: ["admin-overview"],
     queryFn: () => adminApi.getOverview(request),
+  });
+  const clearImportsMutation = useMutation({
+    mutationFn: () => adminApi.clearAllFinishedImportJobs(request),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin-overview"] });
+    },
   });
 
   if (overviewQuery.isLoading) {
@@ -55,6 +63,31 @@ export function AdminDashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>导入记录维护</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-slate-500">清理所有用户已结束导入记录（succeeded / partial / failed）。</p>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => void clearImportsMutation.mutateAsync()}
+              disabled={clearImportsMutation.isPending}
+            >
+              {clearImportsMutation.isPending ? "清理中..." : "清理导入记录"}
+            </Button>
+            {clearImportsMutation.data ? (
+              <p className="text-xs text-slate-500">已清理 {clearImportsMutation.data.deleted} 条导入记录</p>
+            ) : null}
+            {clearImportsMutation.isError ? (
+              <p className="text-xs text-rose-600">
+                {clearImportsMutation.error instanceof Error ? clearImportsMutation.error.message : "清理导入记录失败"}
+              </p>
+            ) : null}
+          </CardContent>
+        </Card>
+
         <Card>
           <CardHeader>
             <CardTitle>最近失败转码</CardTitle>

@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"moevideo/backend/internal/util"
 )
 
 func setUserRole(t *testing.T, database *sql.DB, userID, role string) {
@@ -90,6 +93,95 @@ func TestAdminWriteActionCreatesAuditLog(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected action user.patch in audit logs")
+	}
+}
+
+func TestAdminClearFinishedImportJobs(t *testing.T) {
+	srv, container := newTestServer(t)
+	adminID, adminAccess, _ := registerUser(t, srv, "import-clear-admin", "import-clear-admin@example.com", "password123")
+	normalUserID, normalAccess, _ := registerUser(t, srv, "import-clear-user", "import-clear-user@example.com", "password123")
+	otherUserID, _, _ := registerUser(t, srv, "import-clear-other", "import-clear-other@example.com", "password123")
+	setUserRole(t, container.DB, adminID, "admin")
+
+	now := time.Now().UTC()
+	nowStr := util.FormatTime(now)
+	expiresAt := util.FormatTime(now.Add(24 * time.Hour))
+
+	jobSeq := 0
+	insertJob := func(ownerID, status string) string {
+		t.Helper()
+		jobSeq++
+		jobID := fmt.Sprintf("import-job-%d", jobSeq)
+		if _, err := container.DB.Exec(`
+INSERT INTO video_import_jobs (
+	id, user_id, source_type, status, tags_json, visibility,
+	total_files, selected_files, completed_files, failed_files, progress,
+	available_at, expires_at, created_at, updated_at
+) VALUES (?, ?, 'url', ?, '[]', 'public', 1, 1, 0, 0, 0, ?, ?, ?, ?)`,
+			jobID, ownerID, status, nowStr, expiresAt, nowStr, nowStr,
+		); err != nil {
+			t.Fatalf("insert import job %s: %v", jobID, err)
+		}
+		return jobID
+	}
+
+	insertJob(normalUserID, "succeeded")
+	insertJob(normalUserID, "failed")
+	insertJob(otherUserID, "partial")
+	insertJob(normalUserID, "queued")
+	insertJob(otherUserID, "downloading")
+
+	status, _ := doJSONRequest(t, srv, http.MethodDelete, "/api/v1/admin/imports", nil, map[string]string{
+		"Authorization": "Bearer " + normalAccess,
+	})
+	if status != http.StatusForbidden {
+		t.Fatalf("non-admin clear imports should return 403, got %d", status)
+	}
+
+	status, clearResp := doJSONRequest(t, srv, http.MethodDelete, "/api/v1/admin/imports", nil, map[string]string{
+		"Authorization": "Bearer " + adminAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("admin clear imports should return 200, got %d (%s)", status, clearResp.Message)
+	}
+	var clearData struct {
+		Deleted int64 `json:"deleted"`
+	}
+	if err := json.Unmarshal(clearResp.Data, &clearData); err != nil {
+		t.Fatalf("parse clear imports response: %v", err)
+	}
+	if clearData.Deleted != 3 {
+		t.Fatalf("expected deleted=3, got %d", clearData.Deleted)
+	}
+
+	var finishedCount int64
+	if err := container.DB.QueryRow(
+		`SELECT COUNT(1) FROM video_import_jobs WHERE status IN ('succeeded', 'partial', 'failed')`,
+	).Scan(&finishedCount); err != nil {
+		t.Fatalf("count finished import jobs: %v", err)
+	}
+	if finishedCount != 0 {
+		t.Fatalf("expected no finished import jobs left, got %d", finishedCount)
+	}
+
+	var activeCount int64
+	if err := container.DB.QueryRow(
+		`SELECT COUNT(1) FROM video_import_jobs WHERE status IN ('draft', 'queued', 'downloading')`,
+	).Scan(&activeCount); err != nil {
+		t.Fatalf("count active import jobs: %v", err)
+	}
+	if activeCount != 2 {
+		t.Fatalf("expected active import jobs to remain 2, got %d", activeCount)
+	}
+
+	var auditCount int64
+	if err := container.DB.QueryRow(
+		`SELECT COUNT(1) FROM admin_audit_logs WHERE action = 'imports.clear_all_finished'`,
+	).Scan(&auditCount); err != nil {
+		t.Fatalf("count audit log action: %v", err)
+	}
+	if auditCount == 0 {
+		t.Fatalf("expected imports.clear_all_finished audit log entry")
 	}
 }
 

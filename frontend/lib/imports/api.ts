@@ -66,6 +66,13 @@ export const importsApi = {
     return request<ImportJobsData>(`/imports${buildQuery(params)}`, { auth: true });
   },
 
+  clearFinishedJobs(request: ApiRequest) {
+    return request<{ deleted: number }>("/imports", {
+      method: "DELETE",
+      auth: true,
+    });
+  },
+
   getJob(request: ApiRequest, jobId: string) {
     return request<ImportJobDetailData>(`/imports/${jobId}`, { auth: true });
   },

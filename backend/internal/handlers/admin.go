@@ -117,6 +117,7 @@ func (h *Handler) RegisterAdminRoutes(admin fiber.Router) {
 	admin.Post("/transcode-jobs/:jobId/retry", h.AdminRetryTranscodeJob)
 	admin.Get("/comments", h.AdminListComments)
 	admin.Post("/comments/actions", h.AdminCommentsAction)
+	admin.Delete("/imports", h.AdminClearFinishedImportJobs)
 	admin.Get("/users", h.AdminListUsers)
 	admin.Patch("/users/:id", h.AdminPatchUser)
 	admin.Get("/audit-logs", h.AdminListAuditLogs)
@@ -392,6 +393,45 @@ LIMIT 10`, auditSchema.resourceTypeCol, auditSchema.resourceIDCol, auditSchema.a
 		"recent_failed_jobs": failedItems,
 		"recent_actions":     actionItems,
 	})
+}
+
+func (h *Handler) AdminClearFinishedImportJobs(c *fiber.Ctx) error {
+	ctx := c.UserContext()
+	tx, err := h.app.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to clear import jobs")
+	}
+	defer tx.Rollback()
+
+	var beforeCount int64
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT COUNT(1) FROM video_import_jobs WHERE status IN ('succeeded', 'partial', 'failed')`,
+	).Scan(&beforeCount); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to clear import jobs")
+	}
+
+	res, err := tx.ExecContext(
+		ctx,
+		`DELETE FROM video_import_jobs WHERE status IN ('succeeded', 'partial', 'failed')`,
+	)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to clear import jobs")
+	}
+	deleted, _ := res.RowsAffected()
+
+	if err := h.writeAdminAudit(ctx, tx, c, "imports.clear_all_finished", "import_job", "all_finished", fiber.Map{
+		"before_count": beforeCount,
+		"deleted":      deleted,
+	}); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to write audit log")
+	}
+
+	if err := tx.Commit(); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to clear import jobs")
+	}
+
+	return response.OK(c, fiber.Map{"deleted": deleted})
 }
 
 func (h *Handler) AdminListVideos(c *fiber.Ctx) error {

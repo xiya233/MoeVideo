@@ -679,6 +679,22 @@ WHERE user_id = ?`
 	return response.OK(c, fiber.Map{"items": items, "next_cursor": nextCursor})
 }
 
+func (h *Handler) ClearFinishedImportJobs(c *fiber.Ctx) error {
+	uid := currentUserID(c)
+	res, err := h.app.DB.ExecContext(
+		c.UserContext(),
+		`DELETE FROM video_import_jobs
+		 WHERE user_id = ?
+		   AND status IN ('succeeded', 'partial', 'failed')`,
+		uid,
+	)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to clear import jobs")
+	}
+	deleted, _ := res.RowsAffected()
+	return response.OK(c, fiber.Map{"deleted": deleted})
+}
+
 func (h *Handler) GetImportJobDetail(c *fiber.Ctx) error {
 	uid := currentUserID(c)
 	jobID := strings.TrimSpace(c.Params("jobId"))

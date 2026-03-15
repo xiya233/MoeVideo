@@ -131,6 +131,10 @@ export function ImportPage() {
   const [activeJobError, setActiveJobError] = useState("");
 
   const [jobs, setJobs] = useState<ImportJob[]>([]);
+  const [jobsNextCursor, setJobsNextCursor] = useState("");
+  const [jobsLoadingMore, setJobsLoadingMore] = useState(false);
+  const [jobsLoadMoreError, setJobsLoadMoreError] = useState("");
+  const [jobsClearing, setJobsClearing] = useState(false);
   const [jobsError, setJobsError] = useState("");
 
   const pollRef = useRef<number | null>(null);
@@ -163,18 +167,55 @@ export function ImportPage() {
   const loadJobs = useCallback(async () => {
     if (!session) {
       setJobs([]);
+      setJobsNextCursor("");
+      setJobsLoadMoreError("");
       return;
     }
     setJobsError("");
+    setJobsLoadMoreError("");
     try {
       const dataRaw = await importsApi.listJobs(request, { limit: MAX_PREVIEW_JOBS });
       const data = mapImportJobsData(dataRaw as ImportJobsData);
       setJobs(data.items);
+      setJobsNextCursor(data.next_cursor ?? "");
     } catch (err) {
       setJobs([]);
+      setJobsNextCursor("");
       setJobsError(err instanceof Error ? err.message : "任务列表加载失败");
     }
   }, [request, session]);
+
+  const loadMoreJobs = useCallback(async () => {
+    if (!session || jobsLoadingMore || !jobsNextCursor) {
+      return;
+    }
+    setJobsLoadingMore(true);
+    setJobsLoadMoreError("");
+    try {
+      const dataRaw = await importsApi.listJobs(request, {
+        limit: MAX_PREVIEW_JOBS,
+        cursor: jobsNextCursor,
+      });
+      const data = mapImportJobsData(dataRaw as ImportJobsData);
+      setJobs((prev) => {
+        const seen = new Set(prev.map((item) => item.id));
+        const merged = [...prev];
+        for (const item of data.items) {
+          if (seen.has(item.id)) {
+            continue;
+          }
+          seen.add(item.id);
+          merged.push(item);
+        }
+        return merged;
+      });
+      setJobsNextCursor(data.next_cursor ?? "");
+    } catch (err) {
+      setJobsLoadMoreError(err instanceof Error ? err.message : "加载更多失败");
+    } finally {
+      setJobsLoadingMore(false);
+    }
+  }, [jobsLoadingMore, jobsNextCursor, request, session]);
 
   const loadJobDetail = useCallback(
     async (jobID: string) => {
@@ -369,6 +410,32 @@ export function ImportPage() {
     }
     return activeJobDetail;
   }, [activeJobDetail, activeJobID]);
+
+  const clearFinishedJobs = async () => {
+    if (!session || jobsClearing) {
+      return;
+    }
+    if (!window.confirm("确认清理所有已结束导入记录吗？此操作不可撤销。")) {
+      return;
+    }
+    setJobsClearing(true);
+    setJobsError("");
+    setJobsLoadMoreError("");
+    try {
+      await importsApi.clearFinishedJobs(request);
+      if (activeJobDetail && !isJobActive(activeJobDetail.job.status)) {
+        stopPolling();
+        setActiveJobID("");
+        setActiveJobDetail(null);
+        setActiveJobError("");
+      }
+      await loadJobs();
+    } catch (err) {
+      setJobsError(err instanceof Error ? err.message : "清理导入记录失败");
+    } finally {
+      setJobsClearing(false);
+    }
+  };
 
   if (!ready) {
     return (
@@ -804,38 +871,63 @@ export function ImportPage() {
       </section>
 
       <section className={cardClass}>
-        <h2 className="mb-4 text-lg font-bold text-slate-900">最近导入任务</h2>
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h2 className="text-lg font-bold text-slate-900">最近导入任务</h2>
+          <button
+            type="button"
+            onClick={() => void clearFinishedJobs()}
+            disabled={jobsClearing}
+            className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {jobsClearing ? "清理中..." : "清理已结束记录"}
+          </button>
+        </div>
         {jobsError ? <p className="mb-3 text-sm text-rose-600">{jobsError}</p> : null}
 
         {jobs.length === 0 ? (
           <EmptyState title="暂无导入记录" description="导入任务提交后会显示在这里。" />
         ) : (
-          <div className="space-y-3">
-            {jobs.map((job) => (
-              <button
-                key={job.id}
-                type="button"
-                className="flex w-full items-center justify-between rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-left transition hover:border-primary/40"
-                onClick={() => {
-                  setActiveJobID(job.id);
-                  void loadJobDetail(job.id);
-                  if (isJobActive(job.status)) {
-                    openPolling(job.id);
-                  } else {
-                    stopPolling();
-                  }
-                }}
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-slate-800">{importJobTitle(job)}</p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {job.completed_files}/{job.selected_files} 完成 · 失败 {job.failed_files}
-                  </p>
-                </div>
-                <span className="text-xs font-semibold text-slate-600">{formatStatus(job.status)}</span>
-              </button>
-            ))}
-          </div>
+          <>
+            <div className="space-y-3">
+              {jobs.map((job) => (
+                <button
+                  key={job.id}
+                  type="button"
+                  className="flex w-full items-center justify-between rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-left transition hover:border-primary/40"
+                  onClick={() => {
+                    setActiveJobID(job.id);
+                    void loadJobDetail(job.id);
+                    if (isJobActive(job.status)) {
+                      openPolling(job.id);
+                    } else {
+                      stopPolling();
+                    }
+                  }}
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-slate-800">{importJobTitle(job)}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {job.completed_files}/{job.selected_files} 完成 · 失败 {job.failed_files}
+                    </p>
+                  </div>
+                  <span className="text-xs font-semibold text-slate-600">{formatStatus(job.status)}</span>
+                </button>
+              ))}
+            </div>
+            {jobsLoadMoreError ? <p className="mt-3 text-sm text-rose-600">{jobsLoadMoreError}</p> : null}
+            {jobsNextCursor ? (
+              <div className="mt-4 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => void loadMoreJobs()}
+                  disabled={jobsLoadingMore}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {jobsLoadingMore ? "加载中..." : "加载更多"}
+                </button>
+              </div>
+            ) : null}
+          </>
         )}
       </section>
     </div>

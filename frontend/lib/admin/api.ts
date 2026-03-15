@@ -194,6 +194,13 @@ export const adminApi = {
     });
   },
 
+  clearAllFinishedImportJobs(request: ApiRequest) {
+    return request<{ deleted: number }>("/admin/imports", {
+      method: "DELETE",
+      auth: true,
+    });
+  },
+
   listUsers(
     request: ApiRequest,
     params: {

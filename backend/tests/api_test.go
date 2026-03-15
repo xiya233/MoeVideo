@@ -1736,6 +1736,113 @@ func TestURLImportStartCreatesQueuedJob(t *testing.T) {
 	}
 }
 
+func TestClearFinishedImportJobsForCurrentUser(t *testing.T) {
+	srv, container := newTestServer(t)
+	userID, accessToken, _ := registerUser(t, srv, "imports-clear-owner", "imports-clear-owner@example.com", "password123")
+	otherUserID, _, _ := registerUser(t, srv, "imports-clear-other", "imports-clear-other@example.com", "password123")
+
+	now := time.Now().UTC()
+	nowStr := util.FormatTime(now)
+	expiresAt := util.FormatTime(now.Add(24 * time.Hour))
+
+	insertJob := func(jobID, ownerID, status string) {
+		t.Helper()
+		if _, err := container.DB.Exec(`
+INSERT INTO video_import_jobs (
+	id, user_id, source_type, status, tags_json, visibility,
+	total_files, selected_files, completed_files, failed_files, progress,
+	available_at, expires_at, created_at, updated_at
+) VALUES (?, ?, 'url', ?, '[]', 'public', 1, 1, 0, 0, 0, ?, ?, ?, ?)`,
+			jobID, ownerID, status, nowStr, expiresAt, nowStr, nowStr,
+		); err != nil {
+			t.Fatalf("insert import job %s: %v", jobID, err)
+		}
+		if _, err := container.DB.Exec(`
+INSERT INTO video_import_items (
+	id, job_id, file_index, file_path, file_size_bytes, selected, status, created_at, updated_at
+) VALUES (?, ?, 0, ?, 100, 1, 'pending', ?, ?)`,
+			uuid.NewString(), jobID, "source.mp4", nowStr, nowStr,
+		); err != nil {
+			t.Fatalf("insert import item for job %s: %v", jobID, err)
+		}
+	}
+
+	finishedSucceededID := uuid.NewString()
+	finishedFailedID := uuid.NewString()
+	queuedID := uuid.NewString()
+	otherFinishedID := uuid.NewString()
+	insertJob(finishedSucceededID, userID, "succeeded")
+	insertJob(finishedFailedID, userID, "failed")
+	insertJob(queuedID, userID, "queued")
+	insertJob(otherFinishedID, otherUserID, "partial")
+
+	status, _ := doJSONRequest(t, srv, http.MethodDelete, "/api/v1/imports", nil, nil)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("delete imports without auth should return 401, got %d", status)
+	}
+
+	status, clearResp := doJSONRequest(t, srv, http.MethodDelete, "/api/v1/imports", nil, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("clear imports should return 200, got %d (%s)", status, clearResp.Message)
+	}
+	var clearData struct {
+		Deleted int64 `json:"deleted"`
+	}
+	if err := json.Unmarshal(clearResp.Data, &clearData); err != nil {
+		t.Fatalf("parse clear imports response: %v", err)
+	}
+	if clearData.Deleted != 2 {
+		t.Fatalf("expected deleted=2, got %d", clearData.Deleted)
+	}
+
+	var ownerFinishedCount int64
+	if err := container.DB.QueryRow(
+		`SELECT COUNT(1) FROM video_import_jobs WHERE user_id = ? AND status IN ('succeeded', 'partial', 'failed')`,
+		userID,
+	).Scan(&ownerFinishedCount); err != nil {
+		t.Fatalf("count owner finished jobs: %v", err)
+	}
+	if ownerFinishedCount != 0 {
+		t.Fatalf("expected owner finished jobs to be deleted, got %d", ownerFinishedCount)
+	}
+
+	var ownerQueuedCount int64
+	if err := container.DB.QueryRow(
+		`SELECT COUNT(1) FROM video_import_jobs WHERE user_id = ? AND status = 'queued'`,
+		userID,
+	).Scan(&ownerQueuedCount); err != nil {
+		t.Fatalf("count owner queued jobs: %v", err)
+	}
+	if ownerQueuedCount != 1 {
+		t.Fatalf("expected owner queued jobs to remain 1, got %d", ownerQueuedCount)
+	}
+
+	var otherFinishedCount int64
+	if err := container.DB.QueryRow(
+		`SELECT COUNT(1) FROM video_import_jobs WHERE user_id = ? AND status IN ('succeeded', 'partial', 'failed')`,
+		otherUserID,
+	).Scan(&otherFinishedCount); err != nil {
+		t.Fatalf("count other finished jobs: %v", err)
+	}
+	if otherFinishedCount != 1 {
+		t.Fatalf("expected other user's finished jobs to remain 1, got %d", otherFinishedCount)
+	}
+
+	var deletedItemsCount int64
+	if err := container.DB.QueryRow(
+		`SELECT COUNT(1) FROM video_import_items WHERE job_id IN (?, ?)`,
+		finishedSucceededID,
+		finishedFailedID,
+	).Scan(&deletedItemsCount); err != nil {
+		t.Fatalf("count deleted import items: %v", err)
+	}
+	if deletedItemsCount != 0 {
+		t.Fatalf("expected deleted jobs items to cascade delete, got %d", deletedItemsCount)
+	}
+}
+
 func TestListVideosFilterByTagAndListTags(t *testing.T) {
 	srv, container := newTestServer(t)
 	ownerID, _, _ := registerUser(t, srv, "tag-owner", "tag-owner@example.com", "password123")
