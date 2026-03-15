@@ -19,10 +19,12 @@ mise trust
 
 ```bash
 cp backend/.env.example backend/.env
+# 必须先在 backend/.env 里替换 JWT_SECRET（不能使用默认占位值）
 mise run backend-dev
 ```
 
 Backend 默认地址：`http://localhost:8080`
+后端程序会自动读取 `backend/.env`（同名系统环境变量优先，不会被 `.env` 覆盖）。
 
 若要启用 URL 导入的页面解析 fallback（Playwright）：
 

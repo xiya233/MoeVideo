@@ -59,12 +59,21 @@ type Config struct {
 	S3PublicBaseURL   string
 }
 
+const defaultJWTSecret = "change-me-in-production"
+
+var jwtSecretPlaceholders = map[string]struct{}{
+	"default":                 {},
+	"change-me":               {},
+	defaultJWTSecret:          {},
+	"replace-with-strong-key": {},
+}
+
 func Load() (Config, error) {
 	cfg := Config{
 		Env:              getEnv("APP_ENV", "development"),
 		HTTPAddr:         getEnv("HTTP_ADDR", ":8080"),
 		DBPath:           getEnv("DB_PATH", "./data/moevideo.db"),
-		JWTSecret:        getEnv("JWT_SECRET", "change-me-in-production"),
+		JWTSecret:        getEnv("JWT_SECRET", defaultJWTSecret),
 		AuthCookieDomain: strings.TrimSpace(getEnv("AUTH_COOKIE_DOMAIN", "")),
 		AuthCookiePath:   getEnv("AUTH_COOKIE_PATH", "/"),
 		AuthCookieSameSite: strings.ToLower(
@@ -90,6 +99,9 @@ func Load() (Config, error) {
 		RateLimitRedisAddr:     strings.TrimSpace(getEnv("RATE_LIMIT_REDIS_ADDR", "")),
 		RateLimitRedisPassword: getEnv("RATE_LIMIT_REDIS_PASSWORD", ""),
 		RateLimitRedisPrefix:   strings.TrimSpace(getEnv("RATE_LIMIT_REDIS_PREFIX", "moevideo")),
+	}
+	if err := validateJWTSecret(cfg.JWTSecret); err != nil {
+		return cfg, err
 	}
 
 	cookieSecureRaw := strings.ToLower(strings.TrimSpace(getEnv("AUTH_COOKIE_SECURE", "")))
@@ -286,4 +298,15 @@ func parseCSV(raw string) []string {
 		out = append(out, trimmed)
 	}
 	return out
+}
+
+func validateJWTSecret(raw string) error {
+	secret := strings.TrimSpace(raw)
+	if secret == "" {
+		return fmt.Errorf("JWT_SECRET must be set and must not use placeholder value")
+	}
+	if _, blocked := jwtSecretPlaceholders[strings.ToLower(secret)]; blocked {
+		return fmt.Errorf("JWT_SECRET must be set and must not use placeholder value")
+	}
+	return nil
 }

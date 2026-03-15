@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 
 	"moevideo/backend/internal/auth"
 	"moevideo/backend/internal/db"
@@ -18,6 +19,10 @@ import (
 )
 
 func main() {
+	if err := godotenv.Load(".env"); err != nil && !os.IsNotExist(err) {
+		log.Fatalf("load .env: %v", err)
+	}
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
