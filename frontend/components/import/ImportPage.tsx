@@ -949,32 +949,32 @@ export function ImportPage() {
 
             <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-3">
               <label className="space-y-1 md:col-span-1">
-                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">单文件标题（可选）</span>
+                <span className={fieldLabelClass}>单文件标题（可选）</span>
                 <input
                   value={importTitle}
                   onChange={(event) => setImportTitle(event.target.value)}
                   placeholder="仅勾选 1 个文件时生效"
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                  className={fieldClass}
                 />
               </label>
 
               <label className="space-y-1 md:col-span-1">
-                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">多文件标题前缀（可选）</span>
+                <span className={fieldLabelClass}>多文件标题前缀（可选）</span>
                 <input
                   value={importTitlePrefix}
                   onChange={(event) => setImportTitlePrefix(event.target.value)}
                   placeholder="勾选多个时：前缀 - 文件名"
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                  className={fieldClass}
                 />
               </label>
 
               <label className="space-y-1 md:col-span-1">
-                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">描述（可选）</span>
+                <span className={fieldLabelClass}>描述（可选）</span>
                 <input
                   value={importDescription}
                   onChange={(event) => setImportDescription(event.target.value)}
                   placeholder="统一应用到所有勾选视频"
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                  className={fieldClass}
                 />
               </label>
             </div>
@@ -987,9 +987,9 @@ export function ImportPage() {
 
             <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-3">
               <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">分类</span>
+                <span className={fieldLabelClass}>分类</span>
                 <select
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                  className={`${fieldClass} appearance-none`}
                   value={categoryID}
                   onChange={(event) => setCategoryID(event.target.value)}
                   disabled={loadingCategories}
@@ -1004,9 +1004,9 @@ export function ImportPage() {
               </label>
 
               <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">可见性</span>
+                <span className={fieldLabelClass}>可见性</span>
                 <select
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                  className={`${fieldClass} appearance-none`}
                   value={visibility}
                   onChange={(event) => setVisibility(event.target.value as "public" | "private" | "unlisted")}
                 >
@@ -1017,12 +1017,12 @@ export function ImportPage() {
               </label>
 
               <label className="space-y-1 md:col-span-1">
-                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">标签（逗号分隔）</span>
+                <span className={fieldLabelClass}>标签（逗号分隔）</span>
                 <input
                   value={tagInput}
                   onChange={(event) => setTagInput(event.target.value)}
                   placeholder="例如：动漫,二创"
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                  className={fieldClass}
                 />
               </label>
             </div>
