@@ -771,10 +771,12 @@ export function ImportPage() {
 
         {importMode === "torrent" ? (
           <>
-            <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
-              <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-dashed border-primary/30 bg-primary/5 px-4 py-3 text-sm text-slate-700 transition hover:bg-primary/10">
+            <div className="mt-6 grid grid-cols-1 items-start gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
+              <label className="flex min-w-0 cursor-pointer items-center gap-3 rounded-xl border border-dashed border-primary/30 bg-primary/5 px-4 py-3 text-sm text-slate-700 transition hover:bg-primary/10">
                 <AppIcon name="upload" size={18} className="text-primary" />
-                <span className="truncate">{torrentFile ? torrentFile.name : "选择 .torrent 文件"}</span>
+                <span className="min-w-0 flex-1 truncate" title={torrentFile ? torrentFile.name : "选择 .torrent 文件"}>
+                  {torrentFile ? torrentFile.name : "选择 .torrent 文件"}
+                </span>
                 <input
                   type="file"
                   accept=".torrent,application/x-bittorrent"
@@ -791,7 +793,7 @@ export function ImportPage() {
                 type="button"
                 onClick={() => void onInspectTorrent()}
                 disabled={inspectPending || !torrentFile}
-                className="rounded-xl bg-primary px-5 py-3 text-sm font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+                className="self-start rounded-xl bg-primary px-5 py-3 text-sm font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {inspectPending ? "解析中..." : "解析种子"}
               </button>
