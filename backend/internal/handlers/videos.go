@@ -637,6 +637,16 @@ func (h *Handler) TrackVideoShare(c *fiber.Ctx) error {
 	if !canReadVideo(visible, viewerID) || visible.Status != "published" {
 		return response.Error(c, fiber.StatusNotFound, "video not found")
 	}
+	viewerKey := clientViewerKey(c)
+	currentMinute := nowUTC().Truncate(time.Minute).Format(time.RFC3339)
+	shareDedupKey := strings.Join([]string{viewerKey, videoID, currentMinute}, ":")
+	ok, err := h.claimOnce(c, "share-minute", shareDedupKey, 70*time.Second)
+	if err != nil {
+		return response.Error(c, fiber.StatusServiceUnavailable, "anti-spam unavailable")
+	}
+	if !ok {
+		return response.OK(c, fiber.Map{"shared": true, "counted": false})
+	}
 
 	tx, err := h.app.DB.BeginTx(c.UserContext(), nil)
 	if err != nil {
@@ -658,7 +668,7 @@ func (h *Handler) TrackVideoShare(c *fiber.Ctx) error {
 	if err := tx.Commit(); err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to commit share")
 	}
-	return response.OK(c, fiber.Map{"shared": true})
+	return response.OK(c, fiber.Map{"shared": true, "counted": true})
 }
 
 func (h *Handler) UpdateVideoProgress(c *fiber.Ctx) error {

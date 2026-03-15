@@ -21,6 +21,7 @@ import (
 	"moevideo/backend/internal/handlers"
 	"moevideo/backend/internal/importer"
 	"moevideo/backend/internal/middleware"
+	"moevideo/backend/internal/ratelimit"
 	"moevideo/backend/internal/response"
 	"moevideo/backend/internal/storage"
 	"moevideo/backend/internal/transcode"
@@ -57,7 +58,22 @@ func main() {
 		DB:      database,
 		JWT:     auth.NewManager(cfg.JWTSecret),
 		Storage: storageSvc,
+		RateLim: ratelimit.New(ratelimit.Config{
+			Enabled:        cfg.RateLimitEnabled,
+			RedisAddr:      cfg.RateLimitRedisAddr,
+			RedisPassword:  cfg.RateLimitRedisPassword,
+			RedisDB:        cfg.RateLimitRedisDB,
+			Prefix:         cfg.RateLimitRedisPrefix,
+			Env:            cfg.Env,
+			FailClosedProd: cfg.RateLimitFailClosedProd,
+			DevFallbackMem: cfg.RateLimitDevFallbackMem,
+		}),
 	}
+	defer func() {
+		if err := appContainer.RateLim.Close(); err != nil {
+			log.Printf("close rate limiter: %v", err)
+		}
+	}()
 
 	maxInt := int64(^uint(0) >> 1)
 	bodyLimit := 4 * 1024 * 1024

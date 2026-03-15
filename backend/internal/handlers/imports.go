@@ -319,6 +319,13 @@ LIMIT 1`, req.JobID).Scan(&status, &existingUID, &expiresAt)
 	if isImportDraftExpired(status, expiresAt, nowUTC()) {
 		return response.Error(c, fiber.StatusConflict, "import draft is expired, please inspect torrent again")
 	}
+	activeJobs, err := countUserActiveImportJobsTx(c.UserContext(), tx, uid)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to check import concurrency")
+	}
+	if activeJobs >= 3 {
+		return h.respondRateLimited(c, "import.concurrent.active", time.Minute, "too many active import jobs")
+	}
 
 	var exists int
 	if err := tx.QueryRowContext(c.UserContext(), `SELECT 1 FROM categories WHERE id = ? AND is_active = 1 LIMIT 1`, *req.CategoryID).Scan(&exists); err != nil {
@@ -461,6 +468,13 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to begin transaction")
 	}
 	defer tx.Rollback()
+	activeJobs, err := countUserActiveImportJobsTx(c.UserContext(), tx, uid)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to check import concurrency")
+	}
+	if activeJobs >= 3 {
+		return h.respondRateLimited(c, "import.concurrent.active", time.Minute, "too many active import jobs")
+	}
 
 	var exists int
 	if err := tx.QueryRowContext(c.UserContext(), `SELECT 1 FROM categories WHERE id = ? AND is_active = 1 LIMIT 1`, *req.CategoryID).Scan(&exists); err != nil {
@@ -1153,6 +1167,19 @@ func isValidImportURL(raw string) bool {
 		return false
 	}
 	return true
+}
+
+func countUserActiveImportJobsTx(ctx context.Context, tx *sql.Tx, userID string) (int64, error) {
+	var count int64
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(1)
+FROM video_import_jobs
+WHERE user_id = ?
+  AND status IN ('queued', 'downloading')
+`, userID).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func normalizeImportVisibility(raw string) string {

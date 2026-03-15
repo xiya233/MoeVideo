@@ -23,6 +23,7 @@ import (
 	"moevideo/backend/internal/config"
 	"moevideo/backend/internal/db"
 	"moevideo/backend/internal/handlers"
+	"moevideo/backend/internal/ratelimit"
 	"moevideo/backend/internal/response"
 	"moevideo/backend/internal/storage"
 	"moevideo/backend/internal/util"
@@ -150,6 +151,17 @@ func doJSONRequest(t *testing.T, srv *fiber.App, method, path string, body inter
 	t.Helper()
 	status, out, _ := doJSONRequestRaw(t, srv, method, path, body, headers)
 	return status, out
+}
+
+func enableRateLimitForTest(container *app.App) {
+	if container == nil {
+		return
+	}
+	container.RateLim = ratelimit.New(ratelimit.Config{
+		Enabled:        true,
+		Env:            "test",
+		DevFallbackMem: true,
+	})
 }
 
 func cookieValueFromResponse(resp *http.Response, name string) string {
@@ -289,6 +301,79 @@ func TestAuthFlow(t *testing.T) {
 	})
 	if status != http.StatusUnauthorized {
 		t.Fatalf("revoked refresh should fail with 401, got %d", status)
+	}
+}
+
+func TestLoginRateLimitedByIP(t *testing.T) {
+	srv, container := newTestServer(t)
+	enableRateLimitForTest(container)
+
+	_, _, _ = registerUser(t, srv, "ratelimit_user", "ratelimit@example.com", "password123")
+
+	for i := 0; i < 10; i++ {
+		captchaID, captchaCode := issueCaptcha(t, srv, "login")
+		status, _ := doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{
+			"account":      "ratelimit_user",
+			"password":     "password123",
+			"captcha_id":   captchaID,
+			"captcha_code": captchaCode,
+		}, nil)
+		if status != http.StatusOK {
+			t.Fatalf("login %d should return 200, got %d", i+1, status)
+		}
+	}
+
+	captchaID, captchaCode := issueCaptcha(t, srv, "login")
+	status, resp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{
+		"account":      "ratelimit_user",
+		"password":     "password123",
+		"captcha_id":   captchaID,
+		"captcha_code": captchaCode,
+	}, nil)
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("11th login should be rate limited, got %d (%s)", status, resp.Message)
+	}
+	var data struct {
+		RuleID        string `json:"rule_id"`
+		RetryAfterSec int64  `json:"retry_after_sec"`
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("parse rate limit response: %v", err)
+	}
+	if data.RuleID == "" || data.RetryAfterSec <= 0 {
+		t.Fatalf("expected rule_id and retry_after_sec in response, got %+v", data)
+	}
+}
+
+func TestCreateCommentDuplicateRejected(t *testing.T) {
+	srv, container := newTestServer(t)
+	enableRateLimitForTest(container)
+
+	userID, accessToken, _ := registerUser(t, srv, "comment_spam_user", "comment_spam@example.com", "password123")
+	videoID := prepareVideoForUser(t, container, userID)
+
+	headers := map[string]string{"Authorization": "Bearer " + accessToken}
+	status, _ := doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/comments", map[string]interface{}{
+		"content": "same content",
+	}, headers)
+	if status != http.StatusCreated {
+		t.Fatalf("first comment should return 201, got %d", status)
+	}
+
+	status, resp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/videos/"+videoID+"/comments", map[string]interface{}{
+		"content": "same content",
+	}, headers)
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("duplicate comment should be rate limited, got %d (%s)", status, resp.Message)
+	}
+	var data struct {
+		RuleID string `json:"rule_id"`
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("parse rate limit payload: %v", err)
+	}
+	if data.RuleID == "" {
+		t.Fatalf("expected rule_id in duplicate comment response")
 	}
 }
 

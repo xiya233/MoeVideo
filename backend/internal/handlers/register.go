@@ -23,10 +23,10 @@ func New(a *app.App) *Handler {
 func RegisterRoutes(api fiber.Router, a *app.App) {
 	h := New(a)
 
-	api.Get("/auth/captcha", h.GetAuthCaptcha)
-	api.Post("/auth/register", h.Register)
-	api.Post("/auth/login", h.Login)
-	api.Post("/auth/refresh", h.Refresh)
+	api.Get("/auth/captcha", h.rateLimit(rlAuthCaptchaIP), h.GetAuthCaptcha)
+	api.Post("/auth/register", h.rateLimit(rlAuthRegIP), h.Register)
+	api.Post("/auth/login", h.rateLimit(rlAuthLoginIP), h.rateLimit(rlAuthLoginAcct), h.Login)
+	api.Post("/auth/refresh", h.rateLimit(rlAuthRefreshIP), h.Refresh)
 	api.Post("/auth/logout", middleware.RequireAuth(a), h.Logout)
 
 	api.Get("/users/me", middleware.RequireAuth(a), h.GetMe)
@@ -52,27 +52,27 @@ func RegisterRoutes(api fiber.Router, a *app.App) {
 	api.Get("/videos", middleware.OptionalAuth(a), h.ListVideos)
 	api.Get("/videos/:videoId", middleware.OptionalAuth(a), h.GetVideoDetail)
 	api.Get("/videos/:videoId/recommendations", middleware.OptionalAuth(a), h.GetVideoRecommendations)
-	api.Post("/videos/:videoId/view", h.TrackVideoView)
-	api.Put("/videos/:videoId/like", middleware.RequireAuth(a), h.ToggleVideoLike)
-	api.Put("/videos/:videoId/favorite", middleware.RequireAuth(a), h.ToggleVideoFavorite)
-	api.Post("/videos/:videoId/share", h.TrackVideoShare)
-	api.Put("/videos/:videoId/progress", middleware.RequireAuth(a), h.UpdateVideoProgress)
+	api.Post("/videos/:videoId/view", h.rateLimit(rlViewRate), h.TrackVideoView)
+	api.Put("/videos/:videoId/like", middleware.RequireAuth(a), h.rateLimit(rlInteractionUser), h.ToggleVideoLike)
+	api.Put("/videos/:videoId/favorite", middleware.RequireAuth(a), h.rateLimit(rlInteractionUser), h.ToggleVideoFavorite)
+	api.Post("/videos/:videoId/share", middleware.OptionalAuth(a), h.rateLimit(rlShareRate), h.TrackVideoShare)
+	api.Put("/videos/:videoId/progress", middleware.RequireAuth(a), h.rateLimit(rlProgressRate), h.UpdateVideoProgress)
 	api.Post("/videos", middleware.RequireAuth(a), h.CreateVideo)
 	api.Patch("/videos/:videoId", middleware.RequireAuth(a), h.UpdateVideo)
 	api.Delete("/videos/:videoId", middleware.RequireAuth(a), h.DeleteVideo)
 
-	api.Post("/imports/torrent/inspect", middleware.RequireAuth(a), h.InspectTorrentImport)
-	api.Post("/imports/torrent/start", middleware.RequireAuth(a), h.StartTorrentImport)
-	api.Post("/imports/url/start", middleware.RequireAuth(a), h.StartURLImport)
+	api.Post("/imports/torrent/inspect", middleware.RequireAuth(a), h.rateLimit(rlImportInspectUser), h.rateLimit(rlImportInspectIP), h.InspectTorrentImport)
+	api.Post("/imports/torrent/start", middleware.RequireAuth(a), h.rateLimit(rlImportStartT), h.StartTorrentImport)
+	api.Post("/imports/url/start", middleware.RequireAuth(a), h.rateLimit(rlImportStartURL), h.StartURLImport)
 	api.Get("/imports", middleware.RequireAuth(a), h.ListImportJobs)
 	api.Delete("/imports", middleware.RequireAuth(a), h.ClearFinishedImportJobs)
 	api.Get("/imports/:jobId", middleware.RequireAuth(a), h.GetImportJobDetail)
 
 	api.Get("/videos/:videoId/comments", middleware.OptionalAuth(a), h.ListComments)
-	api.Post("/videos/:videoId/comments", middleware.RequireAuth(a), h.CreateComment)
+	api.Post("/videos/:videoId/comments", middleware.RequireAuth(a), h.rateLimit(rlCommentCreate), h.rateLimit(rlCommentBurst), h.CreateComment)
 	api.Get("/videos/:videoId/danmaku", middleware.OptionalAuth(a), h.ListVideoDanmaku)
 	api.Get("/videos/:videoId/danmaku/list", middleware.OptionalAuth(a), h.ListVideoDanmakuTimeline)
-	api.Post("/videos/:videoId/danmaku", middleware.RequireAuth(a), h.CreateVideoDanmaku)
+	api.Post("/videos/:videoId/danmaku", middleware.RequireAuth(a), h.rateLimit(rlDanmakuCreate), h.rateLimit(rlDanmakuBurst), h.CreateVideoDanmaku)
 	api.Use("/videos/:videoId/danmaku/ws", func(c *fiber.Ctx) error {
 		if websocket.IsWebSocketUpgrade(c) {
 			return c.Next()
@@ -80,7 +80,7 @@ func RegisterRoutes(api fiber.Router, a *app.App) {
 		return fiber.ErrUpgradeRequired
 	})
 	api.Get("/videos/:videoId/danmaku/ws", websocket.New(h.SubscribeVideoDanmakuWS))
-	api.Put("/comments/:commentId/like", middleware.RequireAuth(a), h.ToggleCommentLike)
+	api.Put("/comments/:commentId/like", middleware.RequireAuth(a), h.rateLimit(rlInteractionUser), h.ToggleCommentLike)
 	api.Delete("/comments/:commentId", middleware.RequireAuth(a), h.DeleteComment)
 
 	api.Post("/uploads/presign", middleware.RequireAuth(a), h.CreateUploadPresign)

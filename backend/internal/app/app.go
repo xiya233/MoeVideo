@@ -5,6 +5,7 @@ import (
 
 	"moevideo/backend/internal/auth"
 	"moevideo/backend/internal/config"
+	"moevideo/backend/internal/ratelimit"
 	"moevideo/backend/internal/storage"
 )
 
@@ -13,4 +14,5 @@ type App struct {
 	DB      *sql.DB
 	JWT     *auth.Manager
 	Storage *storage.Service
+	RateLim *ratelimit.Service
 }

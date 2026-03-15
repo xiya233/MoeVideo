@@ -4,11 +4,13 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 
 	"moevideo/backend/internal/pagination"
 	"moevideo/backend/internal/response"
+	"moevideo/backend/internal/util"
 )
 
 type createCommentRequest struct {
@@ -217,6 +219,18 @@ func (h *Handler) CreateComment(c *fiber.Ctx) error {
 	}
 	if len(req.Content) > 2000 {
 		return response.Error(c, fiber.StatusBadRequest, "content exceeds 2000 characters")
+	}
+	dedupeKey := strings.Join([]string{
+		uid,
+		videoID,
+		util.SHA256Hex(req.Content),
+	}, ":")
+	ok, err := h.claimOnce(c, "comment-content", dedupeKey, time.Minute)
+	if err != nil {
+		return response.Error(c, fiber.StatusServiceUnavailable, "anti-spam unavailable")
+	}
+	if !ok {
+		return h.respondRateLimited(c, "interaction.comment.duplicate", time.Minute, "duplicate comment submitted too fast")
 	}
 
 	tx, err := h.app.DB.BeginTx(c.UserContext(), nil)

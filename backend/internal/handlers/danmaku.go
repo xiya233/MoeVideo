@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"moevideo/backend/internal/middleware"
 	"moevideo/backend/internal/pagination"
 	"moevideo/backend/internal/response"
+	"moevideo/backend/internal/util"
 )
 
 const (
@@ -290,6 +292,20 @@ func (h *Handler) CreateVideoDanmaku(c *fiber.Ctx) error {
 	color, err := normalizeDanmakuColor(req.Color)
 	if err != nil {
 		return response.Error(c, fiber.StatusBadRequest, "color must be hex like #FFFFFF")
+	}
+	roundedTime := strconv.FormatInt(int64(math.Round(req.TimeSec)), 10)
+	dedupeKey := strings.Join([]string{
+		viewerID,
+		videoID,
+		roundedTime,
+		util.SHA256Hex(content),
+	}, ":")
+	ok, err := h.claimOnce(c, "danmaku-content", dedupeKey, 10*time.Second)
+	if err != nil {
+		return response.Error(c, fiber.StatusServiceUnavailable, "anti-spam unavailable")
+	}
+	if !ok {
+		return h.respondRateLimited(c, "interaction.danmaku.duplicate", 10*time.Second, "duplicate danmaku submitted too fast")
 	}
 
 	item := danmakuItem{

@@ -41,6 +41,13 @@ type Config struct {
 	ImportPageResolverTimeout time.Duration
 	ImportPageResolverMax     int
 	ImportPageResolverCmd     string
+	RateLimitEnabled          bool
+	RateLimitRedisAddr        string
+	RateLimitRedisPassword    string
+	RateLimitRedisDB          int
+	RateLimitRedisPrefix      string
+	RateLimitFailClosedProd   bool
+	RateLimitDevFallbackMem   bool
 
 	S3Bucket          string
 	S3Region          string
@@ -80,6 +87,9 @@ func Load() (Config, error) {
 			"IMPORT_PAGE_RESOLVER_CMD",
 			"bun scripts/page_manifest_resolver.mjs",
 		),
+		RateLimitRedisAddr:     strings.TrimSpace(getEnv("RATE_LIMIT_REDIS_ADDR", "")),
+		RateLimitRedisPassword: getEnv("RATE_LIMIT_REDIS_PASSWORD", ""),
+		RateLimitRedisPrefix:   strings.TrimSpace(getEnv("RATE_LIMIT_REDIS_PREFIX", "moevideo")),
 	}
 
 	cookieSecureRaw := strings.ToLower(strings.TrimSpace(getEnv("AUTH_COOKIE_SECURE", "")))
@@ -104,6 +114,24 @@ func Load() (Config, error) {
 		cfg.AuthCookiePath = "/"
 	}
 	cfg.CORSAllowedOrigins = parseCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"))
+
+	rateLimitEnabledRaw := strings.ToLower(strings.TrimSpace(getEnv("RATE_LIMIT_ENABLED", "true")))
+	cfg.RateLimitEnabled = rateLimitEnabledRaw == "1" || rateLimitEnabledRaw == "true" || rateLimitEnabledRaw == "yes"
+	if cfg.RateLimitRedisPrefix == "" {
+		cfg.RateLimitRedisPrefix = "moevideo"
+	}
+	rateLimitRedisDB, err := strconv.Atoi(getEnv("RATE_LIMIT_REDIS_DB", "0"))
+	if err != nil {
+		return cfg, fmt.Errorf("invalid RATE_LIMIT_REDIS_DB: %w", err)
+	}
+	if rateLimitRedisDB < 0 {
+		return cfg, fmt.Errorf("RATE_LIMIT_REDIS_DB must be non-negative")
+	}
+	cfg.RateLimitRedisDB = rateLimitRedisDB
+	failClosedRaw := strings.ToLower(strings.TrimSpace(getEnv("RATE_LIMIT_FAIL_CLOSED_PROD", "true")))
+	cfg.RateLimitFailClosedProd = failClosedRaw == "1" || failClosedRaw == "true" || failClosedRaw == "yes"
+	devFallbackRaw := strings.ToLower(strings.TrimSpace(getEnv("RATE_LIMIT_DEV_FALLBACK_MEMORY", "true")))
+	cfg.RateLimitDevFallbackMem = devFallbackRaw == "1" || devFallbackRaw == "true" || devFallbackRaw == "yes"
 
 	accessTTL, err := time.ParseDuration(getEnv("ACCESS_TOKEN_TTL", "15m"))
 	if err != nil {
