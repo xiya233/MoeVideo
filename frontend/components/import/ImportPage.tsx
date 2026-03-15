@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
 import { AppIcon } from "@/components/common/AppIcon";
@@ -18,7 +18,7 @@ import {
 import { importsApi } from "@/lib/imports/api";
 import { cn } from "@/lib/utils/cn";
 
-const POLL_INTERVAL = 2000;
+const POLL_INTERVAL = 1000;
 const MAX_PREVIEW_JOBS = 10;
 type ImportSourceType = "url" | "torrent";
 type TypedJobState = {
@@ -31,6 +31,12 @@ type TypedJobState = {
   loaded: boolean;
 };
 
+type ActiveJobState = {
+  id: string;
+  detail: ImportJobDetailData | null;
+  error: string;
+};
+
 function createEmptyJobState(): TypedJobState {
   return {
     items: [],
@@ -40,6 +46,14 @@ function createEmptyJobState(): TypedJobState {
     loadMoreError: "",
     error: "",
     loaded: false,
+  };
+}
+
+function createEmptyActiveJobState(): ActiveJobState {
+  return {
+    id: "",
+    detail: null,
+    error: "",
   };
 }
 
@@ -75,6 +89,13 @@ function formatBytes(value: number): string {
     return `${(value / (1024 * 1024)).toFixed(1)} MB`;
   }
   return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function formatSpeed(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0 B/s";
+  }
+  return `${formatBytes(value)}/s`;
 }
 
 function formatStatus(status: ImportJob["status"], draftExpired = false): string {
@@ -151,9 +172,10 @@ export function ImportPage() {
   const [startError, setStartError] = useState("");
   const [urlError, setURLError] = useState("");
 
-  const [activeJobID, setActiveJobID] = useState("");
-  const [activeJobDetail, setActiveJobDetail] = useState<ImportJobDetailData | null>(null);
-  const [activeJobError, setActiveJobError] = useState("");
+  const [activeJobsByType, setActiveJobsByType] = useState<Record<ImportSourceType, ActiveJobState>>({
+    url: createEmptyActiveJobState(),
+    torrent: createEmptyActiveJobState(),
+  });
 
   const [jobsByType, setJobsByType] = useState<Record<ImportSourceType, TypedJobState>>({
     url: createEmptyJobState(),
@@ -162,6 +184,7 @@ export function ImportPage() {
   const [jobsClearingScope, setJobsClearingScope] = useState<"finished" | "expired" | null>(null);
 
   const pollRef = useRef<number | null>(null);
+  const pollMetaRef = useRef<{ sourceType: ImportSourceType; jobID: string } | null>(null);
   const fieldClass =
     "w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-70";
   const fieldLabelClass = "text-xs font-semibold uppercase tracking-wide text-slate-500";
@@ -174,6 +197,7 @@ export function ImportPage() {
       window.clearInterval(pollRef.current);
       pollRef.current = null;
     }
+    pollMetaRef.current = null;
   }, []);
 
   const loadCategories = useCallback(async () => {
@@ -279,11 +303,17 @@ export function ImportPage() {
   }, [jobsByType, importMode, loadJobsBySourceType, session]);
 
   const loadJobDetail = useCallback(
-    async (jobID: string) => {
+    async (sourceType: ImportSourceType, jobID: string) => {
       const dataRaw = await importsApi.getJob(request, jobID);
       const data = mapImportJobDetailData(dataRaw);
-      setActiveJobDetail(data);
-      setActiveJobError("");
+      setActiveJobsByType((prev) => ({
+        ...prev,
+        [sourceType]: {
+          id: jobID,
+          detail: data,
+          error: "",
+        },
+      }));
       return data;
     },
     [request],
@@ -295,12 +325,18 @@ export function ImportPage() {
         url: createEmptyJobState(),
         torrent: createEmptyJobState(),
       });
+      setActiveJobsByType({
+        url: createEmptyActiveJobState(),
+        torrent: createEmptyActiveJobState(),
+      });
+      stopPolling();
       return;
     }
     void loadCategories();
-  }, [loadCategories, session]);
+  }, [loadCategories, session, stopPolling]);
 
   const currentJobsState = jobsByType[importMode];
+  const currentActiveJobState = activeJobsByType[importMode];
 
   useEffect(() => {
     if (!session) {
@@ -319,24 +355,59 @@ export function ImportPage() {
   }, [stopPolling]);
 
   const openPolling = useCallback(
-    (jobID: string) => {
+    (sourceType: ImportSourceType, jobID: string) => {
       stopPolling();
+      pollMetaRef.current = { sourceType, jobID };
       pollRef.current = window.setInterval(() => {
         void (async () => {
           try {
-            const next = await loadJobDetail(jobID);
+            const next = await loadJobDetail(sourceType, jobID);
             if (!isJobPollingStatus(next.job.status)) {
               stopPolling();
               await loadJobsBySourceType(next.job.source_type);
             }
           } catch (err) {
-            setActiveJobError(err instanceof Error ? err.message : "导入任务刷新失败");
+            const message = err instanceof Error ? err.message : "导入任务刷新失败";
+            setActiveJobsByType((prev) => ({
+              ...prev,
+              [sourceType]: {
+                ...prev[sourceType],
+                error: message,
+              },
+            }));
           }
         })();
       }, POLL_INTERVAL);
     },
     [loadJobDetail, loadJobsBySourceType, stopPolling],
   );
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    const runningPoll = pollMetaRef.current;
+    if (runningPoll && runningPoll.sourceType !== importMode) {
+      stopPolling();
+    }
+    const activeState = activeJobsByType[importMode];
+    if (!activeState.id || !activeState.detail) {
+      if (pollMetaRef.current?.sourceType === importMode) {
+        stopPolling();
+      }
+      return;
+    }
+    if (!isJobPollingStatus(activeState.detail.job.status)) {
+      if (pollMetaRef.current?.sourceType === importMode) {
+        stopPolling();
+      }
+      return;
+    }
+    const currentPoll = pollMetaRef.current;
+    if (!currentPoll || currentPoll.sourceType !== importMode || currentPoll.jobID !== activeState.id) {
+      openPolling(importMode, activeState.id);
+    }
+  }, [activeJobsByType, importMode, openPolling, session, stopPolling]);
 
   const onInspectTorrent = async () => {
     if (!torrentFile) {
@@ -365,10 +436,17 @@ export function ImportPage() {
       setInspectItems(mappedItems);
       const persistedSelected = mappedItems.filter((item) => item.selected).map((item) => item.file_index);
       setSelectedIndexes(new Set(persistedSelected.length > 0 ? persistedSelected : mappedItems.map((item) => item.file_index)));
-      setActiveJobID(result.job.id);
-      const detail = await loadJobDetail(result.job.id);
+      setActiveJobsByType((prev) => ({
+        ...prev,
+        torrent: {
+          ...prev.torrent,
+          id: result.job.id,
+          error: "",
+        },
+      }));
+      const detail = await loadJobDetail("torrent", result.job.id);
       if (isJobPollingStatus(detail.job.status)) {
-        openPolling(result.job.id);
+        openPolling("torrent", result.job.id);
       } else {
         stopPolling();
       }
@@ -417,10 +495,17 @@ export function ImportPage() {
         description: importDescription.trim() || undefined,
       });
 
-      setActiveJobID(inspectJob.id);
-      const detail = await loadJobDetail(inspectJob.id);
+      setActiveJobsByType((prev) => ({
+        ...prev,
+        torrent: {
+          ...prev.torrent,
+          id: inspectJob.id,
+          error: "",
+        },
+      }));
+      const detail = await loadJobDetail("torrent", inspectJob.id);
       if (isJobPollingStatus(detail.job.status)) {
-        openPolling(inspectJob.id);
+        openPolling("torrent", inspectJob.id);
       }
       await loadJobsBySourceType("torrent");
     } catch (err) {
@@ -455,10 +540,17 @@ export function ImportPage() {
         title: importTitle.trim() || undefined,
         description: importDescription.trim() || undefined,
       });
-      setActiveJobID(result.job_id);
-      const detail = await loadJobDetail(result.job_id);
+      setActiveJobsByType((prev) => ({
+        ...prev,
+        url: {
+          ...prev.url,
+          id: result.job_id,
+          error: "",
+        },
+      }));
+      const detail = await loadJobDetail("url", result.job_id);
       if (isJobPollingStatus(detail.job.status)) {
-        openPolling(result.job_id);
+        openPolling("url", result.job_id);
       } else {
         stopPolling();
       }
@@ -482,15 +574,8 @@ export function ImportPage() {
     });
   };
 
-  const activeDetail = useMemo(() => {
-    if (!activeJobDetail) {
-      return null;
-    }
-    if (activeJobID && activeJobDetail.job.id === activeJobID) {
-      return activeJobDetail;
-    }
-    return activeJobDetail;
-  }, [activeJobDetail, activeJobID]);
+  const activeDetail = currentActiveJobState.detail;
+  const activeJobError = currentActiveJobState.error;
 
   const applyDraftToEditor = (detail: ImportJobDetailData) => {
     const draftItems = detail.items;
@@ -515,8 +600,15 @@ export function ImportPage() {
 
   const resumeDraftJob = async (jobID: string) => {
     try {
-      setActiveJobID(jobID);
-      const detail = await loadJobDetail(jobID);
+      setActiveJobsByType((prev) => ({
+        ...prev,
+        torrent: {
+          ...prev.torrent,
+          id: jobID,
+          error: "",
+        },
+      }));
+      const detail = await loadJobDetail("torrent", jobID);
       if (detail.job.source_type !== "torrent" || detail.job.status !== "draft") {
         setStartError("当前任务不是可继续的 BT 草稿");
         return;
@@ -560,23 +652,25 @@ export function ImportPage() {
     }));
     try {
       await importsApi.clearFinishedJobs(request, scope, importMode);
+      const currentActiveDetail = activeJobsByType[importMode].detail;
       if (
-        activeJobDetail &&
-        activeJobDetail.job.source_type === importMode &&
-        ((scope === "finished" && !isJobPollingStatus(activeJobDetail.job.status) && activeJobDetail.job.status !== "draft") ||
+        currentActiveDetail &&
+        currentActiveDetail.job.source_type === importMode &&
+        ((scope === "finished" && !isJobPollingStatus(currentActiveDetail.job.status) && currentActiveDetail.job.status !== "draft") ||
           (scope === "expired" &&
-            activeJobDetail.job.source_type === "torrent" &&
-            activeJobDetail.job.status === "draft" &&
-            activeJobDetail.job.draft_expired))
+            currentActiveDetail.job.source_type === "torrent" &&
+            currentActiveDetail.job.status === "draft" &&
+            currentActiveDetail.job.draft_expired))
       ) {
         stopPolling();
-        setActiveJobID("");
-        setActiveJobDetail(null);
-        setActiveJobError("");
+        setActiveJobsByType((prev) => ({
+          ...prev,
+          [importMode]: createEmptyActiveJobState(),
+        }));
       }
       if (scope === "expired" && importMode === "torrent" && inspectJob?.id) {
         try {
-          const draftDetail = await loadJobDetail(inspectJob.id);
+          const draftDetail = await loadJobDetail("torrent", inspectJob.id);
           if (draftDetail.job.draft_expired) {
             setInspectJob(null);
             setInspectItems([]);
@@ -968,7 +1062,7 @@ export function ImportPage() {
 
       <section className={cardClass}>
         <div className="mb-4 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-bold text-slate-900">导入任务进度</h2>
+          <h2 className="text-lg font-bold text-slate-900">{importMode === "url" ? "URL 导入任务进度" : "BT 导入任务进度"}</h2>
           {activeDetail ? (
             <span
               className={cn(
@@ -1008,6 +1102,37 @@ export function ImportPage() {
               <p className="mt-2 text-xs text-slate-500">
                 已完成 {activeDetail.job.completed_files}/{activeDetail.job.selected_files} · 失败 {activeDetail.job.failed_files}
               </p>
+              {activeDetail.job.source_type === "url" ? (
+                <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-slate-600">
+                  <div className="rounded-lg bg-white px-3 py-2">
+                    <span className="text-slate-500">下载速度</span>
+                    <p className="mt-1 font-semibold text-slate-900">{formatSpeed(activeDetail.job.download_speed_bps)}</p>
+                  </div>
+                  <div className="rounded-lg bg-white px-3 py-2">
+                    <span className="text-slate-500">已下载</span>
+                    <p className="mt-1 font-semibold text-slate-900">{formatBytes(activeDetail.job.downloaded_bytes)}</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-slate-600 md:grid-cols-4">
+                  <div className="rounded-lg bg-white px-3 py-2">
+                    <span className="text-slate-500">下载速度</span>
+                    <p className="mt-1 font-semibold text-slate-900">{formatSpeed(activeDetail.job.download_speed_bps)}</p>
+                  </div>
+                  <div className="rounded-lg bg-white px-3 py-2">
+                    <span className="text-slate-500">上传速度</span>
+                    <p className="mt-1 font-semibold text-slate-900">{formatSpeed(activeDetail.job.upload_speed_bps)}</p>
+                  </div>
+                  <div className="rounded-lg bg-white px-3 py-2">
+                    <span className="text-slate-500">已下载</span>
+                    <p className="mt-1 font-semibold text-slate-900">{formatBytes(activeDetail.job.downloaded_bytes)}</p>
+                  </div>
+                  <div className="rounded-lg bg-white px-3 py-2">
+                    <span className="text-slate-500">已上传</span>
+                    <p className="mt-1 font-semibold text-slate-900">{formatBytes(activeDetail.job.uploaded_bytes)}</p>
+                  </div>
+                </div>
+              )}
               {activeDetail.job.error_message ? <p className="mt-2 text-xs text-rose-600">{activeDetail.job.error_message}</p> : null}
             </div>
 
@@ -1086,10 +1211,17 @@ export function ImportPage() {
                       type="button"
                       className="min-w-0 flex-1 text-left"
                       onClick={() => {
-                        setActiveJobID(job.id);
-                        void loadJobDetail(job.id);
+                        setActiveJobsByType((prev) => ({
+                          ...prev,
+                          [importMode]: {
+                            ...prev[importMode],
+                            id: job.id,
+                            error: "",
+                          },
+                        }));
+                        void loadJobDetail(importMode, job.id);
                         if (isJobPollingStatus(job.status)) {
-                          openPolling(job.id);
+                          openPolling(importMode, job.id);
                         } else {
                           stopPolling();
                         }

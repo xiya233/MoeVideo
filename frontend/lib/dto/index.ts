@@ -195,6 +195,11 @@ export type ImportJob = {
   completed_files: number;
   failed_files: number;
   progress: number;
+  downloaded_bytes: number;
+  uploaded_bytes: number;
+  download_speed_bps: number;
+  upload_speed_bps: number;
+  transfer_updated_at?: string;
   available_at?: string;
   started_at?: string;
   finished_at?: string;

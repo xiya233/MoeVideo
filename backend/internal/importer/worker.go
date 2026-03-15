@@ -1,6 +1,7 @@
 package importer
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -13,7 +14,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anacrolix/torrent"
@@ -153,6 +157,11 @@ LIMIT 1`, now).Scan(&job.ID, &job.UserID, &job.Attempts, &job.MaxAttempts)
 UPDATE video_import_jobs
 SET status = 'downloading',
     attempts = attempts + 1,
+    downloaded_bytes = 0,
+    uploaded_bytes = 0,
+    download_speed_bps = 0,
+    upload_speed_bps = 0,
+    transfer_updated_at = NULL,
     started_at = COALESCE(started_at, ?),
     updated_at = ?
 WHERE id = ? AND status = 'queued'`, now, now, job.ID)
@@ -328,6 +337,7 @@ ORDER BY file_index ASC`, job.ID)
 	failedCount := 0
 	lastErr := ""
 	selectedTotal := len(selected)
+	downloadedTotal := int64(0)
 
 	for _, item := range selected {
 		if err := w.markItemStatus(ctx, item.ID, "downloading", "", "", ""); err != nil {
@@ -345,7 +355,25 @@ ORDER BY file_index ASC`, job.ID)
 		file := files[item.FileIndex]
 		file.Download()
 
-		importErr := w.importSelectedFile(ctx, job, item, file, categoryPtr, tags, visibility, len(selected), customTitle, customTitlePrefix, customDescription)
+		importErr := w.importSelectedFile(
+			ctx,
+			job,
+			item,
+			file,
+			tor,
+			downloadedTotal,
+			categoryPtr,
+			tags,
+			visibility,
+			len(selected),
+			customTitle,
+			customTitlePrefix,
+			customDescription,
+		)
+		downloadedNow := downloadedTotal + max(0, file.BytesCompleted())
+		if downloadedNow > downloadedTotal {
+			downloadedTotal = downloadedNow
+		}
 		if importErr != nil {
 			failedCount++
 			lastErr = truncateErr(importErr, 600)
@@ -606,7 +634,7 @@ func (w *Worker) importURLFromResolvedSource(
 	}
 	defer os.RemoveAll(tmpDir)
 
-	localSourcePath, err := w.downloadURLSource(ctx, sourceURL, tmpDir, downloadArgs)
+	localSourcePath, err := w.downloadURLSource(ctx, job.ID, sourceURL, tmpDir, downloadArgs)
 	if err != nil {
 		return err
 	}
@@ -694,7 +722,7 @@ func (w *Worker) extractURLMetadata(ctx context.Context, sourceURL string, extra
 	return meta, nil
 }
 
-func (w *Worker) downloadURLSource(ctx context.Context, sourceURL, tmpDir string, extraArgs []string) (string, error) {
+func (w *Worker) downloadURLSource(ctx context.Context, jobID, sourceURL, tmpDir string, extraArgs []string) (string, error) {
 	timeout := w.app.Config.ImportURLTimeout
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
@@ -705,20 +733,106 @@ func (w *Worker) downloadURLSource(ctx context.Context, sourceURL, tmpDir string
 	outputTemplate := filepath.Join(tmpDir, "source.%(ext)s")
 	args := []string{
 		"--no-playlist",
-		"--no-progress",
+		"--newline",
 		"--no-warnings",
 		"--restrict-filenames",
+		"--progress-template",
+		"download:%(progress.downloaded_bytes)s",
 		"-o", outputTemplate,
 	}
 	args = append(args, extraArgs...)
 	args = append(args, sourceURL)
 	cmd := exec.CommandContext(runCtx, w.app.Config.YTDLPBin, args...)
-	out, err := cmd.CombinedOutput()
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("yt-dlp download setup stdout: %w", err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return "", fmt.Errorf("yt-dlp download setup stderr: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("yt-dlp download failed to start: %w", err)
+	}
+
+	var (
+		downloadedBytes atomic.Int64
+		outputBuf       strings.Builder
+		outputMu        sync.Mutex
+		readWG          sync.WaitGroup
+		sampleWG        sync.WaitGroup
+	)
+
+	appendLine := func(line string) {
+		outputMu.Lock()
+		if outputBuf.Len() < 16*1024 {
+			outputBuf.WriteString(line)
+			outputBuf.WriteByte('\n')
+		}
+		outputMu.Unlock()
+	}
+	scanReader := func(reader io.Reader) {
+		defer readWG.Done()
+		scanner := bufio.NewScanner(reader)
+		buf := make([]byte, 0, 64*1024)
+		scanner.Buffer(buf, 2*1024*1024)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			appendLine(line)
+			if bytes, ok := parseYTDLPDownloadedBytes(line); ok {
+				current := downloadedBytes.Load()
+				if bytes > current {
+					downloadedBytes.Store(bytes)
+				}
+			}
+		}
+	}
+
+	readWG.Add(2)
+	go scanReader(stdoutPipe)
+	go scanReader(stderrPipe)
+
+	sampleCtx, stopSample := context.WithCancel(ctx)
+	sampleWG.Add(1)
+	go func() {
+		defer sampleWG.Done()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		lastAt := time.Now()
+		lastDownloaded := int64(0)
+		for {
+			select {
+			case <-sampleCtx.Done():
+				return
+			case <-ticker.C:
+				now := time.Now()
+				currentDownloaded := downloadedBytes.Load()
+				downloadSpeed := computeSpeedBPS(lastDownloaded, currentDownloaded, lastAt, now)
+				if err := w.updateJobTransferMetrics(ctx, jobID, currentDownloaded, 0, downloadSpeed, 0); err != nil {
+					w.logger.Printf("import job %s update url transfer metrics failed: %v", jobID, err)
+				}
+				lastAt = now
+				lastDownloaded = currentDownloaded
+			}
+		}
+	}()
+
+	err = cmd.Wait()
+	stopSample()
+	sampleWG.Wait()
+	readWG.Wait()
 	if err != nil {
 		if runCtx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("yt-dlp download timeout")
 		}
-		return "", fmt.Errorf("yt-dlp download failed: %w: %s", err, truncateOutput(out, 400))
+		outputMu.Lock()
+		outText := outputBuf.String()
+		outputMu.Unlock()
+		return "", fmt.Errorf("yt-dlp download failed: %w: %s", err, truncateOutput([]byte(outText), 400))
 	}
 
 	matches, err := filepath.Glob(filepath.Join(tmpDir, "source.*"))
@@ -751,6 +865,14 @@ func (w *Worker) downloadURLSource(ctx context.Context, sourceURL, tmpDir string
 	if _, ok := allowedImportVideoExts[ext]; !ok {
 		return "", permanentError{err: fmt.Errorf("downloaded format is not supported: %s", ext)}
 	}
+
+	finalDownloaded := downloadedBytes.Load()
+	if info, statErr := os.Stat(localSourcePath); statErr == nil && info.Size() > finalDownloaded {
+		finalDownloaded = info.Size()
+	}
+	if err := w.updateJobTransferMetrics(ctx, jobID, finalDownloaded, 0, 0, 0); err != nil {
+		w.logger.Printf("import job %s finalize url transfer metrics failed: %v", jobID, err)
+	}
 	return localSourcePath, nil
 }
 
@@ -759,6 +881,8 @@ func (w *Worker) importSelectedFile(
 	job claimedJob,
 	item selectedItem,
 	file *torrent.File,
+	tor *torrent.Torrent,
+	baseDownloadedBytes int64,
 	categoryID *int64,
 	tags []string,
 	visibility string,
@@ -794,6 +918,12 @@ func (w *Worker) importSelectedFile(
 	if err != nil {
 		return fmt.Errorf("create local source file: %w", err)
 	}
+
+	stopSampler := w.startTorrentTransferSampler(ctx, job.ID, file, tor, baseDownloadedBytes)
+	defer func() {
+		stopSampler(0)
+	}()
+
 	if _, err := io.Copy(out, reader); err != nil {
 		out.Close()
 		return fmt.Errorf("download torrent file: %w", err)
@@ -801,6 +931,7 @@ func (w *Worker) importSelectedFile(
 	if err := out.Close(); err != nil {
 		return fmt.Errorf("close local source file: %w", err)
 	}
+	stopSampler(0)
 
 	autoTitle := buildImportVideoTitle(item.FilePath)
 	finalTitle := chooseTorrentImportTitle(autoTitle, selectedTotal, customTitle, customTitlePrefix)
@@ -994,6 +1125,108 @@ WHERE id = ?`,
 	return err
 }
 
+func (w *Worker) updateJobTransferMetrics(ctx context.Context, jobID string, downloadedBytes, uploadedBytes int64, downloadSpeedBPS, uploadSpeedBPS float64) error {
+	now := nowString()
+	_, err := w.app.DB.ExecContext(ctx, `
+UPDATE video_import_jobs
+SET downloaded_bytes = ?,
+	uploaded_bytes = ?,
+	download_speed_bps = ?,
+	upload_speed_bps = ?,
+	transfer_updated_at = ?,
+	updated_at = ?
+WHERE id = ?`,
+		max(0, downloadedBytes),
+		max(0, uploadedBytes),
+		max(0.0, downloadSpeedBPS),
+		max(0.0, uploadSpeedBPS),
+		now,
+		now,
+		jobID,
+	)
+	return err
+}
+
+func (w *Worker) startTorrentTransferSampler(
+	ctx context.Context,
+	jobID string,
+	file *torrent.File,
+	tor *torrent.Torrent,
+	baseDownloadedBytes int64,
+) func(finalUploadSpeed float64) {
+	sampleCtx, cancel := context.WithCancel(ctx)
+	var (
+		once sync.Once
+		wg   sync.WaitGroup
+	)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+
+		lastAt := time.Now()
+		lastDownloaded := baseDownloadedBytes + max(0, file.BytesCompleted())
+		lastUploaded := torrentUploadedBytes(tor)
+
+		for {
+			select {
+			case <-sampleCtx.Done():
+				return
+			case <-ticker.C:
+				now := time.Now()
+				downloaded := baseDownloadedBytes + max(0, file.BytesCompleted())
+				uploaded := torrentUploadedBytes(tor)
+				downloadSpeed := computeSpeedBPS(lastDownloaded, downloaded, lastAt, now)
+				uploadSpeed := computeSpeedBPS(lastUploaded, uploaded, lastAt, now)
+				if err := w.updateJobTransferMetrics(ctx, jobID, downloaded, uploaded, downloadSpeed, uploadSpeed); err != nil {
+					w.logger.Printf("import job %s update torrent transfer metrics failed: %v", jobID, err)
+				}
+				lastAt = now
+				lastDownloaded = downloaded
+				lastUploaded = uploaded
+			}
+		}
+	}()
+
+	return func(finalUploadSpeed float64) {
+		once.Do(func() {
+			cancel()
+			wg.Wait()
+			downloaded := baseDownloadedBytes + max(0, file.BytesCompleted())
+			uploaded := torrentUploadedBytes(tor)
+			if err := w.updateJobTransferMetrics(ctx, jobID, downloaded, uploaded, 0, max(0, finalUploadSpeed)); err != nil {
+				w.logger.Printf("import job %s finalize torrent transfer metrics failed: %v", jobID, err)
+			}
+		})
+	}
+}
+
+func torrentUploadedBytes(tor *torrent.Torrent) int64 {
+	if tor == nil {
+		return 0
+	}
+	stats := tor.Stats()
+	bytesWrittenData := stats.BytesWrittenData
+	return bytesWrittenData.Int64()
+}
+
+func computeSpeedBPS(previous, current int64, from, to time.Time) float64 {
+	if to.Before(from) {
+		return 0
+	}
+	delta := current - previous
+	if delta <= 0 {
+		return 0
+	}
+	seconds := to.Sub(from).Seconds()
+	if seconds <= 0 {
+		return 0
+	}
+	return float64(delta) / seconds
+}
+
 func (w *Worker) updateJobProgress(ctx context.Context, jobID string, completed, failed, total int) error {
 	progress := 0.0
 	if total > 0 {
@@ -1028,6 +1261,9 @@ SET status = ?,
 	completed_files = ?,
 	failed_files = ?,
 	progress = ?,
+	download_speed_bps = 0,
+	upload_speed_bps = 0,
+	transfer_updated_at = ?,
 	error_message = ?,
 	finished_at = ?,
 	updated_at = ?
@@ -1036,6 +1272,7 @@ WHERE id = ?`,
 		result.Completed,
 		result.Failed,
 		progress,
+		now,
 		nullableString(result.ErrorMessage),
 		now,
 		now,
@@ -1061,6 +1298,11 @@ func (w *Worker) markJobFailure(ctx context.Context, job claimedJob, cause error
 UPDATE video_import_jobs
 SET status = 'queued',
 	error_message = ?,
+	downloaded_bytes = 0,
+	uploaded_bytes = 0,
+	download_speed_bps = 0,
+	upload_speed_bps = 0,
+	transfer_updated_at = NULL,
 	available_at = ?,
 	updated_at = ?
 WHERE id = ?`, msg, nextRun, nowStr, job.ID)
@@ -1075,9 +1317,12 @@ WHERE id = ?`, msg, nextRun, nowStr, job.ID)
 UPDATE video_import_jobs
 SET status = 'failed',
 	error_message = ?,
+	download_speed_bps = 0,
+	upload_speed_bps = 0,
+	transfer_updated_at = ?,
 	finished_at = ?,
 	updated_at = ?
-WHERE id = ?`, msg, nowStr, nowStr, job.ID)
+WHERE id = ?`, msg, nowStr, nowStr, nowStr, job.ID)
 	if err != nil {
 		return fmt.Errorf("mark import final failure: %w", err)
 	}
@@ -1193,6 +1438,31 @@ func validateWorkerYTDLPArgs(args []string) error {
 		}
 	}
 	return nil
+}
+
+var ytdlpDownloadedBytesRe = regexp.MustCompile(`download:\s*([0-9]+(?:\.[0-9]+)?)`)
+
+func parseYTDLPDownloadedBytes(line string) (int64, bool) {
+	matches := ytdlpDownloadedBytesRe.FindStringSubmatch(strings.ToLower(strings.TrimSpace(line)))
+	if len(matches) != 2 {
+		return 0, false
+	}
+	value := strings.TrimSpace(matches[1])
+	if value == "" {
+		return 0, false
+	}
+	if strings.Contains(value, ".") {
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err != nil || parsed <= 0 {
+			return 0, false
+		}
+		return int64(parsed), true
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		return 0, false
+	}
+	return parsed, true
 }
 
 var importUnsafeChars = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)

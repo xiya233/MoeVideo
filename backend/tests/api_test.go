@@ -1658,10 +1658,14 @@ func TestURLImportStartCreatesQueuedJob(t *testing.T) {
 	}
 	var listData struct {
 		Items []struct {
-			ID         string `json:"id"`
-			SourceType string `json:"source_type"`
-			SourceURL  string `json:"source_url"`
-			Status     string `json:"status"`
+			ID               string  `json:"id"`
+			SourceType       string  `json:"source_type"`
+			SourceURL        string  `json:"source_url"`
+			Status           string  `json:"status"`
+			DownloadedBytes  int64   `json:"downloaded_bytes"`
+			UploadedBytes    int64   `json:"uploaded_bytes"`
+			DownloadSpeedBPS float64 `json:"download_speed_bps"`
+			UploadSpeedBPS   float64 `json:"upload_speed_bps"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(listResp.Data, &listData); err != nil {
@@ -1681,6 +1685,12 @@ func TestURLImportStartCreatesQueuedJob(t *testing.T) {
 	}
 	if listData.Items[0].Status != "queued" {
 		t.Fatalf("expected queued status, got %s", listData.Items[0].Status)
+	}
+	if listData.Items[0].DownloadedBytes != 0 || listData.Items[0].UploadedBytes != 0 {
+		t.Fatalf("expected zero transfer bytes for new queued job, got downloaded=%d uploaded=%d", listData.Items[0].DownloadedBytes, listData.Items[0].UploadedBytes)
+	}
+	if listData.Items[0].DownloadSpeedBPS != 0 || listData.Items[0].UploadSpeedBPS != 0 {
+		t.Fatalf("expected zero transfer speeds for new queued job, got download=%f upload=%f", listData.Items[0].DownloadSpeedBPS, listData.Items[0].UploadSpeedBPS)
 	}
 
 	now := util.FormatTime(time.Now().UTC())
@@ -1757,10 +1767,14 @@ INSERT INTO video_import_jobs (
 	}
 	var detailData struct {
 		Job struct {
-			ID         string `json:"id"`
-			SourceType string `json:"source_type"`
-			SourceURL  string `json:"source_url"`
-			Status     string `json:"status"`
+			ID               string  `json:"id"`
+			SourceType       string  `json:"source_type"`
+			SourceURL        string  `json:"source_url"`
+			Status           string  `json:"status"`
+			DownloadedBytes  int64   `json:"downloaded_bytes"`
+			UploadedBytes    int64   `json:"uploaded_bytes"`
+			DownloadSpeedBPS float64 `json:"download_speed_bps"`
+			UploadSpeedBPS   float64 `json:"upload_speed_bps"`
 		} `json:"job"`
 		Items []struct {
 			Selected bool `json:"selected"`
@@ -1777,6 +1791,12 @@ INSERT INTO video_import_jobs (
 	}
 	if detailData.Job.SourceURL != "https://example.com/video/123" {
 		t.Fatalf("unexpected detail source_url: %s", detailData.Job.SourceURL)
+	}
+	if detailData.Job.DownloadedBytes != 0 || detailData.Job.UploadedBytes != 0 {
+		t.Fatalf("expected zero detail transfer bytes for queued job")
+	}
+	if detailData.Job.DownloadSpeedBPS != 0 || detailData.Job.UploadSpeedBPS != 0 {
+		t.Fatalf("expected zero detail transfer speeds for queued job")
 	}
 	if len(detailData.Items) != 1 || !detailData.Items[0].Selected {
 		t.Fatalf("expected one selected import item")

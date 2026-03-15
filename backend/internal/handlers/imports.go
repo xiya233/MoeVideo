@@ -391,6 +391,11 @@ SET status = 'queued',
 	completed_files = 0,
 	failed_files = 0,
 	progress = 0,
+	downloaded_bytes = 0,
+	uploaded_bytes = 0,
+	download_speed_bps = 0,
+	upload_speed_bps = 0,
+	transfer_updated_at = NULL,
 	attempts = 0,
 	max_attempts = ?,
 	error_message = NULL,
@@ -559,6 +564,8 @@ SELECT id, source_type, COALESCE(source_filename, ''), COALESCE(info_hash, ''), 
        COALESCE(custom_title, ''), COALESCE(custom_title_prefix, ''), COALESCE(custom_description, ''),
        COALESCE(category_id, 0), tags_json, visibility,
        total_files, selected_files, completed_files, failed_files, progress,
+       COALESCE(downloaded_bytes, 0), COALESCE(uploaded_bytes, 0),
+       COALESCE(download_speed_bps, 0), COALESCE(upload_speed_bps, 0), COALESCE(transfer_updated_at, ''),
        COALESCE(available_at, ''), COALESCE(started_at, ''), COALESCE(finished_at, ''),
        COALESCE(expires_at, ''), COALESCE(error_message, ''),
        created_at, updated_at
@@ -611,6 +618,11 @@ WHERE user_id = ?`
 		Completed     int64
 		Failed        int64
 		Progress      float64
+		Downloaded    int64
+		Uploaded      int64
+		DownSpeedBPS  float64
+		UpSpeedBPS    float64
+		TransferAt    string
 		AvailableAt   string
 		StartedAt     string
 		FinishedAt    string
@@ -644,6 +656,11 @@ WHERE user_id = ?`
 			&item.Completed,
 			&item.Failed,
 			&item.Progress,
+			&item.Downloaded,
+			&item.Uploaded,
+			&item.DownSpeedBPS,
+			&item.UpSpeedBPS,
+			&item.TransferAt,
 			&item.AvailableAt,
 			&item.StartedAt,
 			&item.FinishedAt,
@@ -696,6 +713,11 @@ WHERE user_id = ?`
 			"completed_files":     job.Completed,
 			"failed_files":        job.Failed,
 			"progress":            job.Progress,
+			"downloaded_bytes":    job.Downloaded,
+			"uploaded_bytes":      job.Uploaded,
+			"download_speed_bps":  job.DownSpeedBPS,
+			"upload_speed_bps":    job.UpSpeedBPS,
+			"transfer_updated_at": nullableString(job.TransferAt),
 			"available_at":        job.AvailableAt,
 			"started_at":          job.StartedAt,
 			"finished_at":         job.FinishedAt,
@@ -787,6 +809,11 @@ func (h *Handler) GetImportJobDetail(c *fiber.Ctx) error {
 		completedFiles int64
 		failedFiles    int64
 		progress       float64
+		downloaded     int64
+		uploaded       int64
+		downSpeedBPS   float64
+		upSpeedBPS     float64
+		transferAt     sql.NullString
 		availableAt    sql.NullString
 		startedAt      sql.NullString
 		finishedAt     sql.NullString
@@ -804,6 +831,9 @@ SELECT user_id, source_type, COALESCE(source_filename, ''), COALESCE(info_hash, 
        status,
        category_id, tags_json, visibility,
        total_files, selected_files, completed_files, failed_files, progress,
+       COALESCE(downloaded_bytes, 0), COALESCE(uploaded_bytes, 0),
+       COALESCE(download_speed_bps, 0), COALESCE(upload_speed_bps, 0),
+       transfer_updated_at,
        available_at, started_at, finished_at, expires_at, error_message,
        created_at, updated_at
 FROM video_import_jobs
@@ -829,6 +859,11 @@ LIMIT 1`, jobID).Scan(
 		&completedFiles,
 		&failedFiles,
 		&progress,
+		&downloaded,
+		&uploaded,
+		&downSpeedBPS,
+		&upSpeedBPS,
+		&transferAt,
 		&availableAt,
 		&startedAt,
 		&finishedAt,
@@ -934,6 +969,11 @@ ORDER BY file_index ASC`, jobID)
 			"completed_files":     completedFiles,
 			"failed_files":        failedFiles,
 			"progress":            progress,
+			"downloaded_bytes":    downloaded,
+			"uploaded_bytes":      uploaded,
+			"download_speed_bps":  downSpeedBPS,
+			"upload_speed_bps":    upSpeedBPS,
+			"transfer_updated_at": maybeString(transferAt),
 			"available_at":        maybeString(availableAt),
 			"started_at":          maybeString(startedAt),
 			"finished_at":         maybeString(finishedAt),
