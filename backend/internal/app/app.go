@@ -9,10 +9,15 @@ import (
 	"moevideo/backend/internal/storage"
 )
 
+type ImportControl interface {
+	CancelJob(jobID string) bool
+}
+
 type App struct {
-	Config  config.Config
-	DB      *sql.DB
-	JWT     *auth.Manager
-	Storage *storage.Service
-	RateLim *ratelimit.Service
+	Config    config.Config
+	DB        *sql.DB
+	JWT       *auth.Manager
+	Storage   *storage.Service
+	RateLim   *ratelimit.Service
+	ImportCtl ImportControl
 }

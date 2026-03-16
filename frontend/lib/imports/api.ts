@@ -84,4 +84,11 @@ export const importsApi = {
   getJob(request: ApiRequest, jobId: string) {
     return request<ImportJobDetailData>(`/imports/${jobId}`, { auth: true });
   },
+
+  cancelJob(request: ApiRequest, jobId: string) {
+    return request<{ cancelled: boolean; job_id: string }>(`/imports/${jobId}`, {
+      method: "DELETE",
+      auth: true,
+    });
+  },
 };

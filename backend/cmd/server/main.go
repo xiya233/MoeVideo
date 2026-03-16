@@ -149,11 +149,13 @@ func main() {
 		transcode.WithLogger(appLogger.WithPrefix("module=transcode")),
 		transcode.WithProgressLogInterval(cfg.TranscodeProgressLogInterval),
 	).Run(workerCtx)
-	go importer.NewWorker(
+	importWorker := importer.NewWorker(
 		appContainer,
 		importer.WithLogger(appLogger.WithPrefix("module=import")),
 		importer.WithProgressLogInterval(cfg.ImportProgressLogInterval),
-	).Run(workerCtx)
+	)
+	appContainer.ImportCtl = importWorker
+	go importWorker.Run(workerCtx)
 	go func() {
 		<-workerCtx.Done()
 		appLogger.Infof("shutdown signal received, stopping MoeVideo API")

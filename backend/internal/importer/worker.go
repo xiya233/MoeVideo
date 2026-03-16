@@ -41,7 +41,11 @@ type Worker struct {
 	logger              logger
 	pollInterval        time.Duration
 	progressLogInterval time.Duration
+	cancelMu            sync.Mutex
+	runningJobCancels   map[string]context.CancelFunc
 }
+
+const importJobTempFolderName = "import-jobs"
 
 type Option func(*Worker)
 
@@ -76,6 +80,7 @@ func NewWorker(a *app.App, opts ...Option) *Worker {
 		logger:              defaultLogger.WithPrefix("module=import"),
 		pollInterval:        a.Config.ImportPoll,
 		progressLogInterval: a.Config.ImportProgressLogInterval,
+		runningJobCancels:   map[string]context.CancelFunc{},
 	}
 	if w.pollInterval <= 0 {
 		w.pollInterval = time.Second
@@ -87,6 +92,33 @@ func NewWorker(a *app.App, opts ...Option) *Worker {
 		opt(w)
 	}
 	return w
+}
+
+func (w *Worker) CancelJob(jobID string) bool {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return false
+	}
+	w.cancelMu.Lock()
+	cancel, ok := w.runningJobCancels[jobID]
+	w.cancelMu.Unlock()
+	if !ok {
+		return false
+	}
+	cancel()
+	return true
+}
+
+func (w *Worker) registerJobCancel(jobID string, cancel context.CancelFunc) {
+	w.cancelMu.Lock()
+	w.runningJobCancels[jobID] = cancel
+	w.cancelMu.Unlock()
+}
+
+func (w *Worker) unregisterJobCancel(jobID string) {
+	w.cancelMu.Lock()
+	delete(w.runningJobCancels, jobID)
+	w.cancelMu.Unlock()
 }
 
 func (w *Worker) Run(ctx context.Context) {
@@ -126,7 +158,14 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	}
 	w.logger.Infof("job claimed job_id=%s user_id=%s attempt=%d/%d", job.ID, job.UserID, job.Attempts, job.MaxAttempts)
 
-	result, err := w.processJob(ctx, *job)
+	jobCtx, cancelJob := context.WithCancel(ctx)
+	w.registerJobCancel(job.ID, cancelJob)
+	defer func() {
+		cancelJob()
+		w.unregisterJobCancel(job.ID)
+	}()
+
+	result, err := w.processJob(jobCtx, *job)
 	if err != nil {
 		w.logger.Errorf("job processing failed job_id=%s user_id=%s err=%v", job.ID, job.UserID, err)
 		if markErr := w.markJobFailure(ctx, *job, err); markErr != nil {
@@ -325,7 +364,11 @@ ORDER BY file_index ASC`, job.ID)
 		return nil, permanentError{err: fmt.Errorf("import job %s has empty torrent payload", job.ID)}
 	}
 
-	tmpDir, err := os.MkdirTemp(w.app.Config.TaskTempDir, "moevideo-import-*")
+	tmpParent, err := w.ensureImportJobTempDir(job.ID, "torrent")
+	if err != nil {
+		return nil, fmt.Errorf("prepare import temp dir: %w", err)
+	}
+	tmpDir, err := os.MkdirTemp(tmpParent, "job-*")
 	if err != nil {
 		return nil, fmt.Errorf("create import temp dir: %w", err)
 	}
@@ -713,7 +756,11 @@ func (w *Worker) importURLFromResolvedSource(
 		return permanentError{err: fmt.Errorf("video file size exceeds limit (%d MB)", w.app.Config.ImportURLMaxFile/1024/1024)}
 	}
 
-	tmpDir, err := os.MkdirTemp(w.app.Config.TaskTempDir, "moevideo-import-url-*")
+	tmpParent, err := w.ensureImportJobTempDir(job.ID, "url")
+	if err != nil {
+		return fmt.Errorf("prepare import temp dir: %w", err)
+	}
+	tmpDir, err := os.MkdirTemp(tmpParent, item.ID+"-*")
 	if err != nil {
 		return fmt.Errorf("create import temp dir: %w", err)
 	}
@@ -998,7 +1045,11 @@ func (w *Worker) importSelectedFile(
 	customDescription string,
 ) error {
 	w.logger.Infof("torrent import file download start job_id=%s item_id=%s source_path=%s", job.ID, item.ID, item.FilePath)
-	tmpDir, err := os.MkdirTemp(w.app.Config.TaskTempDir, "moevideo-import-file-*")
+	tmpParent, err := w.ensureImportJobTempDir(job.ID, "files")
+	if err != nil {
+		return fmt.Errorf("prepare temp file dir: %w", err)
+	}
+	tmpDir, err := os.MkdirTemp(tmpParent, item.ID+"-*")
 	if err != nil {
 		return fmt.Errorf("create temp file dir: %w", err)
 	}
@@ -1249,7 +1300,8 @@ SET downloaded_bytes = ?,
 	upload_speed_bps = ?,
 	transfer_updated_at = ?,
 	updated_at = ?
-WHERE id = ?`,
+WHERE id = ?
+  AND status = 'downloading'`,
 		max(0, downloadedBytes),
 		max(0, uploadedBytes),
 		max(0.0, downloadSpeedBPS),
@@ -1408,6 +1460,24 @@ func shouldLogByInterval(lastAt, now time.Time, interval time.Duration) bool {
 	return now.Sub(lastAt) >= interval
 }
 
+func (w *Worker) importJobTempRoot(jobID string) string {
+	return filepath.Join(w.app.Config.TaskTempDir, importJobTempFolderName, jobID)
+}
+
+func (w *Worker) ensureImportJobTempDir(jobID string, parts ...string) (string, error) {
+	dir := w.importJobTempRoot(jobID)
+	if len(parts) > 0 {
+		all := make([]string, 0, len(parts)+1)
+		all = append(all, dir)
+		all = append(all, parts...)
+		dir = filepath.Join(all...)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
 func formatCommand(bin string, args []string) string {
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, bin)
@@ -1429,7 +1499,8 @@ SET completed_files = ?,
 	failed_files = ?,
 	progress = ?,
 	updated_at = ?
-WHERE id = ?`, completed, failed, progress, nowString(), jobID)
+WHERE id = ?
+  AND status = 'downloading'`, completed, failed, progress, nowString(), jobID)
 	return err
 }
 
@@ -1443,7 +1514,7 @@ func (w *Worker) markJobComplete(ctx context.Context, job claimedJob, result pro
 		}
 	}
 
-	_, err := w.app.DB.ExecContext(ctx, `
+	res, err := w.app.DB.ExecContext(ctx, `
 UPDATE video_import_jobs
 SET status = ?,
 	completed_files = ?,
@@ -1455,7 +1526,8 @@ SET status = ?,
 	error_message = ?,
 	finished_at = ?,
 	updated_at = ?
-WHERE id = ?`,
+WHERE id = ?
+  AND status = 'downloading'`,
 		result.Status,
 		result.Completed,
 		result.Failed,
@@ -1468,6 +1540,11 @@ WHERE id = ?`,
 	)
 	if err != nil {
 		return fmt.Errorf("mark import job complete: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		w.logger.Warnf("skip mark import job complete (status changed) job_id=%s", job.ID)
+		return nil
 	}
 	w.logger.Infof(
 		"job status updated job_id=%s status=%s completed=%d failed=%d progress=%.2f error=%q",
@@ -1491,7 +1568,7 @@ func (w *Worker) markJobFailure(ctx context.Context, job claimedJob, cause error
 
 	if shouldRetry {
 		nextRun := util.FormatTime(now.Add(backoffForAttempt(job.Attempts)))
-		_, err := w.app.DB.ExecContext(ctx, `
+		res, err := w.app.DB.ExecContext(ctx, `
 UPDATE video_import_jobs
 SET status = 'queued',
 	error_message = ?,
@@ -1502,15 +1579,21 @@ SET status = 'queued',
 	transfer_updated_at = NULL,
 	available_at = ?,
 	updated_at = ?
-WHERE id = ?`, msg, nextRun, nowStr, job.ID)
+WHERE id = ?
+  AND status = 'downloading'`, msg, nextRun, nowStr, job.ID)
 		if err != nil {
 			return fmt.Errorf("mark import retryable failure: %w", err)
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			w.logger.Warnf("skip retry schedule (status changed) job_id=%s", job.ID)
+			return nil
 		}
 		w.logger.Warnf("job retry scheduled job_id=%s attempt=%d/%d err=%s", job.ID, job.Attempts, job.MaxAttempts, msg)
 		return nil
 	}
 
-	_, err := w.app.DB.ExecContext(ctx, `
+	res, err := w.app.DB.ExecContext(ctx, `
 UPDATE video_import_jobs
 SET status = 'failed',
 	error_message = ?,
@@ -1519,9 +1602,15 @@ SET status = 'failed',
 	transfer_updated_at = ?,
 	finished_at = ?,
 	updated_at = ?
-WHERE id = ?`, msg, nowStr, nowStr, nowStr, job.ID)
+WHERE id = ?
+  AND status = 'downloading'`, msg, nowStr, nowStr, nowStr, job.ID)
 	if err != nil {
 		return fmt.Errorf("mark import final failure: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		w.logger.Warnf("skip final failure mark (status changed) job_id=%s", job.ID)
+		return nil
 	}
 	w.logger.Errorf("job failed permanently job_id=%s attempt=%d/%d err=%s", job.ID, job.Attempts, job.MaxAttempts, msg)
 	return nil

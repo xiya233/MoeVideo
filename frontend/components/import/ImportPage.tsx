@@ -98,9 +98,20 @@ function formatSpeed(value: number): string {
   return `${formatBytes(value)}/s`;
 }
 
-function formatStatus(status: ImportJob["status"], draftExpired = false): string {
+function isCancelledJob(status: ImportJob["status"], errorMessage?: string): boolean {
+  if (status !== "failed") {
+    return false;
+  }
+  const message = (errorMessage ?? "").toLowerCase();
+  return message.includes("cancelled by user");
+}
+
+function formatStatus(status: ImportJob["status"], draftExpired = false, errorMessage?: string): string {
   if (status === "draft" && draftExpired) {
     return "已过期";
+  }
+  if (isCancelledJob(status, errorMessage)) {
+    return "已取消";
   }
   switch (status) {
     case "draft":
@@ -182,6 +193,7 @@ export function ImportPage() {
     torrent: createEmptyJobState(),
   });
   const [jobsClearingScope, setJobsClearingScope] = useState<"finished" | "expired" | null>(null);
+  const [cancelingJobID, setCancelingJobID] = useState("");
 
   const pollRef = useRef<number | null>(null);
   const pollMetaRef = useRef<{ sourceType: ImportSourceType; jobID: string } | null>(null);
@@ -702,6 +714,48 @@ export function ImportPage() {
     }
   };
 
+  const cancelImportJob = useCallback(
+    async (sourceType: ImportSourceType, jobID: string) => {
+      if (!session || !jobID || cancelingJobID) {
+        return;
+      }
+      if (!window.confirm("确认取消该导入任务吗？该任务将停止并标记为已取消。")) {
+        return;
+      }
+      setCancelingJobID(jobID);
+      setActiveJobsByType((prev) => ({
+        ...prev,
+        [sourceType]: {
+          ...prev[sourceType],
+          error: "",
+        },
+      }));
+      try {
+        await importsApi.cancelJob(request, jobID);
+        if (pollMetaRef.current?.jobID === jobID) {
+          stopPolling();
+        }
+        await loadJobsBySourceType(sourceType);
+        const active = activeJobsByType[sourceType];
+        if (active.id === jobID) {
+          await loadJobDetail(sourceType, jobID);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "取消任务失败";
+        setActiveJobsByType((prev) => ({
+          ...prev,
+          [sourceType]: {
+            ...prev[sourceType],
+            error: message,
+          },
+        }));
+      } finally {
+        setCancelingJobID("");
+      }
+    },
+    [activeJobsByType, cancelingJobID, loadJobDetail, loadJobsBySourceType, request, session, stopPolling],
+  );
+
   if (!ready) {
     return (
       <div className="mx-auto w-full max-w-5xl rounded-xl border border-primary/10 bg-white p-10 shadow-sm">
@@ -1075,13 +1129,25 @@ export function ImportPage() {
                     ? "bg-amber-100 text-amber-700"
                     : activeDetail.job.status === "draft" && activeDetail.job.draft_expired
                       ? "bg-slate-200 text-slate-700"
+                    : isCancelledJob(activeDetail.job.status, activeDetail.job.error_message)
+                      ? "bg-slate-200 text-slate-700"
                     : activeDetail.job.status === "failed"
                       ? "bg-rose-100 text-rose-700"
                       : "bg-sky-100 text-sky-700",
               )}
             >
-              {formatStatus(activeDetail.job.status, activeDetail.job.draft_expired)}
+              {formatStatus(activeDetail.job.status, activeDetail.job.draft_expired, activeDetail.job.error_message)}
             </span>
+          ) : null}
+          {activeDetail && isJobPollingStatus(activeDetail.job.status) ? (
+            <button
+              type="button"
+              onClick={() => void cancelImportJob(activeDetail.job.source_type, activeDetail.job.id)}
+              disabled={cancelingJobID === activeDetail.job.id}
+              className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {cancelingJobID === activeDetail.job.id ? "取消中..." : "取消任务"}
+            </button>
           ) : null}
         </div>
 
@@ -1244,7 +1310,17 @@ export function ImportPage() {
                           继续导入
                         </button>
                       ) : null}
-                      <span className="text-xs font-semibold text-slate-600">{formatStatus(job.status, job.draft_expired)}</span>
+                      {isJobPollingStatus(job.status) ? (
+                        <button
+                          type="button"
+                          onClick={() => void cancelImportJob(job.source_type, job.id)}
+                          disabled={cancelingJobID === job.id}
+                          className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {cancelingJobID === job.id ? "取消中..." : "取消任务"}
+                        </button>
+                      ) : null}
+                      <span className="text-xs font-semibold text-slate-600">{formatStatus(job.status, job.draft_expired, job.error_message)}</span>
                     </div>
                   </div>
                 </div>

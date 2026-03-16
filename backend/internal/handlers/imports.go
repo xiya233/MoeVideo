@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	neturl "net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -26,6 +27,8 @@ type importListCursor struct {
 	CreatedAt string `json:"created_at"`
 	ID        string `json:"id"`
 }
+
+const importJobTempFolderName = "import-jobs"
 
 type inspectTorrentRequest struct {
 	Filename      string `json:"filename"`
@@ -793,6 +796,98 @@ func (h *Handler) ClearFinishedImportJobs(c *fiber.Ctx) error {
 	}
 	deleted, _ := res.RowsAffected()
 	return response.OK(c, fiber.Map{"deleted": deleted})
+}
+
+func (h *Handler) CancelImportJob(c *fiber.Ctx) error {
+	uid := currentUserID(c)
+	jobID := strings.TrimSpace(c.Params("jobId"))
+	if jobID == "" {
+		return response.Error(c, fiber.StatusBadRequest, "jobId is required")
+	}
+
+	tx, err := h.app.DB.BeginTx(c.UserContext(), nil)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to begin transaction")
+	}
+	defer tx.Rollback()
+
+	var (
+		jobUserID string
+		status    string
+	)
+	err = tx.QueryRowContext(c.UserContext(), `
+SELECT user_id, status
+FROM video_import_jobs
+WHERE id = ?
+LIMIT 1`, jobID).Scan(&jobUserID, &status)
+	if err != nil {
+		if isNotFound(err) {
+			return response.Error(c, fiber.StatusNotFound, "import job not found")
+		}
+		return response.Error(c, fiber.StatusInternalServerError, "failed to query import job")
+	}
+	if jobUserID != uid {
+		return response.Error(c, fiber.StatusForbidden, "forbidden")
+	}
+	if status != "queued" && status != "downloading" {
+		return response.Error(c, fiber.StatusConflict, "import job is not cancellable")
+	}
+
+	now := nowString()
+	res, err := tx.ExecContext(c.UserContext(), `
+UPDATE video_import_jobs
+SET status = 'failed',
+	error_message = ?,
+	download_speed_bps = 0,
+	upload_speed_bps = 0,
+	transfer_updated_at = ?,
+	finished_at = ?,
+	updated_at = ?
+WHERE id = ?
+  AND user_id = ?
+  AND status IN ('queued', 'downloading')`,
+		"cancelled by user",
+		now,
+		now,
+		now,
+		jobID,
+		uid,
+	)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to cancel import job")
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return response.Error(c, fiber.StatusConflict, "import job is not cancellable")
+	}
+
+	if _, err := tx.ExecContext(c.UserContext(), `
+UPDATE video_import_items
+SET status = 'failed',
+	error_message = ?,
+	updated_at = ?
+WHERE job_id = ?
+  AND status IN ('pending', 'downloading')`,
+		"cancelled by user",
+		now,
+		jobID,
+	); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to update import items")
+	}
+
+	if err := tx.Commit(); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to cancel import job")
+	}
+
+	if h.app.ImportCtl != nil {
+		_ = h.app.ImportCtl.CancelJob(jobID)
+	}
+	_ = os.RemoveAll(filepath.Join(h.app.Config.TaskTempDir, importJobTempFolderName, jobID))
+
+	return response.OK(c, fiber.Map{
+		"cancelled": true,
+		"job_id":    jobID,
+	})
 }
 
 func (h *Handler) GetImportJobDetail(c *fiber.Ctx) error {
