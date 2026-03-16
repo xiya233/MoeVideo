@@ -1726,25 +1726,36 @@ func validateWorkerYTDLPArgs(args []string) error {
 	return nil
 }
 
-var ytdlpDownloadedBytesRe = regexp.MustCompile(`download:\s*([0-9]+(?:\.[0-9]+)?)`)
+var ytdlpDownloadedBytesRe = regexp.MustCompile(`(?i)download:\s*([0-9]+(?:\.[0-9]+)?)`)
+var ytdlpDownloadedBytesNumericRe = regexp.MustCompile(`^\s*([0-9]+(?:\.[0-9]+)?)\s*$`)
 
 func parseYTDLPDownloadedBytes(line string) (int64, bool) {
-	matches := ytdlpDownloadedBytesRe.FindStringSubmatch(strings.ToLower(strings.TrimSpace(line)))
-	if len(matches) != 2 {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
 		return 0, false
 	}
-	value := strings.TrimSpace(matches[1])
-	if value == "" {
+	if matches := ytdlpDownloadedBytesRe.FindStringSubmatch(trimmed); len(matches) == 2 {
+		return parseDownloadedBytesToken(matches[1])
+	}
+	if matches := ytdlpDownloadedBytesNumericRe.FindStringSubmatch(trimmed); len(matches) == 2 {
+		return parseDownloadedBytesToken(matches[1])
+	}
+	return 0, false
+}
+
+func parseDownloadedBytesToken(value string) (int64, bool) {
+	token := strings.TrimSpace(value)
+	if token == "" {
 		return 0, false
 	}
-	if strings.Contains(value, ".") {
-		parsed, err := strconv.ParseFloat(value, 64)
+	if strings.Contains(token, ".") {
+		parsed, err := strconv.ParseFloat(token, 64)
 		if err != nil || parsed <= 0 {
 			return 0, false
 		}
 		return int64(parsed), true
 	}
-	parsed, err := strconv.ParseInt(value, 10, 64)
+	parsed, err := strconv.ParseInt(token, 10, 64)
 	if err != nil || parsed <= 0 {
 		return 0, false
 	}
