@@ -1120,34 +1120,36 @@ export function ImportPage() {
         <div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="text-lg font-bold text-slate-900">{importMode === "url" ? "URL 导入任务进度" : "BT 导入任务进度"}</h2>
           {activeDetail ? (
-            <span
-              className={cn(
-                "rounded-full px-3 py-1 text-xs font-semibold",
-                activeDetail.job.status === "succeeded"
-                  ? "bg-emerald-100 text-emerald-700"
-                  : activeDetail.job.status === "partial"
-                    ? "bg-amber-100 text-amber-700"
-                    : activeDetail.job.status === "draft" && activeDetail.job.draft_expired
-                      ? "bg-slate-200 text-slate-700"
-                    : isCancelledJob(activeDetail.job.status, activeDetail.job.error_message)
-                      ? "bg-slate-200 text-slate-700"
-                    : activeDetail.job.status === "failed"
-                      ? "bg-rose-100 text-rose-700"
-                      : "bg-sky-100 text-sky-700",
-              )}
-            >
-              {formatStatus(activeDetail.job.status, activeDetail.job.draft_expired, activeDetail.job.error_message)}
-            </span>
-          ) : null}
-          {activeDetail && isJobPollingStatus(activeDetail.job.status) ? (
-            <button
-              type="button"
-              onClick={() => void cancelImportJob(activeDetail.job.source_type, activeDetail.job.id)}
-              disabled={cancelingJobID === activeDetail.job.id}
-              className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {cancelingJobID === activeDetail.job.id ? "取消中..." : "取消任务"}
-            </button>
+            <div className="flex items-center gap-3">
+              <span
+                className={cn(
+                  "rounded-full px-3 py-1 text-xs font-semibold",
+                  activeDetail.job.status === "succeeded"
+                    ? "bg-emerald-100 text-emerald-700"
+                    : activeDetail.job.status === "partial"
+                      ? "bg-amber-100 text-amber-700"
+                      : activeDetail.job.status === "draft" && activeDetail.job.draft_expired
+                        ? "bg-slate-200 text-slate-700"
+                      : isCancelledJob(activeDetail.job.status, activeDetail.job.error_message)
+                        ? "bg-slate-200 text-slate-700"
+                      : activeDetail.job.status === "failed"
+                        ? "bg-rose-100 text-rose-700"
+                        : "bg-sky-100 text-sky-700",
+                )}
+              >
+                {formatStatus(activeDetail.job.status, activeDetail.job.draft_expired, activeDetail.job.error_message)}
+              </span>
+              {isJobPollingStatus(activeDetail.job.status) ? (
+                <button
+                  type="button"
+                  onClick={() => void cancelImportJob(activeDetail.job.source_type, activeDetail.job.id)}
+                  disabled={cancelingJobID === activeDetail.job.id}
+                  className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {cancelingJobID === activeDetail.job.id ? "取消中..." : "取消任务"}
+                </button>
+              ) : null}
+            </div>
           ) : null}
         </div>
 
@@ -1201,7 +1203,9 @@ export function ImportPage() {
                   </div>
                 </div>
               )}
-              {activeDetail.job.error_message ? <p className="mt-2 text-xs text-rose-600">{activeDetail.job.error_message}</p> : null}
+              {activeDetail.job.error_message && !isCancelledJob(activeDetail.job.status, activeDetail.job.error_message) ? (
+                <p className="mt-2 text-xs text-rose-600">{activeDetail.job.error_message}</p>
+              ) : null}
             </div>
 
             <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
