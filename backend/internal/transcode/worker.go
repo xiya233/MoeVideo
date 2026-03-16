@@ -7,28 +7,33 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
 	"moevideo/backend/internal/app"
+	"moevideo/backend/internal/logging"
 	"moevideo/backend/internal/util"
 )
 
 type logger interface {
-	Printf(format string, args ...interface{})
+	Debugf(format string, args ...interface{})
+	Infof(format string, args ...interface{})
+	Warnf(format string, args ...interface{})
+	Errorf(format string, args ...interface{})
 }
 
 type Worker struct {
-	app            *app.App
-	engine         Engine
-	logger         logger
-	pollInterval   time.Duration
-	segmentSeconds int64
+	app                 *app.App
+	engine              Engine
+	logger              logger
+	pollInterval        time.Duration
+	progressLogInterval time.Duration
+	segmentSeconds      int64
 }
 
 type Option func(*Worker)
@@ -57,16 +62,29 @@ func WithPollInterval(interval time.Duration) Option {
 	}
 }
 
+func WithProgressLogInterval(interval time.Duration) Option {
+	return func(w *Worker) {
+		if interval > 0 {
+			w.progressLogInterval = interval
+		}
+	}
+}
+
 func NewWorker(a *app.App, opts ...Option) *Worker {
+	defaultLogger, _ := logging.New("info")
 	w := &Worker{
-		app:            a,
-		engine:         NewFFmpegEngine(a.Config.FFmpegBin, a.Config.FFprobeBin),
-		logger:         log.Default(),
-		pollInterval:   a.Config.TranscodePoll,
-		segmentSeconds: 4,
+		app:                 a,
+		engine:              NewFFmpegEngine(a.Config.FFmpegBin, a.Config.FFprobeBin),
+		logger:              defaultLogger.WithPrefix("module=transcode"),
+		pollInterval:        a.Config.TranscodePoll,
+		progressLogInterval: a.Config.TranscodeProgressLogInterval,
+		segmentSeconds:      4,
 	}
 	if w.pollInterval <= 0 {
 		w.pollInterval = time.Second
+	}
+	if w.progressLogInterval <= 0 {
+		w.progressLogInterval = 5 * time.Second
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -75,6 +93,7 @@ func NewWorker(a *app.App, opts ...Option) *Worker {
 }
 
 func (w *Worker) Run(ctx context.Context) {
+	w.logger.Infof("transcode worker started poll_interval=%s progress_log_interval=%s", w.pollInterval, w.progressLogInterval)
 	for {
 		select {
 		case <-ctx.Done():
@@ -84,7 +103,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 		hasWork, err := w.RunOnce(ctx)
 		if err != nil {
-			w.logger.Printf("transcode worker error: %v", err)
+			w.logger.Errorf("transcode worker loop error: %v", err)
 		}
 		if hasWork {
 			continue
@@ -108,9 +127,11 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	if job == nil {
 		return false, nil
 	}
+	w.logger.Infof("job claimed job_id=%s video_id=%s attempt=%d/%d", job.ID, job.VideoID, job.Attempts, job.MaxAttempts)
 
 	asset, err := w.processJob(ctx, *job)
 	if err != nil {
+		w.logger.Errorf("job processing failed job_id=%s video_id=%s err=%v", job.ID, job.VideoID, err)
 		if markErr := w.markJobFailure(ctx, *job, err); markErr != nil {
 			return true, fmt.Errorf("job %s failed and could not update state: %w (original: %v)", job.ID, markErr, err)
 		}
@@ -120,6 +141,7 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	if err := w.markJobSuccess(ctx, *job, *asset); err != nil {
 		return true, err
 	}
+	w.logger.Infof("job completed job_id=%s video_id=%s status=succeeded", job.ID, job.VideoID)
 	return true, nil
 }
 
@@ -223,6 +245,25 @@ type generatedMedia struct {
 }
 
 func (w *Worker) processJob(ctx context.Context, job claimedJob) (*hlsAssetPayload, error) {
+	var (
+		stageMu sync.RWMutex
+		stage   = "load_source"
+	)
+	setStage := func(next string) {
+		stageMu.Lock()
+		stage = next
+		stageMu.Unlock()
+	}
+	currentStage := func() string {
+		stageMu.RLock()
+		defer stageMu.RUnlock()
+		return stage
+	}
+	stopHeartbeat := w.startProgressHeartbeat(ctx, job, currentStage)
+	defer stopHeartbeat()
+
+	w.logger.Infof("job stage start job_id=%s video_id=%s stage=%s", job.ID, job.VideoID, currentStage())
+
 	var src videoSource
 	err := w.app.DB.QueryRowContext(ctx, `
 SELECT v.id, v.uploader_id, v.status,
@@ -252,7 +293,16 @@ LIMIT 1`,
 	if src.MediaKey == "" {
 		return nil, permanentError{err: fmt.Errorf("video %s source media key is empty", job.VideoID)}
 	}
+	w.logger.Infof(
+		"video source loaded job_id=%s video_id=%s media_provider=%s media_key=%s",
+		job.ID,
+		job.VideoID,
+		src.MediaProvider,
+		src.MediaKey,
+	)
 
+	setStage("prepare_workspace")
+	w.logger.Infof("job stage start job_id=%s video_id=%s stage=%s", job.ID, job.VideoID, currentStage())
 	tmpDir, err := os.MkdirTemp("", "moevideo-transcode-*")
 	if err != nil {
 		return nil, fmt.Errorf("create transcode temp dir: %w", err)
@@ -261,6 +311,8 @@ LIMIT 1`,
 
 	inputPath := w.app.Storage.LocalObjectPath(src.MediaKey)
 	if src.MediaProvider == "s3" {
+		setStage("download_source")
+		w.logger.Infof("job stage start job_id=%s video_id=%s stage=%s", job.ID, job.VideoID, currentStage())
 		inputPath = filepath.Join(tmpDir, "source.mp4")
 		if err := w.app.Storage.DownloadObjectToPath(ctx, src.MediaProvider, src.MediaBucket, src.MediaKey, inputPath); err != nil {
 			return nil, fmt.Errorf("download source media: %w", err)
@@ -274,6 +326,8 @@ LIMIT 1`,
 		return nil, fmt.Errorf("create hls output dir: %w", err)
 	}
 
+	setStage("transcode_hls")
+	w.logger.Infof("job stage start job_id=%s video_id=%s stage=%s", job.ID, job.VideoID, currentStage())
 	buildResult, err := w.engine.BuildHLS(ctx, inputPath, outputDir, w.segmentSeconds)
 	if err != nil {
 		return nil, fmt.Errorf("build hls: %w", err)
@@ -281,12 +335,22 @@ LIMIT 1`,
 	if len(buildResult.Variants) == 0 {
 		return nil, permanentError{err: fmt.Errorf("transcode produced no variants")}
 	}
+	w.logger.Infof(
+		"hls built job_id=%s video_id=%s variants=%d segment_seconds=%d master=%s",
+		job.ID,
+		job.VideoID,
+		len(buildResult.Variants),
+		buildResult.SegmentSeconds,
+		buildResult.MasterPlaylist,
+	)
 
 	rootObjectKey := filepath.ToSlash(filepath.Join("hls", src.UploaderID, src.VideoID))
 	files, err := listOutputFiles(outputDir)
 	if err != nil {
 		return nil, fmt.Errorf("list hls files: %w", err)
 	}
+	setStage("upload_hls")
+	w.logger.Infof("job stage start job_id=%s video_id=%s stage=%s file_count=%d", job.ID, job.VideoID, currentStage(), len(files))
 	for _, relPath := range files {
 		fullPath := filepath.Join(outputDir, filepath.FromSlash(relPath))
 		objectKey := filepath.ToSlash(filepath.Join(rootObjectKey, relPath))
@@ -321,15 +385,17 @@ LIMIT 1`,
 	}
 
 	var coverMedia *generatedMedia
+	setStage("generate_cover")
+	w.logger.Infof("job stage start job_id=%s video_id=%s stage=%s", job.ID, job.VideoID, currentStage())
 	coverPath := filepath.Join(supplementalDir, "cover.jpg")
 	if err := w.engine.GenerateCover(ctx, inputPath, coverPath); err != nil {
-		w.logger.Printf("transcode job %s: generate cover failed (soft): %v", job.ID, err)
+		w.logger.Warnf("transcode job %s stage=generate_cover failed (soft): %v", job.ID, err)
 	} else {
 		coverObjectKey := filepath.ToSlash(filepath.Join(rootObjectKey, "cover.jpg"))
 		if err := w.app.Storage.UploadFile(ctx, coverObjectKey, "image/jpeg", coverPath); err != nil {
-			w.logger.Printf("transcode job %s: upload auto cover failed (soft): %v", job.ID, err)
+			w.logger.Warnf("transcode job %s stage=upload_cover failed (soft): %v", job.ID, err)
 		} else if info, statErr := os.Stat(coverPath); statErr != nil {
-			w.logger.Printf("transcode job %s: stat auto cover failed (soft): %v", job.ID, statErr)
+			w.logger.Warnf("transcode job %s stage=stat_cover failed (soft): %v", job.ID, statErr)
 		} else {
 			coverMedia = &generatedMedia{
 				ObjectKey:        coverObjectKey,
@@ -341,15 +407,17 @@ LIMIT 1`,
 	}
 
 	var previewMedia *generatedMedia
+	setStage("generate_preview_webp")
+	w.logger.Infof("job stage start job_id=%s video_id=%s stage=%s", job.ID, job.VideoID, currentStage())
 	previewPath := filepath.Join(supplementalDir, "preview.webp")
 	if err := w.engine.GeneratePreviewWebP(ctx, inputPath, previewPath); err != nil {
-		w.logger.Printf("transcode job %s: generate preview webp failed (soft): %v", job.ID, err)
+		w.logger.Warnf("transcode job %s stage=generate_preview_webp failed (soft): %v", job.ID, err)
 	} else {
 		previewObjectKey := filepath.ToSlash(filepath.Join(rootObjectKey, "preview.webp"))
 		if err := w.app.Storage.UploadFile(ctx, previewObjectKey, "image/webp", previewPath); err != nil {
-			w.logger.Printf("transcode job %s: upload preview webp failed (soft): %v", job.ID, err)
+			w.logger.Warnf("transcode job %s stage=upload_preview_webp failed (soft): %v", job.ID, err)
 		} else if info, statErr := os.Stat(previewPath); statErr != nil {
-			w.logger.Printf("transcode job %s: stat preview webp failed (soft): %v", job.ID, statErr)
+			w.logger.Warnf("transcode job %s stage=stat_preview_webp failed (soft): %v", job.ID, statErr)
 		} else {
 			previewMedia = &generatedMedia{
 				ObjectKey:        previewObjectKey,
@@ -364,21 +432,25 @@ LIMIT 1`,
 	thumbnailJPGKey := ""
 	thumbnailVTTPath := filepath.Join(supplementalDir, "thumbnails.vtt")
 	thumbnailJPGPath := filepath.Join(supplementalDir, "sprite.jpg")
+	setStage("generate_vtt_thumbnail")
+	w.logger.Infof("job stage start job_id=%s video_id=%s stage=%s", job.ID, job.VideoID, currentStage())
 	if err := w.engine.GenerateVTTThumbnail(ctx, inputPath, thumbnailVTTPath, thumbnailJPGPath); err != nil {
-		w.logger.Printf("transcode job %s: generate vtt thumbnail failed (soft): %v", job.ID, err)
+		w.logger.Warnf("transcode job %s stage=generate_vtt_thumbnail failed (soft): %v", job.ID, err)
 	} else {
 		vttObjectKey := filepath.ToSlash(filepath.Join(rootObjectKey, "thumbnails.vtt"))
 		spriteObjectKey := filepath.ToSlash(filepath.Join(rootObjectKey, "sprite.jpg"))
 
 		if err := w.app.Storage.UploadFile(ctx, vttObjectKey, "text/vtt", thumbnailVTTPath); err != nil {
-			w.logger.Printf("transcode job %s: upload vtt thumbnail failed (soft): %v", job.ID, err)
+			w.logger.Warnf("transcode job %s stage=upload_vtt_thumbnail failed (soft): %v", job.ID, err)
 		} else if err := w.app.Storage.UploadFile(ctx, spriteObjectKey, "image/jpeg", thumbnailJPGPath); err != nil {
-			w.logger.Printf("transcode job %s: upload sprite thumbnail failed (soft): %v", job.ID, err)
+			w.logger.Warnf("transcode job %s stage=upload_sprite_thumbnail failed (soft): %v", job.ID, err)
 		} else {
 			thumbnailVTTKey = vttObjectKey
 			thumbnailJPGKey = spriteObjectKey
 		}
 	}
+	setStage("persist_result")
+	w.logger.Infof("job stage start job_id=%s video_id=%s stage=%s", job.ID, job.VideoID, currentStage())
 
 	return &hlsAssetPayload{
 		Provider:        w.app.Storage.Driver(),
@@ -436,7 +508,7 @@ ON CONFLICT(video_id) DO UPDATE SET
 	if asset.Cover != nil {
 		coverMediaID, err := upsertGeneratedMediaTx(ctx, tx, asset.Provider, asset.Bucket, asset.UploaderID, *asset.Cover, now)
 		if err != nil {
-			w.logger.Printf("transcode job %s: persist auto cover failed (soft): %v", job.ID, err)
+			w.logger.Warnf("transcode job %s: persist auto cover failed (soft): %v", job.ID, err)
 		} else {
 			if _, err := tx.ExecContext(ctx, `
 UPDATE videos
@@ -447,7 +519,7 @@ WHERE id = ?`,
 				now,
 				job.VideoID,
 			); err != nil {
-				w.logger.Printf("transcode job %s: set auto cover failed (soft): %v", job.ID, err)
+				w.logger.Warnf("transcode job %s: set auto cover failed (soft): %v", job.ID, err)
 			}
 		}
 	}
@@ -455,7 +527,7 @@ WHERE id = ?`,
 	if asset.Preview != nil {
 		previewMediaID, err := upsertGeneratedMediaTx(ctx, tx, asset.Provider, asset.Bucket, asset.UploaderID, *asset.Preview, now)
 		if err != nil {
-			w.logger.Printf("transcode job %s: persist preview webp failed (soft): %v", job.ID, err)
+			w.logger.Warnf("transcode job %s: persist preview webp failed (soft): %v", job.ID, err)
 		} else {
 			if _, err := tx.ExecContext(ctx, `
 UPDATE videos
@@ -466,7 +538,7 @@ WHERE id = ?`,
 				now,
 				job.VideoID,
 			); err != nil {
-				w.logger.Printf("transcode job %s: set preview media failed (soft): %v", job.ID, err)
+				w.logger.Warnf("transcode job %s: set preview media failed (soft): %v", job.ID, err)
 			}
 		}
 	}
@@ -508,6 +580,14 @@ WHERE id = ?`,
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit success tx: %w", err)
 	}
+	w.logger.Infof(
+		"job published job_id=%s video_id=%s master_object_key=%s thumbnail_vtt=%t thumbnail_sprite=%t",
+		job.ID,
+		job.VideoID,
+		asset.MasterObjectKey,
+		asset.ThumbnailVTTKey != "",
+		asset.ThumbnailJPGKey != "",
+	)
 	return nil
 }
 
@@ -576,11 +656,58 @@ WHERE id = ? AND status != 'deleted'`,
 	}
 
 	if shouldRetry {
-		w.logger.Printf("transcode job %s retry scheduled (attempt %d/%d): %s", job.ID, job.Attempts, job.MaxAttempts, msg)
+		w.logger.Warnf("job retry scheduled job_id=%s video_id=%s attempt=%d/%d err=%s", job.ID, job.VideoID, job.Attempts, job.MaxAttempts, msg)
 	} else {
-		w.logger.Printf("transcode job %s failed permanently: %s", job.ID, msg)
+		w.logger.Errorf("job failed permanently job_id=%s video_id=%s attempt=%d/%d err=%s", job.ID, job.VideoID, job.Attempts, job.MaxAttempts, msg)
 	}
 	return nil
+}
+
+func (w *Worker) startProgressHeartbeat(ctx context.Context, job claimedJob, stageFn func() string) func() {
+	if w.progressLogInterval <= 0 {
+		return func() {}
+	}
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	var (
+		wg sync.WaitGroup
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		lastLogAt := time.Time{}
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case now := <-ticker.C:
+				if !shouldLogByInterval(lastLogAt, now, w.progressLogInterval) {
+					continue
+				}
+				stage := ""
+				if stageFn != nil {
+					stage = stageFn()
+				}
+				w.logger.Infof("transcode progress job_id=%s video_id=%s stage=%s", job.ID, job.VideoID, stage)
+				lastLogAt = now
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		wg.Wait()
+	}
+}
+
+func shouldLogByInterval(lastAt, now time.Time, interval time.Duration) bool {
+	if interval <= 0 {
+		return true
+	}
+	if lastAt.IsZero() {
+		return true
+	}
+	return now.Sub(lastAt) >= interval
 }
 
 type permanentError struct {

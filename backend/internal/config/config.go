@@ -9,45 +9,48 @@ import (
 )
 
 type Config struct {
-	Env                       string
-	HTTPAddr                  string
-	DBPath                    string
-	JWTSecret                 string
-	AccessTokenTTL            time.Duration
-	RefreshTokenTTL           time.Duration
-	AuthCookieDomain          string
-	AuthCookieSecure          bool
-	AuthCookieSameSite        string
-	AuthCookiePath            string
-	CORSAllowedOrigins        []string
-	StorageDriver             string
-	LocalStorageDir           string
-	PublicBaseURL             string
-	MaxUploadBytes            int64
-	UploadURLExpires          time.Duration
-	FFmpegBin                 string
-	FFprobeBin                string
-	YTDLPBin                  string
-	TranscodePoll             time.Duration
-	TranscodeMaxTry           int
-	ImportPoll                time.Duration
-	ImportMaxTry              int
-	ImportTorrentMax          int64
-	ImportMaxFiles            int
-	ImportURLTimeout          time.Duration
-	ImportURLMaxDur           int64
-	ImportURLMaxFile          int64
-	ImportPageResolverEnabled bool
-	ImportPageResolverTimeout time.Duration
-	ImportPageResolverMax     int
-	ImportPageResolverCmd     string
-	RateLimitEnabled          bool
-	RateLimitRedisAddr        string
-	RateLimitRedisPassword    string
-	RateLimitRedisDB          int
-	RateLimitRedisPrefix      string
-	RateLimitFailClosedProd   bool
-	RateLimitDevFallbackMem   bool
+	Env                          string
+	LogLevel                     string
+	HTTPAddr                     string
+	DBPath                       string
+	JWTSecret                    string
+	AccessTokenTTL               time.Duration
+	RefreshTokenTTL              time.Duration
+	AuthCookieDomain             string
+	AuthCookieSecure             bool
+	AuthCookieSameSite           string
+	AuthCookiePath               string
+	CORSAllowedOrigins           []string
+	StorageDriver                string
+	LocalStorageDir              string
+	PublicBaseURL                string
+	MaxUploadBytes               int64
+	UploadURLExpires             time.Duration
+	FFmpegBin                    string
+	FFprobeBin                   string
+	YTDLPBin                     string
+	TranscodePoll                time.Duration
+	TranscodeMaxTry              int
+	ImportPoll                   time.Duration
+	ImportMaxTry                 int
+	ImportTorrentMax             int64
+	ImportMaxFiles               int
+	ImportURLTimeout             time.Duration
+	ImportURLMaxDur              int64
+	ImportURLMaxFile             int64
+	ImportPageResolverEnabled    bool
+	ImportPageResolverTimeout    time.Duration
+	ImportPageResolverMax        int
+	ImportPageResolverCmd        string
+	ImportProgressLogInterval    time.Duration
+	TranscodeProgressLogInterval time.Duration
+	RateLimitEnabled             bool
+	RateLimitRedisAddr           string
+	RateLimitRedisPassword       string
+	RateLimitRedisDB             int
+	RateLimitRedisPrefix         string
+	RateLimitFailClosedProd      bool
+	RateLimitDevFallbackMem      bool
 
 	S3Bucket          string
 	S3Region          string
@@ -71,6 +74,7 @@ var jwtSecretPlaceholders = map[string]struct{}{
 func Load() (Config, error) {
 	cfg := Config{
 		Env:              getEnv("APP_ENV", "development"),
+		LogLevel:         strings.ToLower(strings.TrimSpace(getEnv("LOG_LEVEL", "info"))),
 		HTTPAddr:         getEnv("HTTP_ADDR", ":8080"),
 		DBPath:           getEnv("DB_PATH", "./data/moevideo.db"),
 		JWTSecret:        getEnv("JWT_SECRET", defaultJWTSecret),
@@ -124,6 +128,11 @@ func Load() (Config, error) {
 	}
 	if cfg.AuthCookiePath == "" {
 		cfg.AuthCookiePath = "/"
+	}
+	switch cfg.LogLevel {
+	case "debug", "info", "warn", "error":
+	default:
+		return cfg, fmt.Errorf("invalid LOG_LEVEL: %s", cfg.LogLevel)
 	}
 	cfg.CORSAllowedOrigins = parseCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"))
 
@@ -258,6 +267,24 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("IMPORT_PAGE_RESOLVER_MAX_CANDIDATES must be positive")
 	}
 	cfg.ImportPageResolverMax = importPageResolverMax
+
+	importProgressLogInterval, err := time.ParseDuration(getEnv("IMPORT_PROGRESS_LOG_INTERVAL", "5s"))
+	if err != nil {
+		return cfg, fmt.Errorf("invalid IMPORT_PROGRESS_LOG_INTERVAL: %w", err)
+	}
+	if importProgressLogInterval <= 0 {
+		return cfg, fmt.Errorf("IMPORT_PROGRESS_LOG_INTERVAL must be positive")
+	}
+	cfg.ImportProgressLogInterval = importProgressLogInterval
+
+	transcodeProgressLogInterval, err := time.ParseDuration(getEnv("TRANSCODE_PROGRESS_LOG_INTERVAL", "5s"))
+	if err != nil {
+		return cfg, fmt.Errorf("invalid TRANSCODE_PROGRESS_LOG_INTERVAL: %w", err)
+	}
+	if transcodeProgressLogInterval <= 0 {
+		return cfg, fmt.Errorf("TRANSCODE_PROGRESS_LOG_INTERVAL must be positive")
+	}
+	cfg.TranscodeProgressLogInterval = transcodeProgressLogInterval
 
 	maxUploadMB, err := strconv.ParseInt(getEnv("MAX_UPLOAD_MB", "2048"), 10, 64)
 	if err != nil {

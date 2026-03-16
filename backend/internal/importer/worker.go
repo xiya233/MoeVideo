@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,18 +24,23 @@ import (
 	"github.com/google/uuid"
 
 	"moevideo/backend/internal/app"
+	"moevideo/backend/internal/logging"
 	"moevideo/backend/internal/media"
 	"moevideo/backend/internal/util"
 )
 
 type logger interface {
-	Printf(format string, args ...interface{})
+	Debugf(format string, args ...interface{})
+	Infof(format string, args ...interface{})
+	Warnf(format string, args ...interface{})
+	Errorf(format string, args ...interface{})
 }
 
 type Worker struct {
-	app          *app.App
-	logger       logger
-	pollInterval time.Duration
+	app                 *app.App
+	logger              logger
+	pollInterval        time.Duration
+	progressLogInterval time.Duration
 }
 
 type Option func(*Worker)
@@ -57,14 +61,27 @@ func WithPollInterval(interval time.Duration) Option {
 	}
 }
 
+func WithProgressLogInterval(interval time.Duration) Option {
+	return func(w *Worker) {
+		if interval > 0 {
+			w.progressLogInterval = interval
+		}
+	}
+}
+
 func NewWorker(a *app.App, opts ...Option) *Worker {
+	defaultLogger, _ := logging.New("info")
 	w := &Worker{
-		app:          a,
-		logger:       log.Default(),
-		pollInterval: a.Config.ImportPoll,
+		app:                 a,
+		logger:              defaultLogger.WithPrefix("module=import"),
+		pollInterval:        a.Config.ImportPoll,
+		progressLogInterval: a.Config.ImportProgressLogInterval,
 	}
 	if w.pollInterval <= 0 {
 		w.pollInterval = time.Second
+	}
+	if w.progressLogInterval <= 0 {
+		w.progressLogInterval = 5 * time.Second
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -73,6 +90,7 @@ func NewWorker(a *app.App, opts ...Option) *Worker {
 }
 
 func (w *Worker) Run(ctx context.Context) {
+	w.logger.Infof("import worker started poll_interval=%s progress_log_interval=%s", w.pollInterval, w.progressLogInterval)
 	for {
 		select {
 		case <-ctx.Done():
@@ -82,7 +100,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 		hasWork, err := w.RunOnce(ctx)
 		if err != nil {
-			w.logger.Printf("import worker error: %v", err)
+			w.logger.Errorf("import worker loop error: %v", err)
 		}
 		if hasWork {
 			continue
@@ -106,9 +124,11 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	if job == nil {
 		return false, nil
 	}
+	w.logger.Infof("job claimed job_id=%s user_id=%s attempt=%d/%d", job.ID, job.UserID, job.Attempts, job.MaxAttempts)
 
 	result, err := w.processJob(ctx, *job)
 	if err != nil {
+		w.logger.Errorf("job processing failed job_id=%s user_id=%s err=%v", job.ID, job.UserID, err)
 		if markErr := w.markJobFailure(ctx, *job, err); markErr != nil {
 			return true, fmt.Errorf("import job %s failed and could not update state: %w (original: %v)", job.ID, markErr, err)
 		}
@@ -117,6 +137,15 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	if err := w.markJobComplete(ctx, *job, *result); err != nil {
 		return true, err
 	}
+	w.logger.Infof(
+		"job completed job_id=%s user_id=%s status=%s completed=%d failed=%d selected_total=%d",
+		job.ID,
+		job.UserID,
+		result.Status,
+		result.Completed,
+		result.Failed,
+		result.SelectedTotal,
+	)
 	return true, nil
 }
 
@@ -238,6 +267,14 @@ func (w *Worker) processJob(ctx context.Context, job claimedJob) (*processResult
 	if jobUserID != job.UserID {
 		return nil, permanentError{err: fmt.Errorf("import job %s owner mismatch", job.ID)}
 	}
+	w.logger.Infof(
+		"job context loaded job_id=%s user_id=%s source_type=%s visibility=%s category_id=%v",
+		job.ID,
+		job.UserID,
+		sourceType,
+		visibility,
+		categoryID,
+	)
 
 	tags := parseTags(tagsJSON)
 	selectedRows, err := w.app.DB.QueryContext(ctx, `
@@ -264,6 +301,7 @@ ORDER BY file_index ASC`, job.ID)
 	if len(selected) == 0 {
 		return nil, permanentError{err: fmt.Errorf("import job %s has no selected files", job.ID)}
 	}
+	w.logger.Infof("selected items ready job_id=%s selected_total=%d", job.ID, len(selected))
 
 	var categoryPtr *int64
 	if categoryID.Valid {
@@ -304,6 +342,7 @@ ORDER BY file_index ASC`, job.ID)
 	if err != nil {
 		return nil, fmt.Errorf("create torrent client: %w", err)
 	}
+	w.logger.Infof("torrent client initialized job_id=%s", job.ID)
 	defer func() {
 		_ = client.Close()
 	}()
@@ -327,11 +366,13 @@ ORDER BY file_index ASC`, job.ID)
 		return nil, waitCtx.Err()
 	case <-tor.GotInfo():
 	}
+	w.logger.Infof("torrent metadata ready job_id=%s", job.ID)
 
 	files := tor.Files()
 	if len(files) == 0 {
 		return nil, permanentError{err: fmt.Errorf("torrent has no files")}
 	}
+	w.logger.Infof("torrent files enumerated job_id=%s total_files=%d selected_files=%d", job.ID, len(files), len(selected))
 
 	completedCount := 0
 	failedCount := 0
@@ -340,6 +381,7 @@ ORDER BY file_index ASC`, job.ID)
 	downloadedTotal := int64(0)
 
 	for _, item := range selected {
+		w.logger.Infof("torrent item start job_id=%s item_id=%s file_index=%d file_path=%s", job.ID, item.ID, item.FileIndex, item.FilePath)
 		if err := w.markItemStatus(ctx, item.ID, "downloading", "", "", ""); err != nil {
 			return nil, fmt.Errorf("mark import item downloading: %w", err)
 		}
@@ -347,6 +389,7 @@ ORDER BY file_index ASC`, job.ID)
 		if item.FileIndex < 0 || item.FileIndex >= len(files) {
 			failedCount++
 			lastErr = "selected file index does not exist in torrent"
+			w.logger.Warnf("torrent item failed job_id=%s item_id=%s reason=%s", job.ID, item.ID, lastErr)
 			_ = w.markItemStatus(ctx, item.ID, "failed", lastErr, "", "")
 			_ = w.updateJobProgress(ctx, job.ID, completedCount, failedCount, selectedTotal)
 			continue
@@ -377,12 +420,14 @@ ORDER BY file_index ASC`, job.ID)
 		if importErr != nil {
 			failedCount++
 			lastErr = truncateErr(importErr, 600)
+			w.logger.Warnf("torrent item failed job_id=%s item_id=%s err=%s", job.ID, item.ID, lastErr)
 			_ = w.markItemStatus(ctx, item.ID, "failed", lastErr, "", "")
 			_ = w.updateJobProgress(ctx, job.ID, completedCount, failedCount, selectedTotal)
 			continue
 		}
 
 		completedCount++
+		w.logger.Infof("torrent item completed job_id=%s item_id=%s completed=%d failed=%d", job.ID, item.ID, completedCount, failedCount)
 		if err := w.updateJobProgress(ctx, job.ID, completedCount, failedCount, selectedTotal); err != nil {
 			return nil, fmt.Errorf("update import job progress: %w", err)
 		}
@@ -447,6 +492,7 @@ func (w *Worker) processURLJob(
 	if strings.TrimSpace(sourceURL) == "" {
 		return nil, permanentError{err: fmt.Errorf("import job %s has empty source_url", job.ID)}
 	}
+	w.logger.Infof("url import start job_id=%s source_url=%s selected_total=%d", job.ID, sourceURL, len(selected))
 
 	completedCount := 0
 	failedCount := 0
@@ -454,6 +500,7 @@ func (w *Worker) processURLJob(
 	selectedTotal := len(selected)
 
 	for _, item := range selected {
+		w.logger.Infof("url item start job_id=%s item_id=%s", job.ID, item.ID)
 		if err := w.markItemStatus(ctx, item.ID, "downloading", "", "", ""); err != nil {
 			return nil, fmt.Errorf("mark import item downloading: %w", err)
 		}
@@ -462,12 +509,14 @@ func (w *Worker) processURLJob(
 		if importErr != nil {
 			failedCount++
 			lastErr = truncateErr(importErr, 600)
+			w.logger.Warnf("url item failed job_id=%s item_id=%s err=%s", job.ID, item.ID, lastErr)
 			_ = w.markItemStatus(ctx, item.ID, "failed", lastErr, "", "")
 			_ = w.updateJobProgress(ctx, job.ID, completedCount, failedCount, selectedTotal)
 			continue
 		}
 
 		completedCount++
+		w.logger.Infof("url item completed job_id=%s item_id=%s completed=%d failed=%d", job.ID, item.ID, completedCount, failedCount)
 		if err := w.updateJobProgress(ctx, job.ID, completedCount, failedCount, selectedTotal); err != nil {
 			return nil, fmt.Errorf("update import job progress: %w", err)
 		}
@@ -516,6 +565,7 @@ func (w *Worker) importURLItem(
 	if sourceURL == "" {
 		return permanentError{err: fmt.Errorf("source_url is required")}
 	}
+	w.logger.Infof("url resolver primary attempt job_id=%s item_id=%s source_url=%s", job.ID, item.ID, sourceURL)
 
 	if err := w.importURLFromResolvedSource(
 		ctx,
@@ -540,11 +590,19 @@ func (w *Worker) importURLItem(
 	if !w.app.Config.ImportPageResolverEnabled {
 		return permanentError{err: fmt.Errorf("import.url.page_resolver_unavailable: unsupported url and resolver is disabled")}
 	}
+	w.logger.Infof("url fallback triggered job_id=%s item_id=%s reason=unsupported_url", job.ID, item.ID)
 
 	candidates, resolverResult, resolveErr := w.resolvePageManifestCandidates(ctx, sourceURL)
 	if resolveErr != nil {
 		return permanentError{err: fmt.Errorf("import.url.page_resolver_unavailable: %v", resolveErr)}
 	}
+	w.logger.Infof(
+		"url fallback candidates ready job_id=%s item_id=%s candidate_count=%d final_url=%s",
+		job.ID,
+		item.ID,
+		len(candidates),
+		strings.TrimSpace(resolverResult.FinalURL),
+	)
 
 	seen := make(map[string]struct{}, len(candidates)+1)
 	seen[strings.ToLower(strings.TrimSpace(sourceURL))] = struct{}{}
@@ -558,6 +616,7 @@ func (w *Worker) importURLItem(
 			continue
 		}
 		seen[key] = struct{}{}
+		w.logger.Infof("url fallback candidate try job_id=%s item_id=%s candidate_idx=%d candidate_url=%s", job.ID, item.ID, idx, candidate)
 
 		contextMeta := map[string]interface{}{
 			"page_url":       sourceURL,
@@ -582,8 +641,10 @@ func (w *Worker) importURLItem(
 			contextMeta,
 		)
 		if err == nil {
+			w.logger.Infof("url fallback candidate succeeded job_id=%s item_id=%s candidate_idx=%d", job.ID, item.ID, idx)
 			return nil
 		}
+		w.logger.Warnf("url fallback candidate failed job_id=%s item_id=%s candidate_idx=%d err=%v", job.ID, item.ID, idx, err)
 		attemptErrors = append(attemptErrors, truncateErr(err, 180))
 	}
 
@@ -612,11 +673,22 @@ func (w *Worker) importURLFromResolvedSource(
 	if sourceURL == "" {
 		return permanentError{err: fmt.Errorf("source_url is required")}
 	}
+	w.logger.Infof("url import stage=metadata_start job_id=%s item_id=%s resolver=%s source_url=%s", job.ID, item.ID, resolverName, sourceURL)
 
 	meta, err := w.extractURLMetadata(ctx, sourceURL, metadataArgs)
 	if err != nil {
+		w.logger.Warnf("url import stage=metadata_failed job_id=%s item_id=%s resolver=%s err=%v", job.ID, item.ID, resolverName, err)
 		return err
 	}
+	w.logger.Infof(
+		"url import stage=metadata_ok job_id=%s item_id=%s resolver=%s title=%q duration_sec=%.0f extractor=%s",
+		job.ID,
+		item.ID,
+		resolverName,
+		strings.TrimSpace(meta.Title),
+		meta.Duration,
+		strings.TrimSpace(meta.ExtractorKey),
+	)
 	if w.app.Config.ImportURLMaxDur > 0 && meta.Duration > 0 && int64(meta.Duration) > w.app.Config.ImportURLMaxDur {
 		return permanentError{err: fmt.Errorf("video duration exceeds limit (%ds)", w.app.Config.ImportURLMaxDur)}
 	}
@@ -634,10 +706,13 @@ func (w *Worker) importURLFromResolvedSource(
 	}
 	defer os.RemoveAll(tmpDir)
 
+	w.logger.Infof("url import stage=download_start job_id=%s item_id=%s resolver=%s", job.ID, item.ID, resolverName)
 	localSourcePath, err := w.downloadURLSource(ctx, job.ID, sourceURL, tmpDir, downloadArgs)
 	if err != nil {
+		w.logger.Warnf("url import stage=download_failed job_id=%s item_id=%s resolver=%s err=%v", job.ID, item.ID, resolverName, err)
 		return err
 	}
+	w.logger.Infof("url import stage=download_ok job_id=%s item_id=%s resolver=%s local_file=%s", job.ID, item.ID, resolverName, localSourcePath)
 
 	stat, err := os.Stat(localSourcePath)
 	if err != nil {
@@ -653,9 +728,11 @@ func (w *Worker) importURLFromResolvedSource(
 	sourceName := buildURLSourceName(meta.Title, localSourcePath)
 	autoTitle := buildImportVideoTitle(sourceName)
 	finalTitle := chooseURLImportTitle(customTitle, autoTitle)
+	w.logger.Infof("url import stage=persist_start job_id=%s item_id=%s final_title=%q", job.ID, item.ID, finalTitle)
 	if err := w.persistImportedVideo(ctx, job, item, localSourcePath, sourceName, finalTitle, strings.TrimSpace(customDescription), categoryID, tags, visibility); err != nil {
 		return err
 	}
+	w.logger.Infof("url import stage=persist_ok job_id=%s item_id=%s", job.ID, item.ID)
 
 	resolvedMediaURL := strings.TrimSpace(meta.URL)
 	if resolvedMediaURL == "" && len(meta.RequestedDownloads) > 0 {
@@ -686,6 +763,7 @@ func (w *Worker) importURLFromResolvedSource(
 	); err != nil {
 		return fmt.Errorf("update url resolver fields: %w", err)
 	}
+	w.logger.Infof("url import resolver fields updated job_id=%s item_id=%s resolver=%s resolved_media_url=%s", job.ID, item.ID, resolverName, resolvedMediaURL)
 	return nil
 }
 
@@ -700,6 +778,7 @@ func (w *Worker) extractURLMetadata(ctx context.Context, sourceURL string, extra
 	args := []string{"--dump-single-json", "--no-playlist", "--no-warnings"}
 	args = append(args, extraArgs...)
 	args = append(args, sourceURL)
+	w.logger.Debugf("url metadata command source_url=%s cmd=%s", sourceURL, formatCommand(w.app.Config.YTDLPBin, args))
 	cmd := exec.CommandContext(runCtx, w.app.Config.YTDLPBin, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -714,6 +793,7 @@ func (w *Worker) extractURLMetadata(ctx context.Context, sourceURL string, extra
 		}
 		return ytDLPMetadata{}, fmt.Errorf("yt-dlp metadata failed: %w: %s", err, outText)
 	}
+	w.logger.Debugf("url metadata raw_output source_url=%s summary=%s", sourceURL, truncateOutput(out, 1200))
 
 	var meta ytDLPMetadata
 	if err := json.Unmarshal(out, &meta); err != nil {
@@ -742,6 +822,7 @@ func (w *Worker) downloadURLSource(ctx context.Context, jobID, sourceURL, tmpDir
 	}
 	args = append(args, extraArgs...)
 	args = append(args, sourceURL)
+	w.logger.Debugf("url download command job_id=%s source_url=%s cmd=%s", jobID, sourceURL, formatCommand(w.app.Config.YTDLPBin, args))
 	cmd := exec.CommandContext(runCtx, w.app.Config.YTDLPBin, args...)
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -783,6 +864,7 @@ func (w *Worker) downloadURLSource(ctx context.Context, jobID, sourceURL, tmpDir
 				continue
 			}
 			appendLine(line)
+			w.logger.Debugf("job_id=%s yt_dlp_line=%s", jobID, line)
 			if bytes, ok := parseYTDLPDownloadedBytes(line); ok {
 				current := downloadedBytes.Load()
 				if bytes > current {
@@ -804,6 +886,7 @@ func (w *Worker) downloadURLSource(ctx context.Context, jobID, sourceURL, tmpDir
 		defer ticker.Stop()
 		lastAt := time.Now()
 		lastDownloaded := int64(0)
+		lastProgressLogAt := time.Time{}
 		for {
 			select {
 			case <-sampleCtx.Done():
@@ -813,7 +896,16 @@ func (w *Worker) downloadURLSource(ctx context.Context, jobID, sourceURL, tmpDir
 				currentDownloaded := downloadedBytes.Load()
 				downloadSpeed := computeSpeedBPS(lastDownloaded, currentDownloaded, lastAt, now)
 				if err := w.updateJobTransferMetrics(ctx, jobID, currentDownloaded, 0, downloadSpeed, 0); err != nil {
-					w.logger.Printf("import job %s update url transfer metrics failed: %v", jobID, err)
+					w.logger.Warnf("job_id=%s update url transfer metrics failed: %v", jobID, err)
+				}
+				if shouldLogByInterval(lastProgressLogAt, now, w.progressLogInterval) {
+					w.logger.Infof(
+						"url transfer progress job_id=%s downloaded_bytes=%d download_speed_bps=%.2f",
+						jobID,
+						currentDownloaded,
+						downloadSpeed,
+					)
+					lastProgressLogAt = now
 				}
 				lastAt = now
 				lastDownloaded = currentDownloaded
@@ -871,8 +963,9 @@ func (w *Worker) downloadURLSource(ctx context.Context, jobID, sourceURL, tmpDir
 		finalDownloaded = info.Size()
 	}
 	if err := w.updateJobTransferMetrics(ctx, jobID, finalDownloaded, 0, 0, 0); err != nil {
-		w.logger.Printf("import job %s finalize url transfer metrics failed: %v", jobID, err)
+		w.logger.Warnf("job_id=%s finalize url transfer metrics failed: %v", jobID, err)
 	}
+	w.logger.Infof("url transfer final job_id=%s downloaded_bytes=%d", jobID, finalDownloaded)
 	return localSourcePath, nil
 }
 
@@ -891,6 +984,7 @@ func (w *Worker) importSelectedFile(
 	customTitlePrefix string,
 	customDescription string,
 ) error {
+	w.logger.Infof("torrent import file download start job_id=%s item_id=%s source_path=%s", job.ID, item.ID, item.FilePath)
 	tmpDir, err := os.MkdirTemp("", "moevideo-import-file-*")
 	if err != nil {
 		return fmt.Errorf("create temp file dir: %w", err)
@@ -932,9 +1026,11 @@ func (w *Worker) importSelectedFile(
 		return fmt.Errorf("close local source file: %w", err)
 	}
 	stopSampler(0)
+	w.logger.Infof("torrent import file download completed job_id=%s item_id=%s", job.ID, item.ID)
 
 	autoTitle := buildImportVideoTitle(item.FilePath)
 	finalTitle := chooseTorrentImportTitle(autoTitle, selectedTotal, customTitle, customTitlePrefix)
+	w.logger.Infof("torrent import persist start job_id=%s item_id=%s final_title=%q", job.ID, item.ID, finalTitle)
 	return w.persistImportedVideo(ctx, job, item, localSourcePath, item.FilePath, finalTitle, strings.TrimSpace(customDescription), categoryID, tags, visibility)
 }
 
@@ -974,7 +1070,7 @@ func (w *Worker) persistImportedVideo(
 
 	durationSec, width, height, probeErr := media.ProbeVideoFileMetadata(ctx, w.app.Config.FFprobeBin, localSourcePath)
 	if probeErr != nil {
-		w.logger.Printf("import item %s probe metadata failed (soft): %v", item.ID, probeErr)
+		w.logger.Warnf("import item metadata probe failed (soft) job_id=%s item_id=%s err=%v", job.ID, item.ID, probeErr)
 	}
 
 	now := nowString()
@@ -1084,6 +1180,7 @@ WHERE id = ?`, sourcePath, stat.Size(), mediaID, videoID, now, item.ID)
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit import persist tx: %w", err)
 	}
+	w.logger.Infof("import persist completed job_id=%s item_id=%s video_id=%s transcode_job_id=%s", job.ID, item.ID, videoID, transcodeJobID)
 	return nil
 }
 
@@ -1169,6 +1266,7 @@ func (w *Worker) startTorrentTransferSampler(
 		lastAt := time.Now()
 		lastDownloaded := baseDownloadedBytes + max(0, file.BytesCompleted())
 		lastUploaded := torrentUploadedBytes(tor)
+		lastProgressLogAt := time.Time{}
 
 		for {
 			select {
@@ -1181,7 +1279,18 @@ func (w *Worker) startTorrentTransferSampler(
 				downloadSpeed := computeSpeedBPS(lastDownloaded, downloaded, lastAt, now)
 				uploadSpeed := computeSpeedBPS(lastUploaded, uploaded, lastAt, now)
 				if err := w.updateJobTransferMetrics(ctx, jobID, downloaded, uploaded, downloadSpeed, uploadSpeed); err != nil {
-					w.logger.Printf("import job %s update torrent transfer metrics failed: %v", jobID, err)
+					w.logger.Warnf("job_id=%s update torrent transfer metrics failed: %v", jobID, err)
+				}
+				if shouldLogByInterval(lastProgressLogAt, now, w.progressLogInterval) {
+					w.logger.Infof(
+						"torrent transfer progress job_id=%s downloaded_bytes=%d uploaded_bytes=%d download_speed_bps=%.2f upload_speed_bps=%.2f",
+						jobID,
+						downloaded,
+						uploaded,
+						downloadSpeed,
+						uploadSpeed,
+					)
+					lastProgressLogAt = now
 				}
 				lastAt = now
 				lastDownloaded = downloaded
@@ -1197,8 +1306,9 @@ func (w *Worker) startTorrentTransferSampler(
 			downloaded := baseDownloadedBytes + max(0, file.BytesCompleted())
 			uploaded := torrentUploadedBytes(tor)
 			if err := w.updateJobTransferMetrics(ctx, jobID, downloaded, uploaded, 0, max(0, finalUploadSpeed)); err != nil {
-				w.logger.Printf("import job %s finalize torrent transfer metrics failed: %v", jobID, err)
+				w.logger.Warnf("job_id=%s finalize torrent transfer metrics failed: %v", jobID, err)
 			}
+			w.logger.Infof("torrent transfer final job_id=%s downloaded_bytes=%d uploaded_bytes=%d", jobID, downloaded, uploaded)
 		})
 	}
 }
@@ -1225,6 +1335,23 @@ func computeSpeedBPS(previous, current int64, from, to time.Time) float64 {
 		return 0
 	}
 	return float64(delta) / seconds
+}
+
+func shouldLogByInterval(lastAt, now time.Time, interval time.Duration) bool {
+	if interval <= 0 {
+		return true
+	}
+	if lastAt.IsZero() {
+		return true
+	}
+	return now.Sub(lastAt) >= interval
+}
+
+func formatCommand(bin string, args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, bin)
+	parts = append(parts, args...)
+	return strings.Join(parts, " ")
 }
 
 func (w *Worker) updateJobProgress(ctx context.Context, jobID string, completed, failed, total int) error {
@@ -1281,6 +1408,15 @@ WHERE id = ?`,
 	if err != nil {
 		return fmt.Errorf("mark import job complete: %w", err)
 	}
+	w.logger.Infof(
+		"job status updated job_id=%s status=%s completed=%d failed=%d progress=%.2f error=%q",
+		job.ID,
+		result.Status,
+		result.Completed,
+		result.Failed,
+		progress,
+		result.ErrorMessage,
+	)
 	return nil
 }
 
@@ -1309,7 +1445,7 @@ WHERE id = ?`, msg, nextRun, nowStr, job.ID)
 		if err != nil {
 			return fmt.Errorf("mark import retryable failure: %w", err)
 		}
-		w.logger.Printf("import job %s retry scheduled (attempt %d/%d): %s", job.ID, job.Attempts, job.MaxAttempts, msg)
+		w.logger.Warnf("job retry scheduled job_id=%s attempt=%d/%d err=%s", job.ID, job.Attempts, job.MaxAttempts, msg)
 		return nil
 	}
 
@@ -1326,7 +1462,7 @@ WHERE id = ?`, msg, nowStr, nowStr, nowStr, job.ID)
 	if err != nil {
 		return fmt.Errorf("mark import final failure: %w", err)
 	}
-	w.logger.Printf("import job %s failed permanently: %s", job.ID, msg)
+	w.logger.Errorf("job failed permanently job_id=%s attempt=%d/%d err=%s", job.ID, job.Attempts, job.MaxAttempts, msg)
 	return nil
 }
 

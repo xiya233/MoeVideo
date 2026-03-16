@@ -176,6 +176,11 @@ cd /opt/moevideo
 export PATH="/opt/moevideo/bin:$HOME/.local/bin:$PATH"
 ```
 
+重要说明（Next.js 生产模式）：
+
+- 前端 `NEXT_PUBLIC_*` 变量在 `build` 时注入产物，不是 `start` 时动态读取。
+- 首次部署或修改前端环境变量后，必须先完成 **5.2 前端环境配置**，再执行 4.2 前端构建并重启前端服务。
+
 ## 4.1 Backend 构建
 
 ```bash
@@ -204,6 +209,9 @@ cd /opt/moevideo/frontend
 cat >/opt/moevideo/backend/.env <<'EOF'
 # 运行环境：production 会强制一些安全策略（例如 Cookie Secure）
 APP_ENV=production
+
+# 日志级别：debug / info / warn / error（生产推荐 info）
+LOG_LEVEL=info
 
 # 后端监听地址（仅本机监听，交给 Nginx 反代）
 HTTP_ADDR=127.0.0.1:8080
@@ -283,10 +291,14 @@ FFPROBE_BIN=/usr/bin/ffprobe
 # 转码 worker 轮询间隔与重试次数
 TRANSCODE_POLL_INTERVAL=1s
 TRANSCODE_MAX_RETRIES=3
+# 转码处理中的进度心跳日志间隔（建议 5s）
+TRANSCODE_PROGRESS_LOG_INTERVAL=5s
 
 # 导入 worker 轮询间隔与重试次数
 IMPORT_POLL_INTERVAL=1s
 IMPORT_MAX_RETRIES=3
+# 导入下载过程进度日志间隔（建议 5s）
+IMPORT_PROGRESS_LOG_INTERVAL=5s
 
 # BT 种子大小上限（MB）
 IMPORT_TORRENT_MAX_MB=2
@@ -330,12 +342,12 @@ IMPORT_PAGE_RESOLVER_CMD=bun scripts/page_manifest_resolver.mjs
 EOF
 ```
 
-## 5.2 Frontend：`/opt/moevideo/frontend/.env.local`
+## 5.2 Frontend：`/opt/moevideo/frontend/.env.production.local`
 
 同域部署：
 
 ```bash
-cat >/opt/moevideo/frontend/.env.local <<'EOF'
+cat >/opt/moevideo/frontend/.env.production.local <<'EOF'
 # 浏览器访问 API 的基地址（同域走 https://example.com/api/v1）
 NEXT_PUBLIC_API_BASE_URL=https://example.com/api/v1
 EOF
@@ -368,6 +380,9 @@ Group=moevideo
 WorkingDirectory=/opt/moevideo/backend
 EnvironmentFile=/opt/moevideo/backend/.env
 Environment=PATH=/opt/moevideo/bin:/home/moevideo/.local/bin:/usr/bin:/bin
+SyslogIdentifier=moevideo-backend
+StandardOutput=journal
+StandardError=journal
 ExecStart=/opt/moevideo/bin/moevideo-backend
 Restart=always
 RestartSec=3
@@ -391,7 +406,7 @@ Type=simple
 User=moevideo
 Group=moevideo
 WorkingDirectory=/opt/moevideo/frontend
-EnvironmentFile=/opt/moevideo/frontend/.env.local
+EnvironmentFile=/opt/moevideo/frontend/.env.production.local
 Environment=PORT=3000
 Environment=NODE_ENV=production
 Environment=PATH=/opt/moevideo/bin:/usr/bin:/bin
@@ -418,7 +433,7 @@ systemctl status moevideo-frontend --no-pager
 日志查看：
 
 ```bash
-journalctl -u moevideo-backend -f
+journalctl -u moevideo-backend -f -o cat
 journalctl -u moevideo-frontend -f
 ```
 
@@ -563,7 +578,8 @@ systemctl restart moevideo-frontend
 systemctl reload nginx
 
 # 追日志
-journalctl -u moevideo-backend -f
+journalctl -u moevideo-backend -f -o cat
+journalctl -u moevideo-backend --since "10 min ago" | rg "module=import|module=transcode"
 journalctl -u moevideo-frontend -f
 tail -f /var/log/nginx/error.log
 ```
@@ -617,7 +633,7 @@ AUTH_COOKIE_SAMESITE=none
 CORS_ALLOWED_ORIGINS=https://app.example.com
 ```
 
-Frontend `.env.local`：
+Frontend `.env.production.local`：
 
 ```env
 NEXT_PUBLIC_API_BASE_URL=https://api.example.com/api/v1

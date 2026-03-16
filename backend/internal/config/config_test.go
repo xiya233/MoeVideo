@@ -6,6 +6,7 @@ func resetConfigEnv(t *testing.T) {
 	t.Helper()
 	keys := []string{
 		"APP_ENV",
+		"LOG_LEVEL",
 		"HTTP_ADDR",
 		"DB_PATH",
 		"JWT_SECRET",
@@ -26,8 +27,10 @@ func resetConfigEnv(t *testing.T) {
 		"YTDLP_BIN",
 		"TRANSCODE_POLL_INTERVAL",
 		"TRANSCODE_MAX_RETRIES",
+		"TRANSCODE_PROGRESS_LOG_INTERVAL",
 		"IMPORT_POLL_INTERVAL",
 		"IMPORT_MAX_RETRIES",
+		"IMPORT_PROGRESS_LOG_INTERVAL",
 		"IMPORT_TORRENT_MAX_MB",
 		"IMPORT_MAX_SELECTED_FILES",
 		"IMPORT_URL_TIMEOUT_SEC",
@@ -88,5 +91,27 @@ func TestLoadAcceptsCustomJWTSecret(t *testing.T) {
 	}
 	if cfg.JWTSecret != "my-very-strong-secret-for-tests" {
 		t.Fatalf("unexpected JWTSecret: %s", cfg.JWTSecret)
+	}
+}
+
+func TestLoadRejectsInvalidLogLevel(t *testing.T) {
+	resetConfigEnv(t)
+	t.Setenv("JWT_SECRET", "my-very-strong-secret-for-tests")
+	t.Setenv("LOG_LEVEL", "verbose")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("expected error for invalid LOG_LEVEL")
+	}
+}
+
+func TestLoadRejectsInvalidImportProgressLogInterval(t *testing.T) {
+	resetConfigEnv(t)
+	t.Setenv("JWT_SECRET", "my-very-strong-secret-for-tests")
+	t.Setenv("IMPORT_PROGRESS_LOG_INTERVAL", "0s")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("expected error for invalid IMPORT_PROGRESS_LOG_INTERVAL")
 	}
 }

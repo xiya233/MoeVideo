@@ -21,6 +21,7 @@ import (
 	"moevideo/backend/internal/db"
 	"moevideo/backend/internal/handlers"
 	"moevideo/backend/internal/importer"
+	"moevideo/backend/internal/logging"
 	"moevideo/backend/internal/middleware"
 	"moevideo/backend/internal/ratelimit"
 	"moevideo/backend/internal/response"
@@ -37,25 +38,33 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	appLogger, err := logging.New(cfg.LogLevel)
+	if err != nil {
+		log.Fatalf("init logger: %v", err)
+	}
 
 	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
-		log.Fatalf("create db directory: %v", err)
+		appLogger.Errorf("create db directory failed: %v", err)
+		os.Exit(1)
 	}
 	if cfg.StorageDriver == "local" {
 		if err := os.MkdirAll(cfg.LocalStorageDir, 0o755); err != nil {
-			log.Fatalf("create local storage directory: %v", err)
+			appLogger.Errorf("create local storage directory failed: %v", err)
+			os.Exit(1)
 		}
 	}
 
 	database, err := db.Open(cfg.DBPath)
 	if err != nil {
-		log.Fatalf("open database: %v", err)
+		appLogger.Errorf("open database failed: %v", err)
+		os.Exit(1)
 	}
 	defer database.Close()
 
 	storageSvc, err := storage.NewService(cfg)
 	if err != nil {
-		log.Fatalf("init storage service: %v", err)
+		appLogger.Errorf("init storage service failed: %v", err)
+		os.Exit(1)
 	}
 
 	appContainer := &app.App{
@@ -76,7 +85,7 @@ func main() {
 	}
 	defer func() {
 		if err := appContainer.RateLim.Close(); err != nil {
-			log.Printf("close rate limiter: %v", err)
+			appLogger.Warnf("close rate limiter failed: %v", err)
 		}
 	}()
 
@@ -101,7 +110,7 @@ func main() {
 			if errors.As(err, &fiberErr) {
 				return response.Error(c, fiberErr.Code, fiberErr.Message)
 			}
-			log.Printf("request error: %v", err)
+			appLogger.Errorf("request error: %v", err)
 			return response.Error(c, fiber.StatusInternalServerError, "internal server error")
 		},
 	})
@@ -130,22 +139,31 @@ func main() {
 
 	workerCtx, cancelWorker := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancelWorker()
-	go transcode.NewWorker(appContainer).Run(workerCtx)
-	go importer.NewWorker(appContainer).Run(workerCtx)
+	go transcode.NewWorker(
+		appContainer,
+		transcode.WithLogger(appLogger.WithPrefix("module=transcode")),
+		transcode.WithProgressLogInterval(cfg.TranscodeProgressLogInterval),
+	).Run(workerCtx)
+	go importer.NewWorker(
+		appContainer,
+		importer.WithLogger(appLogger.WithPrefix("module=import")),
+		importer.WithProgressLogInterval(cfg.ImportProgressLogInterval),
+	).Run(workerCtx)
 	go func() {
 		<-workerCtx.Done()
-		log.Printf("shutdown signal received, stopping MoeVideo API...")
+		appLogger.Infof("shutdown signal received, stopping MoeVideo API")
 		if err := server.Shutdown(); err != nil {
-			log.Printf("graceful shutdown failed: %v", err)
+			appLogger.Errorf("graceful shutdown failed: %v", err)
 		}
 	}()
 
-	log.Printf("MoeVideo API listening on %s", cfg.HTTPAddr)
+	appLogger.Infof("MoeVideo API listening on %s", cfg.HTTPAddr)
 	if err := server.Listen(cfg.HTTPAddr); err != nil {
 		if workerCtx.Err() == nil {
-			log.Fatalf("fiber listen: %v", err)
+			appLogger.Errorf("fiber listen failed: %v", err)
+			os.Exit(1)
 		}
-		log.Printf("fiber listen exited after shutdown signal: %v", err)
+		appLogger.Infof("fiber listen exited after shutdown signal: %v", err)
 	}
-	log.Printf("MoeVideo API stopped")
+	appLogger.Infof("MoeVideo API stopped")
 }

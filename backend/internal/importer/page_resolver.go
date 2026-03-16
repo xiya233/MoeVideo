@@ -81,6 +81,13 @@ func (w *Worker) resolvePageManifestCandidates(ctx context.Context, sourceURL st
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, cmdParts[0], args...)
+	w.logger.Infof(
+		"page resolver start source_url=%s cmd=%s timeout=%s max_candidates=%d",
+		sourceURL,
+		formatCommand(cmdParts[0], args),
+		timeout,
+		maxCandidates,
+	)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -96,8 +103,20 @@ func (w *Worker) resolvePageManifestCandidates(ctx context.Context, sourceURL st
 		} else {
 			errText = truncateOutput([]byte(errText), 400)
 		}
+		w.logger.Debugf(
+			"page resolver failed source_url=%s stdout=%s stderr=%s",
+			sourceURL,
+			truncateOutput(stdout.Bytes(), 1200),
+			truncateOutput(stderr.Bytes(), 1200),
+		)
 		return nil, pageManifestResolverOutput{}, fmt.Errorf("page resolver failed: %w: %s", err, errText)
 	}
+	w.logger.Debugf(
+		"page resolver raw output source_url=%s stdout=%s stderr=%s",
+		sourceURL,
+		truncateOutput(stdout.Bytes(), 1200),
+		truncateOutput(stderr.Bytes(), 1200),
+	)
 
 	out, err := parsePageManifestResolverOutput(stdout.Bytes())
 	if err != nil {
@@ -105,6 +124,13 @@ func (w *Worker) resolvePageManifestCandidates(ctx context.Context, sourceURL st
 	}
 
 	candidates := normalizeResolverCandidates(sourceURL, out, maxCandidates)
+	w.logger.Infof(
+		"page resolver done source_url=%s final_url=%s candidate_count=%d reason=%s",
+		sourceURL,
+		strings.TrimSpace(out.FinalURL),
+		len(candidates),
+		strings.TrimSpace(out.Reason),
+	)
 	if len(candidates) == 0 {
 		reason := strings.TrimSpace(out.Reason)
 		if reason == "" {
