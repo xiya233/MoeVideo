@@ -82,4 +82,11 @@ export const meApi = {
       body: payload,
     });
   },
+
+  deleteMyVideo(request: ApiRequest, videoId: string) {
+    return request<{ deleted: boolean; cleanup_warnings?: string[] }>(`/videos/${videoId}`, {
+      method: "DELETE",
+      auth: true,
+    });
+  },
 };

@@ -152,10 +152,14 @@ function VideoGridCard({
   video,
   showStatus = false,
   onEdit,
+  onDelete,
+  deleting = false,
 }: {
   video: VideoCard;
   showStatus?: boolean;
   onEdit?: (video: VideoCard) => void;
+  onDelete?: (video: VideoCard) => void;
+  deleting?: boolean;
 }) {
   return (
     <article className="group flex flex-col gap-3">
@@ -226,15 +230,27 @@ function VideoGridCard({
           />
           <span className="ml-auto text-[11px]">{video.category || "未分类"}</span>
         </div>
-        {onEdit ? (
-          <div className="mt-2">
-            <button
-              type="button"
-              onClick={() => onEdit(video)}
-              className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 transition-colors hover:border-primary/30 hover:text-primary"
-            >
-              编辑视频信息
-            </button>
+        {onEdit || onDelete ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {onEdit ? (
+              <button
+                type="button"
+                onClick={() => onEdit(video)}
+                className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 transition-colors hover:border-primary/30 hover:text-primary"
+              >
+                编辑视频信息
+              </button>
+            ) : null}
+            {onDelete ? (
+              <button
+                type="button"
+                onClick={() => onDelete(video)}
+                disabled={deleting}
+                className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 transition-colors hover:border-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                删除视频
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -288,6 +304,9 @@ export function MePage() {
   const [editVideoTagsInput, setEditVideoTagsInput] = useState("");
   const [editVideoLoading, setEditVideoLoading] = useState(false);
   const [editVideoError, setEditVideoError] = useState("");
+  const [deletingVideo, setDeletingVideo] = useState<VideoCard | null>(null);
+  const [deleteVideoError, setDeleteVideoError] = useState("");
+  const [videoActionMessage, setVideoActionMessage] = useState("");
 
   const meQuery = useQuery({
     queryKey: ["me-profile"],
@@ -561,6 +580,17 @@ export function MePage() {
     setEditVideoLoading(false);
   }, []);
 
+  const openDeleteVideoDialog = useCallback((video: VideoCard) => {
+    setDeletingVideo(video);
+    setDeleteVideoError("");
+    setVideoActionMessage("");
+  }, []);
+
+  const closeDeleteVideoDialog = useCallback(() => {
+    setDeletingVideo(null);
+    setDeleteVideoError("");
+  }, []);
+
   const updateVideoMutation = useMutation({
     mutationFn: async () => {
       if (!editingVideo) {
@@ -583,6 +613,26 @@ export function MePage() {
     },
     onError: (error) => {
       setEditVideoError(error instanceof Error ? error.message : "更新视频信息失败");
+    },
+  });
+
+  const deleteVideoMutation = useMutation({
+    mutationFn: async (video: VideoCard) => meApi.deleteMyVideo(request, video.id),
+    onSuccess: async (result, video) => {
+      await queryClient.invalidateQueries({ queryKey: ["me-videos"] });
+      await queryClient.invalidateQueries({ queryKey: ["me-profile"] });
+      if (editingVideo?.id === video.id) {
+        closeVideoEditDialog();
+      }
+      closeDeleteVideoDialog();
+      if (result.cleanup_warnings && result.cleanup_warnings.length > 0) {
+        setVideoActionMessage("视频已删除（部分存储清理失败，请稍后检查日志）");
+      } else {
+        setVideoActionMessage("视频已删除");
+      }
+    },
+    onError: (error) => {
+      setDeleteVideoError(error instanceof Error ? error.message : "删除视频失败");
     },
   });
 
@@ -692,13 +742,21 @@ export function MePage() {
 
       {activeTab === "videos" ? (
         <section className="space-y-4">
+          {videoActionMessage ? <p className="text-sm text-emerald-600">{videoActionMessage}</p> : null}
           {videosQuery.isLoading ? <div className="text-sm text-slate-500">正在加载我的视频...</div> : null}
           {myVideos.length === 0 && !videosQuery.isLoading ? (
             <EmptyState title="还没有上传视频" description="去上传页发布你的第一条视频吧。" />
           ) : (
             <div className="grid grid-cols-1 gap-x-6 gap-y-10 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
               {myVideos.map((video) => (
-                <VideoGridCard key={video.id} video={video} showStatus onEdit={(item) => void openVideoEditDialog(item)} />
+                <VideoGridCard
+                  key={video.id}
+                  video={video}
+                  showStatus
+                  onEdit={(item) => void openVideoEditDialog(item)}
+                  onDelete={openDeleteVideoDialog}
+                  deleting={deleteVideoMutation.isPending && deletingVideo?.id === video.id}
+                />
               ))}
             </div>
           )}
@@ -1119,6 +1177,46 @@ export function MePage() {
               className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {updateVideoMutation.isPending ? "保存中..." : "保存"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!deletingVideo}
+        onOpenChange={(open) => (!open && !deleteVideoMutation.isPending ? closeDeleteVideoDialog() : null)}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>删除视频</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-2 text-sm text-slate-600">
+            <p>删除后视频及关联资源将不可恢复，确认继续吗？</p>
+            {deletingVideo ? <p className="font-medium text-slate-800">{deletingVideo.title}</p> : null}
+            {deleteVideoError ? <p className="text-rose-600">{deleteVideoError}</p> : null}
+          </div>
+
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={closeDeleteVideoDialog}
+              disabled={deleteVideoMutation.isPending}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:border-primary/30 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (deletingVideo) {
+                  deleteVideoMutation.mutate(deletingVideo);
+                }
+              }}
+              disabled={deleteVideoMutation.isPending || !deletingVideo}
+              className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition-opacity hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {deleteVideoMutation.isPending ? "删除中..." : "确认删除"}
             </button>
           </DialogFooter>
         </DialogContent>
