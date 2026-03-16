@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -430,6 +431,17 @@ func prepareVideoForUser(t *testing.T, container *app.App, userID string) string
 		t.Fatalf("insert video: %v", err)
 	}
 	return videoID
+}
+
+func writeLocalObjectForTest(t *testing.T, container *app.App, objectKey string, content []byte) {
+	t.Helper()
+	targetPath := container.Storage.LocalObjectPath(objectKey)
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("mkdir local object dir: %v", err)
+	}
+	if err := os.WriteFile(targetPath, content, 0o644); err != nil {
+		t.Fatalf("write local object: %v", err)
+	}
 }
 
 func createActiveCategory(t *testing.T, container *app.App, slug, name string) int64 {
@@ -2641,6 +2653,246 @@ func TestUpdateVideoByOwner(t *testing.T) {
 	}, map[string]string{"Authorization": "Bearer " + ownerAccess})
 	if status != http.StatusNotFound {
 		t.Fatalf("owner update deleted video should return 404, got %d", status)
+	}
+}
+
+func TestDeleteVideoHardDeleteAndStorageCleanup(t *testing.T) {
+	srv, container := newTestServer(t)
+	ownerID, ownerAccess, _ := registerUser(t, srv, "delete-owner", "delete-owner@example.com", "password123")
+
+	now := util.FormatTime(time.Now().UTC())
+	videoID := "video-" + uuid.NewString()
+	sourceMediaID := "media-" + uuid.NewString()
+	coverMediaID := "media-" + uuid.NewString()
+	previewMediaID := "media-" + uuid.NewString()
+	sourceKey := "videos/" + ownerID + "/delete/source.mp4"
+	coverKey := "videos/" + ownerID + "/delete/cover.jpg"
+	previewKey := "videos/" + ownerID + "/delete/preview.webp"
+	masterKey := "hls/" + ownerID + "/" + videoID + "/master.m3u8"
+	segKey := "hls/" + ownerID + "/" + videoID + "/360p/seg_000.ts"
+
+	for _, row := range []struct {
+		id       string
+		object   string
+		mimeType string
+		size     int64
+	}{
+		{sourceMediaID, sourceKey, "video/mp4", 1024},
+		{coverMediaID, coverKey, "image/jpeg", 128},
+		{previewMediaID, previewKey, "image/webp", 128},
+	} {
+		if _, err := container.DB.Exec(
+			`INSERT INTO media_objects (id, provider, bucket, object_key, original_filename, mime_type, size_bytes, duration_sec, created_by, created_at)
+			 VALUES (?, 'local', '', ?, ?, ?, ?, 0, ?, ?)`,
+			row.id,
+			row.object,
+			filepath.Base(row.object),
+			row.mimeType,
+			row.size,
+			ownerID,
+			now,
+		); err != nil {
+			t.Fatalf("insert media object %s: %v", row.id, err)
+		}
+	}
+
+	if _, err := container.DB.Exec(
+		`INSERT INTO videos (
+			id, uploader_id, title, description, cover_media_id, source_media_id, preview_media_id,
+			status, visibility, duration_sec, published_at, created_at, updated_at
+		) VALUES (?, ?, 'delete target', 'to be deleted', ?, ?, ?, 'published', 'public', 120, ?, ?, ?)`,
+		videoID,
+		ownerID,
+		coverMediaID,
+		sourceMediaID,
+		previewMediaID,
+		now,
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert video: %v", err)
+	}
+
+	if _, err := container.DB.Exec(
+		`INSERT INTO video_hls_assets (video_id, provider, bucket, master_object_key, variants_json, segment_seconds, created_at, updated_at)
+		 VALUES (?, 'local', '', ?, '[]', 4, ?, ?)`,
+		videoID,
+		masterKey,
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert hls asset: %v", err)
+	}
+
+	if _, err := container.DB.Exec(`INSERT OR IGNORE INTO tags (name, use_count, created_at) VALUES ('delete-tag', 1, ?)`, now); err != nil {
+		t.Fatalf("insert tag: %v", err)
+	}
+	var tagID int64
+	if err := container.DB.QueryRow(`SELECT id FROM tags WHERE name='delete-tag'`).Scan(&tagID); err != nil {
+		t.Fatalf("query tag id: %v", err)
+	}
+	if _, err := container.DB.Exec(`INSERT INTO video_tags (video_id, tag_id) VALUES (?, ?)`, videoID, tagID); err != nil {
+		t.Fatalf("insert video tag: %v", err)
+	}
+
+	if _, err := container.DB.Exec(`INSERT INTO video_actions (user_id, video_id, action_type, created_at) VALUES (?, ?, 'like', ?)`, ownerID, videoID, now); err != nil {
+		t.Fatalf("insert video action: %v", err)
+	}
+	commentID := "comment-" + uuid.NewString()
+	if _, err := container.DB.Exec(
+		`INSERT INTO comments (id, video_id, user_id, parent_comment_id, content, status, created_at, updated_at)
+		 VALUES (?, ?, ?, NULL, 'hello', 'active', ?, ?)`,
+		commentID,
+		videoID,
+		ownerID,
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert comment: %v", err)
+	}
+	if _, err := container.DB.Exec(`INSERT INTO comment_likes (user_id, comment_id, created_at) VALUES (?, ?, ?)`, ownerID, commentID, now); err != nil {
+		t.Fatalf("insert comment like: %v", err)
+	}
+	if _, err := container.DB.Exec(`INSERT INTO video_view_events (id, video_id, viewer_key, viewed_minute, created_at) VALUES (?, ?, ?, ?, ?)`,
+		"view-"+uuid.NewString(), videoID, "viewer-"+ownerID, "2026-03-16T20:00", now); err != nil {
+		t.Fatalf("insert video view event: %v", err)
+	}
+	if _, err := container.DB.Exec(`INSERT INTO user_video_progress (user_id, video_id, position_sec, duration_sec, created_at, updated_at) VALUES (?, ?, 30, 120, ?, ?)`,
+		ownerID, videoID, now, now); err != nil {
+		t.Fatalf("insert progress: %v", err)
+	}
+	if _, err := container.DB.Exec(
+		`INSERT INTO video_danmaku (id, video_id, user_id, content, time_sec, mode, color, status, created_at)
+		 VALUES (?, ?, ?, 'dm', 3, 0, '#FFFFFF', 'active', ?)`,
+		"dm-"+uuid.NewString(),
+		videoID,
+		ownerID,
+		now,
+	); err != nil {
+		t.Fatalf("insert danmaku: %v", err)
+	}
+	if _, err := container.DB.Exec(
+		`INSERT INTO video_transcode_jobs (
+			id, video_id, status, attempts, max_attempts, available_at, created_at, updated_at
+		) VALUES (?, ?, 'queued', 0, 3, ?, ?, ?)`,
+		"transcode-"+uuid.NewString(),
+		videoID,
+		now,
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert transcode job: %v", err)
+	}
+	if _, err := container.DB.Exec(`INSERT INTO site_featured_banners (position, video_id, created_at, updated_at) VALUES (1, ?, ?, ?)`, videoID, now, now); err != nil {
+		t.Fatalf("insert featured banner: %v", err)
+	}
+	importJobID := "import-job-" + uuid.NewString()
+	if _, err := container.DB.Exec(
+		`INSERT INTO video_import_jobs (
+			id, user_id, source_type, status, tags_json, visibility, total_files, selected_files,
+			completed_files, failed_files, progress, available_at, expires_at, created_at, updated_at
+		) VALUES (?, ?, 'url', 'failed', '[]', 'public', 1, 1, 0, 1, 0, ?, ?, ?, ?)`,
+		importJobID,
+		ownerID,
+		now,
+		now,
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert import job: %v", err)
+	}
+	importItemID := "import-item-" + uuid.NewString()
+	if _, err := container.DB.Exec(
+		`INSERT INTO video_import_items (
+			id, job_id, file_index, file_path, file_size_bytes, selected, status,
+			media_object_id, video_id, created_at, updated_at
+		) VALUES (?, ?, 0, 'source.mp4', 1024, 1, 'completed', ?, ?, ?, ?)`,
+		importItemID,
+		importJobID,
+		sourceMediaID,
+		videoID,
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert import item: %v", err)
+	}
+
+	writeLocalObjectForTest(t, container, sourceKey, []byte("source"))
+	writeLocalObjectForTest(t, container, coverKey, []byte("cover"))
+	writeLocalObjectForTest(t, container, previewKey, []byte("preview"))
+	writeLocalObjectForTest(t, container, masterKey, []byte("#EXTM3U"))
+	writeLocalObjectForTest(t, container, segKey, []byte("segment"))
+
+	status, resp := doJSONRequest(t, srv, http.MethodDelete, "/api/v1/videos/"+videoID, nil, map[string]string{
+		"Authorization": "Bearer " + ownerAccess,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("delete video should return 200, got %d (%s)", status, resp.Message)
+	}
+
+	var videoCount int64
+	if err := container.DB.QueryRow(`SELECT COUNT(1) FROM videos WHERE id = ?`, videoID).Scan(&videoCount); err != nil {
+		t.Fatalf("count videos: %v", err)
+	}
+	if videoCount != 0 {
+		t.Fatalf("expected video row removed, got count=%d", videoCount)
+	}
+
+	for _, table := range []string{
+		"video_hls_assets",
+		"video_transcode_jobs",
+		"video_danmaku",
+		"user_video_progress",
+		"video_view_events",
+		"video_actions",
+		"video_tags",
+		"comments",
+		"comment_likes",
+		"site_featured_banners",
+	} {
+		var count int64
+		query := fmt.Sprintf("SELECT COUNT(1) FROM %s WHERE video_id = ?", table)
+		if table == "comment_likes" {
+			query = "SELECT COUNT(1) FROM comment_likes WHERE comment_id = ?"
+		}
+		targetID := videoID
+		if table == "comment_likes" {
+			targetID = commentID
+		}
+		if err := container.DB.QueryRow(query, targetID).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("expected %s cleaned, got count=%d", table, count)
+		}
+	}
+
+	var (
+		itemVideoID sql.NullString
+		itemMediaID sql.NullString
+	)
+	if err := container.DB.QueryRow(`SELECT video_id, media_object_id FROM video_import_items WHERE id = ?`, importItemID).Scan(&itemVideoID, &itemMediaID); err != nil {
+		t.Fatalf("query import item refs: %v", err)
+	}
+	if itemVideoID.Valid || itemMediaID.Valid {
+		t.Fatalf("expected import item refs cleared, got video_id=%v media_object_id=%v", itemVideoID, itemMediaID)
+	}
+
+	for _, mediaID := range []string{sourceMediaID, coverMediaID, previewMediaID} {
+		var count int64
+		if err := container.DB.QueryRow(`SELECT COUNT(1) FROM media_objects WHERE id = ?`, mediaID).Scan(&count); err != nil {
+			t.Fatalf("count media object %s: %v", mediaID, err)
+		}
+		if count != 0 {
+			t.Fatalf("expected media object %s removed, got count=%d", mediaID, count)
+		}
+	}
+
+	for _, key := range []string{sourceKey, coverKey, previewKey, masterKey, segKey} {
+		_, err := os.Stat(container.Storage.LocalObjectPath(key))
+		if !os.IsNotExist(err) {
+			t.Fatalf("expected local object removed key=%s err=%v", key, err)
+		}
 	}
 }
 

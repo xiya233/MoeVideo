@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -953,22 +954,30 @@ func (h *Handler) DeleteVideo(c *fiber.Ctx) error {
 		return response.Error(c, fiber.StatusBadRequest, "videoId is required")
 	}
 
-	res, err := h.app.DB.ExecContext(c.UserContext(),
-		`UPDATE videos
-		 SET status = 'deleted', updated_at = ?
-		 WHERE id = ? AND uploader_id = ? AND status != 'deleted'`,
-		nowString(),
-		videoID,
-		uid,
-	)
+	tx, err := h.app.DB.BeginTx(c.UserContext(), nil)
 	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to begin transaction")
+	}
+	defer tx.Rollback()
+
+	plan, err := h.deleteVideoInTx(c.UserContext(), tx, videoID, uid, true)
+	if err != nil {
+		if errors.Is(err, errVideoDeleteNotFound) {
+			return response.Error(c, fiber.StatusNotFound, "video not found")
+		}
 		return response.Error(c, fiber.StatusInternalServerError, "failed to delete video")
 	}
-	affected, _ := res.RowsAffected()
-	if affected == 0 {
-		return response.Error(c, fiber.StatusNotFound, "video not found")
+
+	if err := tx.Commit(); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to commit video delete")
 	}
-	return response.OK(c, fiber.Map{"deleted": true})
+
+	warnings := h.cleanupVideoStorage(c.UserContext(), plan)
+	payload := fiber.Map{"deleted": true}
+	if len(warnings) > 0 {
+		payload["cleanup_warnings"] = warnings
+	}
+	return response.OK(c, payload)
 }
 
 func (h *Handler) recomputeHotScoreTx(ctx context.Context, tx *sql.Tx, videoID string) error {

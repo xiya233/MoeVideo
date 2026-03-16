@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"moevideo/backend/internal/config"
 )
@@ -178,6 +180,127 @@ func (s *Service) UploadFile(ctx context.Context, objectKey, contentType, srcPat
 		return nil
 	default:
 		return fmt.Errorf("unsupported storage driver: %s", s.cfg.StorageDriver)
+	}
+}
+
+func (s *Service) DeleteObject(ctx context.Context, provider, bucket, objectKey string) error {
+	objectKey = strings.TrimSpace(objectKey)
+	if objectKey == "" {
+		return nil
+	}
+
+	switch provider {
+	case "local":
+		targetPath := s.LocalObjectPath(objectKey)
+		err := os.Remove(targetPath)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove local object: %w", err)
+		}
+		return nil
+	case "s3":
+		if s.s3Client == nil {
+			return fmt.Errorf("s3 storage is not configured")
+		}
+		realBucket := strings.TrimSpace(bucket)
+		if realBucket == "" {
+			realBucket = s.cfg.S3Bucket
+		}
+		if realBucket == "" {
+			return fmt.Errorf("s3 bucket is required")
+		}
+		_, err := s.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: aws.String(realBucket),
+			Key:    aws.String(objectKey),
+		})
+		if err != nil {
+			return fmt.Errorf("delete s3 object: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported provider: %s", provider)
+	}
+}
+
+func (s *Service) DeletePrefix(ctx context.Context, provider, bucket, prefix string) error {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return fmt.Errorf("prefix is required")
+	}
+
+	switch provider {
+	case "local":
+		cleanPrefix := strings.TrimPrefix(filepath.Clean("/"+prefix), "/")
+		if cleanPrefix == "" || cleanPrefix == "." {
+			return fmt.Errorf("invalid local prefix: %q", prefix)
+		}
+		targetPath := filepath.Join(s.cfg.LocalStorageDir, cleanPrefix)
+		err := os.RemoveAll(targetPath)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove local prefix: %w", err)
+		}
+		return nil
+	case "s3":
+		if s.s3Client == nil {
+			return fmt.Errorf("s3 storage is not configured")
+		}
+		realBucket := strings.TrimSpace(bucket)
+		if realBucket == "" {
+			realBucket = s.cfg.S3Bucket
+		}
+		if realBucket == "" {
+			return fmt.Errorf("s3 bucket is required")
+		}
+
+		normalizedPrefix := path.Clean("/" + prefix)
+		normalizedPrefix = strings.TrimPrefix(normalizedPrefix, "/")
+		if normalizedPrefix == "." || normalizedPrefix == "" {
+			return fmt.Errorf("invalid s3 prefix: %q", prefix)
+		}
+		if !strings.HasSuffix(normalizedPrefix, "/") {
+			normalizedPrefix += "/"
+		}
+
+		var continuationToken *string
+		for {
+			resp, err := s.s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+				Bucket:            aws.String(realBucket),
+				Prefix:            aws.String(normalizedPrefix),
+				ContinuationToken: continuationToken,
+			})
+			if err != nil {
+				return fmt.Errorf("list s3 objects by prefix: %w", err)
+			}
+
+			if len(resp.Contents) > 0 {
+				objects := make([]s3types.ObjectIdentifier, 0, len(resp.Contents))
+				for _, obj := range resp.Contents {
+					if obj.Key == nil || strings.TrimSpace(*obj.Key) == "" {
+						continue
+					}
+					objects = append(objects, s3types.ObjectIdentifier{Key: obj.Key})
+				}
+				if len(objects) > 0 {
+					_, err := s.s3Client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+						Bucket: aws.String(realBucket),
+						Delete: &s3types.Delete{
+							Objects: objects,
+							Quiet:   aws.Bool(true),
+						},
+					})
+					if err != nil {
+						return fmt.Errorf("delete s3 objects by prefix: %w", err)
+					}
+				}
+			}
+
+			if !aws.ToBool(resp.IsTruncated) || resp.NextContinuationToken == nil {
+				break
+			}
+			continuationToken = resp.NextContinuationToken
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported provider: %s", provider)
 	}
 }
 

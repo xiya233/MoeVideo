@@ -428,3 +428,34 @@ func TestAdminFeaturedBannersFlow(t *testing.T) {
 		t.Fatalf("duplicate featured ids should return 400, got %d (%s)", status, dupResp.Message)
 	}
 }
+
+func TestAdminVideoSoftDeleteHardDeletesVideo(t *testing.T) {
+	srv, container := newTestServer(t)
+	adminID, adminAccess, _ := registerUser(t, srv, "video-admin", "video-admin@example.com", "password123")
+	ownerID, _, _ := registerUser(t, srv, "video-owner-delete", "video-owner-delete@example.com", "password123")
+	setUserRole(t, container.DB, adminID, "admin")
+
+	videoID := prepareVideoForUser(t, container, ownerID)
+
+	status, resp := doJSONRequest(t, srv, http.MethodPost, "/api/v1/admin/videos/"+videoID+"/actions", map[string]interface{}{
+		"action": "soft_delete",
+	}, map[string]string{"Authorization": "Bearer " + adminAccess})
+	if status != http.StatusOK {
+		t.Fatalf("admin video soft_delete should return 200, got %d (%s)", status, resp.Message)
+	}
+
+	var videoCount int64
+	if err := container.DB.QueryRow(`SELECT COUNT(1) FROM videos WHERE id = ?`, videoID).Scan(&videoCount); err != nil {
+		t.Fatalf("count videos: %v", err)
+	}
+	if videoCount != 0 {
+		t.Fatalf("expected video to be hard deleted, got count=%d", videoCount)
+	}
+
+	status, _ = doJSONRequest(t, srv, http.MethodPost, "/api/v1/admin/videos/"+videoID+"/actions", map[string]interface{}{
+		"action": "restore",
+	}, map[string]string{"Authorization": "Bearer " + adminAccess})
+	if status != http.StatusBadRequest {
+		t.Fatalf("restore action should be rejected, got %d", status)
+	}
+}

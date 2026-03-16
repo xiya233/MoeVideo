@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -757,9 +758,12 @@ func (h *Handler) AdminVideoAction(c *fiber.Ctx) error {
 	}
 	action := strings.TrimSpace(req.Action)
 	switch action {
-	case "publish", "hide", "soft_delete", "restore", "retry_transcode":
+	case "publish", "hide", "soft_delete", "delete", "retry_transcode":
 	default:
 		return response.Error(c, fiber.StatusBadRequest, "invalid action")
+	}
+	if action == "soft_delete" || action == "delete" {
+		return h.adminHardDeleteVideo(c, videoID, action)
 	}
 
 	tx, err := h.app.DB.BeginTx(ctx, nil)
@@ -793,19 +797,6 @@ WHERE id = ?`, now, now, videoID); err != nil {
 		}
 	case "hide":
 		if _, err := tx.ExecContext(ctx, `UPDATE videos SET visibility = 'private', updated_at = ? WHERE id = ?`, now, videoID); err != nil {
-			return response.Error(c, fiber.StatusInternalServerError, "failed to update video")
-		}
-	case "soft_delete":
-		if _, err := tx.ExecContext(ctx, `UPDATE videos SET status = 'deleted', updated_at = ? WHERE id = ?`, now, videoID); err != nil {
-			return response.Error(c, fiber.StatusInternalServerError, "failed to update video")
-		}
-	case "restore":
-		if _, err := tx.ExecContext(ctx, `
-UPDATE videos
-SET status = 'published',
-    published_at = CASE WHEN published_at IS NULL OR published_at = '' THEN ? ELSE published_at END,
-    updated_at = ?
-WHERE id = ?`, now, now, videoID); err != nil {
 			return response.Error(c, fiber.StatusInternalServerError, "failed to update video")
 		}
 	case "retry_transcode":
@@ -857,6 +848,47 @@ ON CONFLICT(video_id) DO UPDATE SET
 		return response.Error(c, fiber.StatusInternalServerError, "failed to commit action")
 	}
 	return response.OK(c, fiber.Map{"applied": true, "action": action})
+}
+
+func (h *Handler) adminHardDeleteVideo(c *fiber.Ctx, videoID, action string) error {
+	ctx := c.UserContext()
+	tx, err := h.app.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to begin transaction")
+	}
+	defer tx.Rollback()
+
+	plan, err := h.deleteVideoInTx(ctx, tx, videoID, "", false)
+	if err != nil {
+		if errors.Is(err, errVideoDeleteNotFound) {
+			return response.Error(c, fiber.StatusNotFound, "video not found")
+		}
+		return response.Error(c, fiber.StatusInternalServerError, "failed to delete video")
+	}
+
+	if err := h.writeAdminAudit(ctx, tx, c, "video.delete", "video", videoID, fiber.Map{
+		"action":          action,
+		"hard_delete":     true,
+		"before_status":   plan.BeforeStatus,
+		"before_uploader": plan.UploaderID,
+	}); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to write audit log")
+	}
+
+	if err := tx.Commit(); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to commit action")
+	}
+
+	warnings := h.cleanupVideoStorage(ctx, plan)
+	payload := fiber.Map{
+		"applied": true,
+		"action":  "delete",
+		"deleted": true,
+	}
+	if len(warnings) > 0 {
+		payload["cleanup_warnings"] = warnings
+	}
+	return response.OK(c, payload)
 }
 
 func (h *Handler) AdminListTranscodeJobs(c *fiber.Ctx) error {

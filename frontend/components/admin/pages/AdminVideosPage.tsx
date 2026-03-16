@@ -35,7 +35,7 @@ export function AdminVideosPage() {
   const [visibility, setVisibility] = useState("");
   const [cursor, setCursor] = useState<string | undefined>();
   const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
-  const [action, setAction] = useState<"publish" | "hide" | "soft_delete" | "restore" | "retry_transcode" | null>(null);
+  const [action, setAction] = useState<"publish" | "hide" | "soft_delete" | "retry_transcode" | null>(null);
 
   const videosQuery = useQuery({
     queryKey: ["admin-videos", q, status, visibility, cursor],
@@ -74,7 +74,7 @@ export function AdminVideosPage() {
     <div className="space-y-4">
       <div>
         <h2 className="text-xl font-semibold">Videos</h2>
-        <p className="text-sm text-slate-500">筛选视频并执行上下架、删除、恢复、重试转码等操作。</p>
+        <p className="text-sm text-slate-500">筛选视频并执行上下架、删除、重试转码等操作。</p>
       </div>
 
       <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-200 bg-white p-4 md:grid-cols-4">
@@ -173,9 +173,9 @@ export function AdminVideosPage() {
                   </Button>
                   <Button size="sm" variant="destructive" onClick={() => {
                     setSelectedVideoId(video.id);
-                    setAction(video.status === "deleted" ? "restore" : "soft_delete");
+                    setAction("soft_delete");
                   }}>
-                    {video.status === "deleted" ? "恢复" : "删除"}
+                    删除
                   </Button>
                 </div>
               </TableCell>
