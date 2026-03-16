@@ -173,6 +173,14 @@ export type DanmakuListData = {
 export type ImportJobStatus = "draft" | "queued" | "downloading" | "succeeded" | "partial" | "failed";
 export type ImportItemStatus = "pending" | "downloading" | "completed" | "failed" | "skipped";
 
+export type URLInspectResult = {
+  mode: "direct_supported" | "candidate_required";
+  source_url: string;
+  candidates: string[];
+  inspect_token?: string;
+  reason?: string;
+};
+
 export type ImportJob = {
   id: string;
   source_type: "torrent" | "url";

@@ -3,15 +3,19 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	neturl "net/url"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +34,8 @@ type importListCursor struct {
 
 const importJobTempFolderName = "import-jobs"
 
+const urlInspectTokenTTL = 10 * time.Minute
+
 type inspectTorrentRequest struct {
 	Filename      string `json:"filename"`
 	TorrentBase64 string `json:"torrent_base64"`
@@ -47,12 +53,32 @@ type startTorrentImportRequest struct {
 }
 
 type startURLImportRequest struct {
-	URL         string   `json:"url"`
-	CategoryID  *int64   `json:"category_id"`
-	Tags        []string `json:"tags"`
-	Visibility  string   `json:"visibility"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
+	URL            string   `json:"url"`
+	CategoryID     *int64   `json:"category_id"`
+	Tags           []string `json:"tags"`
+	Visibility     string   `json:"visibility"`
+	Title          string   `json:"title"`
+	Description    string   `json:"description"`
+	InspectToken   string   `json:"inspect_token"`
+	CandidateIndex *int     `json:"candidate_index"`
+}
+
+type inspectURLImportRequest struct {
+	URL string `json:"url"`
+}
+
+type urlInspectTokenPayload struct {
+	UserID     string   `json:"user_id"`
+	SourceURL  string   `json:"source_url"`
+	Candidates []string `json:"candidates"`
+	ExpiresAt  int64    `json:"expires_at"`
+}
+
+type pageManifestResolverOutput struct {
+	FinalURL   string   `json:"final_url"`
+	Title      string   `json:"title"`
+	Candidates []string `json:"candidates"`
+	Reason     string   `json:"reason"`
 }
 
 func (h *Handler) InspectTorrentImport(c *fiber.Ctx) error {
@@ -428,6 +454,80 @@ WHERE id = ?`, req.CategoryID, string(tagsJSON), visibility, nullableString(cust
 	})
 }
 
+func (h *Handler) InspectURLImport(c *fiber.Ctx) error {
+	uid := currentUserID(c)
+
+	var req inspectURLImportRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.Error(c, fiber.StatusBadRequest, "invalid request body")
+	}
+
+	req.URL = strings.TrimSpace(req.URL)
+	if req.URL == "" {
+		return response.Error(c, fiber.StatusBadRequest, "url is required")
+	}
+	if len(req.URL) > 2048 || !isValidImportURL(req.URL) {
+		return response.Error(c, fiber.StatusBadRequest, "url is invalid")
+	}
+
+	tx, err := h.app.DB.BeginTx(c.UserContext(), nil)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to begin transaction")
+	}
+	defer tx.Rollback()
+
+	_, ytdlpMetaArgsJSON, _, err := h.resolveYTDLPSnapshotForJob(c.UserContext(), tx)
+	if err != nil {
+		return response.Error(c, fiber.StatusServiceUnavailable, err.Error())
+	}
+	if err := tx.Commit(); err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to load yt-dlp settings")
+	}
+
+	metadataArgs, err := parseArgJSONArray(ytdlpMetaArgsJSON)
+	if err != nil {
+		return response.Error(c, fiber.StatusServiceUnavailable, "invalid yt-dlp settings")
+	}
+
+	unsupported, err := h.checkURLMetadataSupport(c.UserContext(), req.URL, metadataArgs)
+	if err != nil {
+		return response.Error(c, fiber.StatusBadRequest, err.Error())
+	}
+	if !unsupported {
+		return response.OK(c, fiber.Map{
+			"mode":       "direct_supported",
+			"source_url": req.URL,
+		})
+	}
+
+	if !h.app.Config.ImportPageResolverEnabled {
+		return response.Error(c, fiber.StatusBadRequest, "import.url.page_resolver_unavailable: unsupported url and resolver is disabled")
+	}
+
+	candidates, resolverResult, err := h.resolveURLImportCandidates(c.UserContext(), req.URL)
+	if err != nil {
+		return response.Error(c, fiber.StatusBadRequest, fmt.Sprintf("import.url.page_resolver_unavailable: %v", err))
+	}
+
+	token, err := h.signURLInspectToken(urlInspectTokenPayload{
+		UserID:     uid,
+		SourceURL:  req.URL,
+		Candidates: candidates,
+		ExpiresAt:  nowUTC().Add(urlInspectTokenTTL).Unix(),
+	})
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError, "failed to create inspect token")
+	}
+
+	return response.OK(c, fiber.Map{
+		"mode":          "candidate_required",
+		"source_url":    req.URL,
+		"candidates":    candidates,
+		"inspect_token": token,
+		"reason":        strings.TrimSpace(resolverResult.Reason),
+	})
+}
+
 func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 	uid := currentUserID(c)
 
@@ -442,6 +542,38 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 	}
 	if len(req.URL) > 2048 || !isValidImportURL(req.URL) {
 		return response.Error(c, fiber.StatusBadRequest, "url is invalid")
+	}
+	req.InspectToken = strings.TrimSpace(req.InspectToken)
+
+	hasManualCandidate := req.InspectToken != "" || req.CandidateIndex != nil
+	selectedCandidateURL := ""
+	resolverName := ""
+	resolverMetaJSON := ""
+	if hasManualCandidate {
+		if req.InspectToken == "" || req.CandidateIndex == nil {
+			return response.Error(c, fiber.StatusBadRequest, "inspect_token and candidate_index must be provided together")
+		}
+		inspectPayload, verifyErr := h.verifyURLInspectToken(req.InspectToken, uid, req.URL)
+		if verifyErr != nil {
+			return response.Error(c, fiber.StatusBadRequest, verifyErr.Error())
+		}
+		idx := *req.CandidateIndex
+		if idx < 0 || idx >= len(inspectPayload.Candidates) {
+			return response.Error(c, fiber.StatusBadRequest, "candidate_index is invalid")
+		}
+		selectedCandidateURL = strings.TrimSpace(inspectPayload.Candidates[idx])
+		if !isValidImportURL(selectedCandidateURL) {
+			return response.Error(c, fiber.StatusBadRequest, "selected candidate url is invalid")
+		}
+		resolverName = "page_manifest+user_selected"
+		resolverMetaBytes, _ := json.Marshal(fiber.Map{
+			"page_url":               req.URL,
+			"selected_candidate_url": selectedCandidateURL,
+			"candidate_index":        idx,
+			"candidate_total":        len(inspectPayload.Candidates),
+			"selection_mode":         "user_selected",
+		})
+		resolverMetaJSON = string(resolverMetaBytes)
 	}
 
 	visibility := normalizeImportVisibility(req.Visibility)
@@ -499,6 +631,9 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
+	if hasManualCandidate {
+		maxAttempts = 1
+	}
 
 	jobID := newID()
 	itemID := newID()
@@ -515,7 +650,7 @@ INSERT INTO video_import_jobs (
 	available_at, started_at, finished_at, expires_at, error_message,
 	created_at, updated_at
 ) VALUES (?, ?, 'url', ?, NULL, NULL,
-	?, NULL, NULL, NULL,
+	?, ?, ?, ?,
 	?, ?, ?,
 	?, NULL, ?,
 	'queued', ?, ?, ?, 0, ?,
@@ -527,6 +662,9 @@ INSERT INTO video_import_jobs (
 		uid,
 		sourceFilename,
 		req.URL,
+		nullableString(selectedCandidateURL),
+		nullableString(resolverName),
+		nullableString(resolverMetaJSON),
 		ytdlpMode,
 		ytdlpMetaArgsJSON,
 		ytdlpDownArgsJSON,
@@ -1262,6 +1400,307 @@ func isValidImportURL(raw string) bool {
 		return false
 	}
 	return true
+}
+
+func parseArgJSONArray(raw string) ([]string, error) {
+	content := strings.TrimSpace(raw)
+	if content == "" {
+		return []string{}, nil
+	}
+	var args []string
+	if err := json.Unmarshal([]byte(content), &args); err != nil {
+		return nil, fmt.Errorf("invalid arg json")
+	}
+	out := make([]string, 0, len(args))
+	for _, item := range args {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out, nil
+}
+
+func (h *Handler) checkURLMetadataSupport(ctx context.Context, sourceURL string, extraArgs []string) (unsupported bool, err error) {
+	timeout := h.app.Config.ImportURLTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	args := []string{"--dump-single-json", "--no-playlist", "--no-warnings"}
+	args = append(args, extraArgs...)
+	args = append(args, sourceURL)
+	cmd := exec.CommandContext(runCtx, h.app.Config.YTDLPBin, args...)
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		if runCtx.Err() == context.DeadlineExceeded {
+			return false, fmt.Errorf("yt-dlp metadata timeout")
+		}
+		outText := truncText(string(out), 400)
+		if strings.Contains(strings.ToLower(string(out)), "unsupported url") {
+			return true, nil
+		}
+		return false, fmt.Errorf("yt-dlp metadata failed: %v: %s", runErr, outText)
+	}
+	return false, nil
+}
+
+func (h *Handler) resolveURLImportCandidates(ctx context.Context, sourceURL string) ([]string, pageManifestResolverOutput, error) {
+	timeout := h.app.Config.ImportPageResolverTimeout
+	if timeout <= 0 {
+		timeout = 25 * time.Second
+	}
+	maxCandidates := h.app.Config.ImportPageResolverMax
+	if maxCandidates <= 0 {
+		maxCandidates = 20
+	}
+
+	cmdLine := strings.TrimSpace(h.app.Config.ImportPageResolverCmd)
+	if cmdLine == "" {
+		cmdLine = "bun scripts/page_manifest_resolver.mjs"
+	}
+	cmdParts, err := splitCommandArgs(cmdLine)
+	if err != nil {
+		return nil, pageManifestResolverOutput{}, fmt.Errorf("invalid IMPORT_PAGE_RESOLVER_CMD: %w", err)
+	}
+	if len(cmdParts) == 0 {
+		return nil, pageManifestResolverOutput{}, fmt.Errorf("IMPORT_PAGE_RESOLVER_CMD is empty")
+	}
+
+	args := append([]string{}, cmdParts[1:]...)
+	args = append(args,
+		"--url", sourceURL,
+		"--timeout-ms", strconv.FormatInt(timeout.Milliseconds(), 10),
+		"--max-candidates", strconv.Itoa(maxCandidates),
+	)
+
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(runCtx, cmdParts[0], args...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if runCtx.Err() == context.DeadlineExceeded {
+			return nil, pageManifestResolverOutput{}, fmt.Errorf("page resolver timeout")
+		}
+		errText := strings.TrimSpace(stderr.String())
+		if errText == "" {
+			errText = truncText(stdout.String(), 400)
+		} else {
+			errText = truncText(errText, 400)
+		}
+		return nil, pageManifestResolverOutput{}, fmt.Errorf("page resolver failed: %w: %s", err, errText)
+	}
+
+	out, err := parsePageManifestResolverOutput(strings.TrimSpace(stdout.String()))
+	if err != nil {
+		return nil, pageManifestResolverOutput{}, fmt.Errorf("parse page resolver output: %w", err)
+	}
+
+	candidates := normalizeResolverCandidates(sourceURL, out, maxCandidates)
+	if len(candidates) == 0 {
+		reason := strings.TrimSpace(out.Reason)
+		if reason == "" {
+			reason = "no media candidates found"
+		}
+		return nil, out, fmt.Errorf("%s", reason)
+	}
+	return candidates, out, nil
+}
+
+func parsePageManifestResolverOutput(raw string) (pageManifestResolverOutput, error) {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return pageManifestResolverOutput{}, fmt.Errorf("empty output")
+	}
+
+	var out pageManifestResolverOutput
+	if err := json.Unmarshal([]byte(text), &out); err == nil {
+		return out, nil
+	}
+
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start < 0 || end <= start {
+		return pageManifestResolverOutput{}, fmt.Errorf("invalid json output")
+	}
+	if err := json.Unmarshal([]byte(text[start:end+1]), &out); err != nil {
+		return pageManifestResolverOutput{}, fmt.Errorf("invalid json output")
+	}
+	return out, nil
+}
+
+func normalizeResolverCandidates(sourceURL string, result pageManifestResolverOutput, maxCandidates int) []string {
+	baseURL := strings.TrimSpace(result.FinalURL)
+	if baseURL == "" {
+		baseURL = sourceURL
+	}
+
+	candidates := make([]string, 0, len(result.Candidates))
+	seen := make(map[string]struct{}, len(result.Candidates))
+	for _, rawCandidate := range result.Candidates {
+		candidate := normalizeCandidateURL(baseURL, rawCandidate)
+		if candidate == "" {
+			continue
+		}
+		key := strings.ToLower(candidate)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		if !looksLikeMediaCandidateURL(candidate) {
+			continue
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, candidate)
+		if maxCandidates > 0 && len(candidates) >= maxCandidates {
+			break
+		}
+	}
+	return candidates
+}
+
+func normalizeCandidateURL(baseURL, rawCandidate string) string {
+	candidate := strings.TrimSpace(rawCandidate)
+	if candidate == "" {
+		return ""
+	}
+	candidate = strings.Trim(candidate, `"'`)
+	if candidate == "" {
+		return ""
+	}
+	if strings.HasPrefix(candidate, "data:") || strings.HasPrefix(candidate, "blob:") || strings.HasPrefix(candidate, "javascript:") {
+		return ""
+	}
+	if strings.HasPrefix(candidate, "http://") || strings.HasPrefix(candidate, "https://") {
+		return candidate
+	}
+	if strings.HasPrefix(candidate, "//") {
+		base, err := neturl.Parse(baseURL)
+		if err != nil || base.Scheme == "" {
+			return "https:" + candidate
+		}
+		return base.Scheme + ":" + candidate
+	}
+	base, err := neturl.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	relative, err := neturl.Parse(candidate)
+	if err != nil {
+		return ""
+	}
+	return base.ResolveReference(relative).String()
+}
+
+func looksLikeMediaCandidateURL(candidate string) bool {
+	lower := strings.ToLower(strings.TrimSpace(candidate))
+	if lower == "" {
+		return false
+	}
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		return false
+	}
+	switch {
+	case strings.Contains(lower, ".m3u8"):
+		return true
+	case strings.Contains(lower, ".mp4"):
+		return true
+	case strings.Contains(lower, ".webm"):
+		return true
+	case strings.Contains(lower, ".mov"):
+		return true
+	case strings.Contains(lower, ".mkv"):
+		return true
+	case strings.Contains(lower, ".ts"):
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *Handler) signURLInspectToken(payload urlInspectTokenPayload) (string, error) {
+	secret := strings.TrimSpace(h.app.Config.JWTSecret)
+	if secret == "" {
+		return "", fmt.Errorf("JWT_SECRET is required")
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	payloadPart := base64.RawURLEncoding.EncodeToString(raw)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payloadPart))
+	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return payloadPart + "." + signature, nil
+}
+
+func (h *Handler) verifyURLInspectToken(token, userID, sourceURL string) (urlInspectTokenPayload, error) {
+	secret := strings.TrimSpace(h.app.Config.JWTSecret)
+	if secret == "" {
+		return urlInspectTokenPayload{}, fmt.Errorf("invalid inspect_token")
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 2 {
+		return urlInspectTokenPayload{}, fmt.Errorf("invalid inspect_token")
+	}
+	payloadPart := strings.TrimSpace(parts[0])
+	signPart := strings.TrimSpace(parts[1])
+	if payloadPart == "" || signPart == "" {
+		return urlInspectTokenPayload{}, fmt.Errorf("invalid inspect_token")
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payloadPart))
+	expected := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(signPart), []byte(expected)) {
+		return urlInspectTokenPayload{}, fmt.Errorf("invalid inspect_token")
+	}
+
+	payloadRaw, err := base64.RawURLEncoding.DecodeString(payloadPart)
+	if err != nil {
+		return urlInspectTokenPayload{}, fmt.Errorf("invalid inspect_token")
+	}
+
+	var payload urlInspectTokenPayload
+	if err := json.Unmarshal(payloadRaw, &payload); err != nil {
+		return urlInspectTokenPayload{}, fmt.Errorf("invalid inspect_token")
+	}
+
+	if strings.TrimSpace(payload.UserID) != strings.TrimSpace(userID) {
+		return urlInspectTokenPayload{}, fmt.Errorf("inspect_token is not for current user")
+	}
+	if strings.TrimSpace(payload.SourceURL) != strings.TrimSpace(sourceURL) {
+		return urlInspectTokenPayload{}, fmt.Errorf("inspect_token does not match source url")
+	}
+	if payload.ExpiresAt <= nowUTC().Unix() {
+		return urlInspectTokenPayload{}, fmt.Errorf("inspect_token has expired")
+	}
+	if len(payload.Candidates) == 0 {
+		return urlInspectTokenPayload{}, fmt.Errorf("inspect_token has no candidates")
+	}
+	for _, candidate := range payload.Candidates {
+		if !isValidImportURL(candidate) {
+			return urlInspectTokenPayload{}, fmt.Errorf("inspect_token has invalid candidate")
+		}
+	}
+	return payload, nil
+}
+
+func truncText(text string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	trimmed := strings.TrimSpace(text)
+	if len(trimmed) <= maxLen {
+		return trimmed
+	}
+	return trimmed[:maxLen]
 }
 
 func countUserActiveImportJobsTx(ctx context.Context, tx *sql.Tx, userID string) (int64, error) {

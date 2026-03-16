@@ -275,6 +275,9 @@ func (w *Worker) processJob(ctx context.Context, job claimedJob) (*processResult
 		sourceType        string
 		torrentData       []byte
 		sourceURL         sql.NullString
+		resolvedMediaURL  sql.NullString
+		resolverName      sql.NullString
+		resolverMetaJSON  sql.NullString
 		ytdlpMode         string
 		ytdlpMeta         string
 		ytdlpDown         string
@@ -287,6 +290,7 @@ func (w *Worker) processJob(ctx context.Context, job claimedJob) (*processResult
 	)
 	err := w.app.DB.QueryRowContext(ctx, `
 	SELECT user_id, source_type, torrent_data, source_url,
+	       COALESCE(resolved_media_url, ''), COALESCE(resolver_name, ''), COALESCE(resolver_meta_json, ''),
 	       COALESCE(ytdlp_param_mode, 'safe'),
 	       COALESCE(ytdlp_metadata_args_json, '[]'),
 	       COALESCE(ytdlp_download_args_json, '[]'),
@@ -296,7 +300,7 @@ func (w *Worker) processJob(ctx context.Context, job claimedJob) (*processResult
 	       category_id, tags_json, visibility
 	FROM video_import_jobs
 	WHERE id = ?
-	LIMIT 1`, job.ID).Scan(&jobUserID, &sourceType, &torrentData, &sourceURL, &ytdlpMode, &ytdlpMeta, &ytdlpDown, &customTitle, &customTitlePrefix, &customDescription, &categoryID, &tagsJSON, &visibility)
+	LIMIT 1`, job.ID).Scan(&jobUserID, &sourceType, &torrentData, &sourceURL, &resolvedMediaURL, &resolverName, &resolverMetaJSON, &ytdlpMode, &ytdlpMeta, &ytdlpDown, &customTitle, &customTitlePrefix, &customDescription, &categoryID, &tagsJSON, &visibility)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, permanentError{err: fmt.Errorf("import job %s not found", job.ID)}
@@ -354,7 +358,22 @@ ORDER BY file_index ASC`, job.ID)
 		if parseErr != nil {
 			return nil, permanentError{err: fmt.Errorf("import.ytdlp.invalid_args: %v", parseErr)}
 		}
-		return w.processURLJob(ctx, job, selected, strings.TrimSpace(sourceURL.String), categoryPtr, tags, visibility, customTitle, customDescription, metaArgs, downArgs)
+		return w.processURLJob(
+			ctx,
+			job,
+			selected,
+			strings.TrimSpace(sourceURL.String),
+			categoryPtr,
+			tags,
+			visibility,
+			customTitle,
+			customDescription,
+			metaArgs,
+			downArgs,
+			strings.TrimSpace(resolvedMediaURL.String),
+			strings.TrimSpace(resolverName.String),
+			strings.TrimSpace(resolverMetaJSON.String),
+		)
 	case "torrent":
 	default:
 		return nil, permanentError{err: fmt.Errorf("import job %s has unsupported source_type: %s", job.ID, sourceType)}
@@ -541,6 +560,9 @@ func (w *Worker) processURLJob(
 	customDescription string,
 	metadataArgs []string,
 	downloadArgs []string,
+	userSelectedCandidateURL string,
+	userSelectedResolverName string,
+	userSelectedResolverMetaJSON string,
 ) (*processResult, error) {
 	if strings.TrimSpace(sourceURL) == "" && len(selected) > 0 {
 		sourceURL = strings.TrimSpace(selected[0].FilePath)
@@ -561,7 +583,22 @@ func (w *Worker) processURLJob(
 			return nil, fmt.Errorf("mark import item downloading: %w", err)
 		}
 
-		importErr := w.importURLItem(ctx, job, item, sourceURL, categoryID, tags, visibility, customTitle, customDescription, metadataArgs, downloadArgs)
+		importErr := w.importURLItem(
+			ctx,
+			job,
+			item,
+			sourceURL,
+			categoryID,
+			tags,
+			visibility,
+			customTitle,
+			customDescription,
+			metadataArgs,
+			downloadArgs,
+			userSelectedCandidateURL,
+			userSelectedResolverName,
+			userSelectedResolverMetaJSON,
+		)
 		if importErr != nil {
 			failedCount++
 			lastErr = truncateErr(importErr, 600)
@@ -616,11 +653,52 @@ func (w *Worker) importURLItem(
 	customDescription string,
 	metadataArgs []string,
 	downloadArgs []string,
+	userSelectedCandidateURL string,
+	userSelectedResolverName string,
+	userSelectedResolverMetaJSON string,
 ) error {
 	sourceURL = strings.TrimSpace(sourceURL)
 	if sourceURL == "" {
 		return permanentError{err: fmt.Errorf("source_url is required")}
 	}
+
+	forcedCandidateURL := strings.TrimSpace(userSelectedCandidateURL)
+	if forcedCandidateURL != "" {
+		resolverName := strings.TrimSpace(userSelectedResolverName)
+		if resolverName == "" {
+			resolverName = "page_manifest+user_selected"
+		}
+		contextMeta := map[string]interface{}{
+			"page_url":               sourceURL,
+			"selected_candidate_url": forcedCandidateURL,
+			"selection_mode":         "user_selected",
+		}
+		if strings.TrimSpace(userSelectedResolverMetaJSON) != "" {
+			var parsed map[string]interface{}
+			if err := json.Unmarshal([]byte(userSelectedResolverMetaJSON), &parsed); err == nil {
+				for key, value := range parsed {
+					contextMeta[key] = value
+				}
+			}
+		}
+		w.logger.Infof("url resolver forced candidate job_id=%s item_id=%s resolver=%s candidate_url=%s", job.ID, item.ID, resolverName, forcedCandidateURL)
+		return w.importURLFromResolvedSource(
+			ctx,
+			job,
+			item,
+			forcedCandidateURL,
+			categoryID,
+			tags,
+			visibility,
+			customTitle,
+			customDescription,
+			metadataArgs,
+			downloadArgs,
+			resolverName,
+			contextMeta,
+		)
+	}
+
 	w.logger.Infof("url resolver primary attempt job_id=%s item_id=%s source_url=%s", job.ID, item.ID, sourceURL)
 
 	if err := w.importURLFromResolvedSource(

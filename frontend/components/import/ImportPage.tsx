@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { AppIcon } from "@/components/common/AppIcon";
 import { EmptyState } from "@/components/common/EmptyState";
-import type { Category, ImportJob, ImportJobDetailData, ImportItem, ImportJobsData, TorrentInspectResult } from "@/lib/dto";
+import type { Category, ImportJob, ImportJobDetailData, ImportItem, ImportJobsData, TorrentInspectResult, URLInspectResult } from "@/lib/dto";
 import {
   mapCategory,
   mapImportJob,
@@ -14,6 +14,7 @@ import {
   mapImportJobsData,
   mapImportItem,
   mapTorrentInspectResult,
+  mapURLInspectResult,
 } from "@/lib/dto/mappers";
 import { importsApi } from "@/lib/imports/api";
 import { cn } from "@/lib/utils/cn";
@@ -106,6 +107,13 @@ function isCancelledJob(status: ImportJob["status"], errorMessage?: string): boo
   return message.includes("cancelled by user");
 }
 
+function isUserSelectedURLJob(job: ImportJob | null | undefined): boolean {
+  if (!job) {
+    return false;
+  }
+  return job.source_type === "url" && job.resolver_name === "page_manifest+user_selected";
+}
+
 function formatStatus(status: ImportJob["status"], draftExpired = false, errorMessage?: string): string {
   if (status === "draft" && draftExpired) {
     return "已过期";
@@ -182,6 +190,9 @@ export function ImportPage() {
   const [inspectError, setInspectError] = useState("");
   const [startError, setStartError] = useState("");
   const [urlError, setURLError] = useState("");
+  const [urlInspectResult, setURLInspectResult] = useState<URLInspectResult | null>(null);
+  const [selectedCandidateIndex, setSelectedCandidateIndex] = useState(0);
+  const [candidateActionPending, setCandidateActionPending] = useState(false);
 
   const [activeJobsByType, setActiveJobsByType] = useState<Record<ImportSourceType, ActiveJobState>>({
     url: createEmptyActiveJobState(),
@@ -527,6 +538,68 @@ export function ImportPage() {
     }
   };
 
+  const startURLImportWithPayload = useCallback(
+    async (trimmedURL: string, options?: { inspectToken?: string; candidateIndex?: number }) => {
+      const result = await importsApi.startURL(request, {
+        url: trimmedURL,
+        category_id: Number(categoryID),
+        tags: normalizeTags(tagInput),
+        visibility,
+        title: importTitle.trim() || undefined,
+        description: importDescription.trim() || undefined,
+        inspect_token: options?.inspectToken,
+        candidate_index: options?.candidateIndex,
+      });
+      setURLInspectResult(null);
+      setSelectedCandidateIndex(0);
+      setActiveJobsByType((prev) => ({
+        ...prev,
+        url: {
+          ...prev.url,
+          id: result.job_id,
+          error: "",
+        },
+      }));
+      const detail = await loadJobDetail("url", result.job_id);
+      if (isJobPollingStatus(detail.job.status)) {
+        openPolling("url", result.job_id);
+      } else {
+        stopPolling();
+      }
+      await loadJobsBySourceType("url");
+    },
+    [categoryID, importTitle, importDescription, loadJobDetail, loadJobsBySourceType, openPolling, request, stopPolling, tagInput, visibility],
+  );
+
+  const onReinspectURLCandidates = useCallback(
+    async (sourceURL: string) => {
+      const trimmedURL = sourceURL.trim();
+      if (!trimmedURL) {
+        return;
+      }
+      setCandidateActionPending(true);
+      setURLError("");
+      try {
+        const inspectRaw = await importsApi.inspectURL(request, { url: trimmedURL });
+        const inspectResult = mapURLInspectResult(inspectRaw);
+        setImportMode("url");
+        setURLInput(trimmedURL);
+        if (inspectResult.mode !== "candidate_required") {
+          setURLInspectResult(null);
+          setURLError("该链接当前可直接导入，请点击“开始导入”继续。");
+          return;
+        }
+        setURLInspectResult(inspectResult);
+        setSelectedCandidateIndex(0);
+      } catch (err) {
+        setURLError(err instanceof Error ? err.message : "候选链接获取失败");
+      } finally {
+        setCandidateActionPending(false);
+      }
+    },
+    [request],
+  );
+
   const onStartURLImport = async () => {
     const trimmedURL = urlInput.trim();
     if (!trimmedURL) {
@@ -544,29 +617,37 @@ export function ImportPage() {
     setStartError("");
 
     try {
-      const result = await importsApi.startURL(request, {
-        url: trimmedURL,
-        category_id: Number(categoryID),
-        tags: normalizeTags(tagInput),
-        visibility,
-        title: importTitle.trim() || undefined,
-        description: importDescription.trim() || undefined,
-      });
-      setActiveJobsByType((prev) => ({
-        ...prev,
-        url: {
-          ...prev.url,
-          id: result.job_id,
-          error: "",
-        },
-      }));
-      const detail = await loadJobDetail("url", result.job_id);
-      if (isJobPollingStatus(detail.job.status)) {
-        openPolling("url", result.job_id);
-      } else {
-        stopPolling();
+      if (
+        urlInspectResult &&
+        urlInspectResult.mode === "candidate_required" &&
+        urlInspectResult.source_url.trim() === trimmedURL
+      ) {
+        if (!urlInspectResult.inspect_token || urlInspectResult.candidates.length === 0) {
+          throw new Error("候选链接无效，请重新解析 URL");
+        }
+        if (selectedCandidateIndex < 0 || selectedCandidateIndex >= urlInspectResult.candidates.length) {
+          throw new Error("请选择有效候选链接");
+        }
+        await startURLImportWithPayload(trimmedURL, {
+          inspectToken: urlInspectResult.inspect_token,
+          candidateIndex: selectedCandidateIndex,
+        });
+        return;
       }
-      await loadJobsBySourceType("url");
+
+      const inspectRaw = await importsApi.inspectURL(request, { url: trimmedURL });
+      const inspectResult = mapURLInspectResult(inspectRaw);
+      if (inspectResult.mode === "direct_supported") {
+        await startURLImportWithPayload(trimmedURL);
+        return;
+      }
+
+      if (!inspectResult.inspect_token || inspectResult.candidates.length === 0) {
+        throw new Error("未解析到可用候选链接，请稍后重试");
+      }
+
+      setURLInspectResult(inspectResult);
+      setSelectedCandidateIndex(0);
     } catch (err) {
       setURLError(err instanceof Error ? err.message : "URL 导入失败");
     } finally {
@@ -810,7 +891,11 @@ export function ImportPage() {
           </button>
           <button
             type="button"
-            onClick={() => setImportMode("torrent")}
+            onClick={() => {
+              setImportMode("torrent");
+              setURLInspectResult(null);
+              setSelectedCandidateIndex(0);
+            }}
             className={cn(
               "flex h-14 items-center justify-center gap-2 rounded-xl border px-5 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
               importMode === "torrent"
@@ -862,7 +947,11 @@ export function ImportPage() {
                 <span className={fieldLabelClass}>视频 URL</span>
                 <input
                   value={urlInput}
-                  onChange={(event) => setURLInput(event.target.value)}
+                  onChange={(event) => {
+                    setURLInput(event.target.value);
+                    setURLInspectResult(null);
+                    setSelectedCandidateIndex(0);
+                  }}
                   placeholder="https://example.com/video/123"
                   className={fieldClass}
                 />
@@ -933,6 +1022,63 @@ export function ImportPage() {
               </div>
 
               {urlError ? <p className="text-sm text-rose-600">{urlError}</p> : null}
+              {urlInspectResult?.mode === "candidate_required" ? (
+                <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">检测到候选媒体链接，请选择一个导入</p>
+                      <p className="mt-1 text-xs text-slate-600">仅在 fallback 场景展示。若当前选择失败，可重新选择后再次导入。</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void onReinspectURLCandidates(urlInspectResult.source_url)}
+                      disabled={candidateActionPending}
+                      className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {candidateActionPending ? "刷新中..." : "重新解析"}
+                    </button>
+                  </div>
+
+                  <div className="mt-3 max-h-56 space-y-2 overflow-auto">
+                    {urlInspectResult.candidates.map((candidate, idx) => (
+                      <label
+                        key={`${candidate}-${idx}`}
+                        className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 transition hover:border-primary/40"
+                      >
+                        <input
+                          type="radio"
+                          name="url-import-candidate"
+                          checked={selectedCandidateIndex === idx}
+                          onChange={() => setSelectedCandidateIndex(idx)}
+                          className="mt-1 h-4 w-4 border-slate-300 text-primary focus:ring-primary"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="break-all text-xs text-slate-700">{candidate}</p>
+                          <div className="mt-2 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={async (event) => {
+                                event.preventDefault();
+                                if (!navigator.clipboard) {
+                                  return;
+                                }
+                                try {
+                                  await navigator.clipboard.writeText(candidate);
+                                } catch {
+                                  // ignore clipboard errors
+                                }
+                              }}
+                              className="rounded border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 transition hover:border-primary/40 hover:text-primary"
+                            >
+                              复制链接
+                            </button>
+                          </div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               <div className="flex justify-end">
                 <button
                   type="button"
@@ -940,7 +1086,7 @@ export function ImportPage() {
                   disabled={urlPending}
                   className="rounded-xl bg-primary px-5 py-3 text-sm font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {urlPending ? "提交中..." : "开始导入"}
+                  {urlPending ? "提交中..." : urlInspectResult?.mode === "candidate_required" ? "使用所选链接导入" : "开始导入"}
                 </button>
               </div>
             </div>
@@ -1206,6 +1352,18 @@ export function ImportPage() {
               {activeDetail.job.error_message && !isCancelledJob(activeDetail.job.status, activeDetail.job.error_message) ? (
                 <p className="mt-2 text-xs text-rose-600">{activeDetail.job.error_message}</p>
               ) : null}
+              {activeDetail.job.status === "failed" && isUserSelectedURLJob(activeDetail.job) && activeDetail.job.source_url ? (
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    onClick={() => void onReinspectURLCandidates(activeDetail.job.source_url ?? "")}
+                    disabled={candidateActionPending}
+                    className="rounded-lg border border-primary/30 px-3 py-1.5 text-xs font-semibold text-primary transition hover:border-primary hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {candidateActionPending ? "处理中..." : "重新选择链接"}
+                  </button>
+                </div>
+              ) : null}
             </div>
 
             <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
@@ -1322,6 +1480,16 @@ export function ImportPage() {
                           className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           {cancelingJobID === job.id ? "取消中..." : "取消任务"}
+                        </button>
+                      ) : null}
+                      {job.status === "failed" && isUserSelectedURLJob(job) && job.source_url ? (
+                        <button
+                          type="button"
+                          onClick={() => void onReinspectURLCandidates(job.source_url ?? "")}
+                          disabled={candidateActionPending}
+                          className="rounded-lg border border-primary/30 px-3 py-1.5 text-xs font-semibold text-primary transition hover:border-primary hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {candidateActionPending ? "处理中..." : "重新选择链接"}
                         </button>
                       ) : null}
                       <span className="text-xs font-semibold text-slate-600">{formatStatus(job.status, job.draft_expired, job.error_message)}</span>

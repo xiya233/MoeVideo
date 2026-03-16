@@ -1,5 +1,5 @@
 import type { RequestOptions } from "@/lib/api/types";
-import type { ImportJobDetailData, ImportJobsData, TorrentInspectResult } from "@/lib/dto";
+import type { ImportJobDetailData, ImportJobsData, TorrentInspectResult, URLInspectResult } from "@/lib/dto";
 
 export type ApiRequest = <T>(path: string, options?: RequestOptions) => Promise<T>;
 
@@ -53,9 +53,19 @@ export const importsApi = {
       visibility?: "public" | "private" | "unlisted";
       title?: string;
       description?: string;
+      inspect_token?: string;
+      candidate_index?: number;
     },
   ) {
     return request<{ job_id: string; status: "queued"; selected_files: number }>("/imports/url/start", {
+      method: "POST",
+      auth: true,
+      body: payload,
+    });
+  },
+
+  inspectURL(request: ApiRequest, payload: { url: string }) {
+    return request<URLInspectResult>("/imports/url/inspect", {
       method: "POST",
       auth: true,
       body: payload,

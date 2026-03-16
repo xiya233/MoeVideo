@@ -20,6 +20,7 @@ import type {
   UserProfileData,
   UploadCompleteData,
   UploadTicket,
+  URLInspectResult,
   VideoCard,
   VideoDetail,
   UserBrief,
@@ -442,5 +443,18 @@ export function mapImportJobDetailData(value: unknown): ImportJobDetailData {
     created_video_ids: arr(src.created_video_ids)
       .map((item) => str(item))
       .filter(Boolean),
+  };
+}
+
+export function mapURLInspectResult(value: unknown): URLInspectResult {
+  const src = obj(value);
+  const modeRaw = str(src.mode);
+  const mode: URLInspectResult["mode"] = modeRaw === "candidate_required" ? "candidate_required" : "direct_supported";
+  return {
+    mode,
+    source_url: str(src.source_url),
+    candidates: arr(src.candidates).map((item) => str(item)).filter(Boolean),
+    inspect_token: str(src.inspect_token) || undefined,
+    reason: str(src.reason) || undefined,
   };
 }
