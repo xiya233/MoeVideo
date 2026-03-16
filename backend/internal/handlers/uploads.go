@@ -459,7 +459,7 @@ func (h *Handler) probeUploadedVideoMetadata(ctx context.Context, provider, buck
 		inputPath = h.app.Storage.LocalObjectPath(objectKey)
 		cleanup = func() {}
 	case "s3":
-		tmpDir, err := os.MkdirTemp("", "moevideo-probe-*")
+		tmpDir, err := os.MkdirTemp(h.app.Config.TaskTempDir, "moevideo-probe-*")
 		if err != nil {
 			return 0, 0, 0, fmt.Errorf("create probe temp dir: %w", err)
 		}

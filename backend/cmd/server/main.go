@@ -53,6 +53,11 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	if err := os.MkdirAll(cfg.TaskTempDir, 0o755); err != nil {
+		appLogger.Errorf("create task temp directory failed: %v", err)
+		os.Exit(1)
+	}
+	appLogger.Infof("task temp directory initialized task_temp_dir=%s", cfg.TaskTempDir)
 
 	database, err := db.Open(cfg.DBPath)
 	if err != nil {

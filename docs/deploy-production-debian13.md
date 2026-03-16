@@ -279,6 +279,9 @@ STORAGE_DRIVER=local
 # 本地存储目录（local 模式）
 LOCAL_STORAGE_DIR=./data/storage
 
+# 任务临时目录（导入/上传探测/转码都会使用该目录）
+TASK_TEMP_DIR=./data/temp
+
 # 安全建议：数据库目录与媒体目录必须分开；
 # 不要把 DB_PATH 放到 LOCAL_STORAGE_DIR 目录下。
 
@@ -617,10 +620,13 @@ tail -f /var/log/nginx/error.log
 3. URL fallback 失败（Playwright）  
    - 确认在 `moevideo` 用户下执行过 `cd backend/scripts && bun install && bunx playwright install chromium`。
 
-4. 登录态异常（Cookie 不生效）  
+4. 导入或转码时报 `no space left on device`  
+   - 优先检查 `TASK_TEMP_DIR` 所在挂载点剩余空间，而不是只看 `/` 根分区。
+
+5. 登录态异常（Cookie 不生效）  
    - 检查 `AUTH_COOKIE_SECURE`、`AUTH_COOKIE_SAMESITE`、`CORS_ALLOWED_ORIGINS`、Nginx `X-Forwarded-Proto`。
 
-5. 429 频繁  
+6. 429 频繁  
    - 检查 Redis 是否可用；查看 backend 日志中的 `rate_limit` 规则 ID，再按需调节限流参数。
 
 ## 10.3 工具链升级流程（Go/Bun）
@@ -796,6 +802,7 @@ systemctl start moevideo-backend
 
 发布后确认以下配置已在 `backend/.env` 生效：
 
+- `TASK_TEMP_DIR`
 - `IMPORT_BT_ENABLE_UPLOAD`
 - `IMPORT_BT_LISTEN_PORT`
 - `IMPORT_BT_ENABLE_PORT_FORWARD`

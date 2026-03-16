@@ -23,6 +23,7 @@ type Config struct {
 	CORSAllowedOrigins           []string
 	StorageDriver                string
 	LocalStorageDir              string
+	TaskTempDir                  string
 	PublicBaseURL                string
 	MaxUploadBytes               int64
 	UploadURLExpires             time.Duration
@@ -90,6 +91,7 @@ func Load() (Config, error) {
 		),
 		StorageDriver:     strings.ToLower(getEnv("STORAGE_DRIVER", "local")),
 		LocalStorageDir:   getEnv("LOCAL_STORAGE_DIR", "./storage/local"),
+		TaskTempDir:       strings.TrimSpace(getEnv("TASK_TEMP_DIR", "./data/temp")),
 		PublicBaseURL:     strings.TrimRight(getEnv("PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
 		S3Bucket:          getEnv("S3_BUCKET", ""),
 		S3Region:          getEnv("S3_REGION", ""),
@@ -138,6 +140,9 @@ func Load() (Config, error) {
 	case "debug", "info", "warn", "error":
 	default:
 		return cfg, fmt.Errorf("invalid LOG_LEVEL: %s", cfg.LogLevel)
+	}
+	if cfg.TaskTempDir == "" {
+		return cfg, fmt.Errorf("TASK_TEMP_DIR must not be empty")
 	}
 	cfg.CORSAllowedOrigins = parseCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"))
 

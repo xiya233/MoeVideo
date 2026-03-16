@@ -19,6 +19,7 @@ func resetConfigEnv(t *testing.T) {
 		"CORS_ALLOWED_ORIGINS",
 		"STORAGE_DRIVER",
 		"LOCAL_STORAGE_DIR",
+		"TASK_TEMP_DIR",
 		"PUBLIC_BASE_URL",
 		"MAX_UPLOAD_MB",
 		"UPLOAD_URL_EXPIRES",
@@ -155,5 +156,29 @@ func TestLoadAcceptsBTProductionDefaults(t *testing.T) {
 	}
 	if cfg.ImportBTSpeedSmoothWindowSec != 5 {
 		t.Fatalf("unexpected IMPORT_BT_SPEED_SMOOTH_WINDOW_SEC: %d", cfg.ImportBTSpeedSmoothWindowSec)
+	}
+}
+
+func TestLoadDefaultsTaskTempDir(t *testing.T) {
+	resetConfigEnv(t)
+	t.Setenv("JWT_SECRET", "my-very-strong-secret-for-tests")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+	if cfg.TaskTempDir != "./data/temp" {
+		t.Fatalf("unexpected TASK_TEMP_DIR default: %s", cfg.TaskTempDir)
+	}
+}
+
+func TestLoadRejectsEmptyTaskTempDir(t *testing.T) {
+	resetConfigEnv(t)
+	t.Setenv("JWT_SECRET", "my-very-strong-secret-for-tests")
+	t.Setenv("TASK_TEMP_DIR", "   ")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("expected error for empty TASK_TEMP_DIR")
 	}
 }

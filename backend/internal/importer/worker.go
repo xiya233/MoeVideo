@@ -325,7 +325,7 @@ ORDER BY file_index ASC`, job.ID)
 		return nil, permanentError{err: fmt.Errorf("import job %s has empty torrent payload", job.ID)}
 	}
 
-	tmpDir, err := os.MkdirTemp("", "moevideo-import-*")
+	tmpDir, err := os.MkdirTemp(w.app.Config.TaskTempDir, "moevideo-import-*")
 	if err != nil {
 		return nil, fmt.Errorf("create import temp dir: %w", err)
 	}
@@ -713,7 +713,7 @@ func (w *Worker) importURLFromResolvedSource(
 		return permanentError{err: fmt.Errorf("video file size exceeds limit (%d MB)", w.app.Config.ImportURLMaxFile/1024/1024)}
 	}
 
-	tmpDir, err := os.MkdirTemp("", "moevideo-import-url-*")
+	tmpDir, err := os.MkdirTemp(w.app.Config.TaskTempDir, "moevideo-import-url-*")
 	if err != nil {
 		return fmt.Errorf("create import temp dir: %w", err)
 	}
@@ -998,7 +998,7 @@ func (w *Worker) importSelectedFile(
 	customDescription string,
 ) error {
 	w.logger.Infof("torrent import file download start job_id=%s item_id=%s source_path=%s", job.ID, item.ID, item.FilePath)
-	tmpDir, err := os.MkdirTemp("", "moevideo-import-file-*")
+	tmpDir, err := os.MkdirTemp(w.app.Config.TaskTempDir, "moevideo-import-file-*")
 	if err != nil {
 		return fmt.Errorf("create temp file dir: %w", err)
 	}

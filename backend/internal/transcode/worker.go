@@ -303,7 +303,7 @@ LIMIT 1`,
 
 	setStage("prepare_workspace")
 	w.logger.Infof("job stage start job_id=%s video_id=%s stage=%s", job.ID, job.VideoID, currentStage())
-	tmpDir, err := os.MkdirTemp("", "moevideo-transcode-*")
+	tmpDir, err := os.MkdirTemp(w.app.Config.TaskTempDir, "moevideo-transcode-*")
 	if err != nil {
 		return nil, fmt.Errorf("create transcode temp dir: %w", err)
 	}
