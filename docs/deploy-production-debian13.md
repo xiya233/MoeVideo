@@ -48,6 +48,13 @@ apt install -y \
 pipx ensurepath
 ```
 
+如果你启用了防火墙（`ufw` 或云安全组），请额外放行 BT 监听端口（示例 `51413`）：
+
+```bash
+ufw allow 51413/tcp
+ufw allow 51413/udp
+```
+
 ## 3. 安装工具链（`mise` 主路径）
 
 本手册默认用 `mise` 安装 Go/Bun。  
@@ -305,6 +312,21 @@ IMPORT_TORRENT_MAX_MB=2
 
 # 单次 BT 导入允许勾选的最大文件数
 IMPORT_MAX_SELECTED_FILES=20
+
+# BT 是否允许上传（生产提速建议 true）
+IMPORT_BT_ENABLE_UPLOAD=true
+
+# BT 固定监听端口（需在防火墙/安全组放行 TCP/UDP）
+IMPORT_BT_LISTEN_PORT=51413
+
+# BT 是否启用端口映射能力（生产建议 true）
+IMPORT_BT_ENABLE_PORT_FORWARD=true
+
+# BT 文件读取预读窗口（MB），过小更容易出现吞吐抖动
+IMPORT_BT_READER_READAHEAD_MB=32
+
+# BT 速度平滑窗口（秒），用于前端展示与进度日志
+IMPORT_BT_SPEED_SMOOTH_WINDOW_SEC=5
 
 # yt-dlp 可执行路径（建议写绝对路径）
 YTDLP_BIN=/home/moevideo/.local/bin/yt-dlp
@@ -613,6 +635,185 @@ tail -f /var/log/nginx/error.log
    - 重新构建 backend/frontend
    - `systemctl restart moevideo-backend moevideo-frontend`
 4. 观察日志与核心链路（登录、上传、播放、导入）后再全量推广。
+
+## 10.4 生产更新流程（代码发布/回滚）
+
+本节用于日常“拉新代码并上线”的标准流程，适用于 systemd 运行方式。
+
+### 10.4.1 标准更新步骤（逐条执行）
+
+先切到运行用户：
+
+```bash
+su - moevideo
+```
+
+定义目录变量（按你的实际路径修改）：
+
+```bash
+APP_DIR=/opt/moevideo/MoeVideo
+BACKEND_DIR=$APP_DIR/backend
+FRONTEND_DIR=$APP_DIR/frontend
+```
+
+1) 检查当前状态：
+
+```bash
+cd "$APP_DIR"
+git status -sb
+git rev-parse --short HEAD
+systemctl status moevideo-backend moevideo-frontend --no-pager
+```
+
+2) 备份（上线前必须）：
+
+```bash
+cd "$APP_DIR"
+TS=$(date +%F-%H%M%S)
+cp "$BACKEND_DIR/data/db/moevideo.db" "$BACKEND_DIR/data/db/moevideo.db.bak-$TS"
+cp "$BACKEND_DIR/.env" "$BACKEND_DIR/.env.bak-$TS"
+cp "$FRONTEND_DIR/.env.production.local" "$FRONTEND_DIR/.env.production.local.bak-$TS"
+```
+
+3) 拉取代码：
+
+```bash
+cd "$APP_DIR"
+git fetch --all --prune
+git log --oneline --decorate HEAD..origin/main
+git pull --ff-only origin main
+git rev-parse --short HEAD
+```
+
+4) 对齐新增环境变量：
+
+```bash
+cd "$APP_DIR"
+comm -23 \
+  <(grep -E '^[A-Z0-9_]+=' "$BACKEND_DIR/.env.example" | cut -d= -f1 | sort -u) \
+  <(grep -E '^[A-Z0-9_]+=' "$BACKEND_DIR/.env" | cut -d= -f1 | sort -u)
+```
+
+如果有输出，表示这些 key 在 `backend/.env` 里缺失，需要先补齐再继续发布。
+
+如果本次更新包含前端 `NEXT_PUBLIC_*` 变量变更，先更新 `frontend/.env.production.local`，再执行前端 build（`NEXT_PUBLIC_*` 是 build-time 注入）。
+
+5) 重建 backend：
+
+```bash
+cd "$BACKEND_DIR"
+/opt/moevideo/bin/go mod download
+/opt/moevideo/bin/go build -trimpath -ldflags="-s -w" -o /opt/moevideo/bin/moevideo-backend ./cmd/server
+```
+
+6) 重建 frontend：
+
+```bash
+cd "$FRONTEND_DIR"
+/opt/moevideo/bin/bun install
+/opt/moevideo/bin/bun run build
+```
+
+7) 条件步骤（仅当 URL resolver 相关依赖有变动）：
+
+```bash
+cd "$APP_DIR"
+git diff --name-only ORIG_HEAD..HEAD | rg '^backend/scripts/' || true
+```
+
+若有输出，再执行：
+
+```bash
+cd "$BACKEND_DIR/scripts"
+/opt/moevideo/bin/bun install
+PATH=/opt/moevideo/bin:$PATH /opt/moevideo/bin/bunx playwright install chromium
+```
+
+8) 重启服务：
+
+```bash
+systemctl restart moevideo-backend
+systemctl restart moevideo-frontend
+```
+
+如 Nginx 配置有改动，再执行：
+
+```bash
+nginx -t && systemctl reload nginx
+```
+
+9) 发布后验收：
+
+```bash
+curl -i http://127.0.0.1:8080/healthz
+curl -I https://your-domain
+systemctl status moevideo-backend moevideo-frontend --no-pager
+journalctl -u moevideo-backend -f -o cat
+journalctl -u moevideo-frontend -f -o cat
+```
+
+### 10.4.2 快速回滚步骤（失败立即恢复）
+
+1) 找到回滚目标 commit（稳定版本）：
+
+```bash
+cd "$APP_DIR"
+git reflog --date=iso -n 20
+```
+
+2) 回滚代码：
+
+```bash
+cd "$APP_DIR"
+git reset --hard <stable_commit>
+```
+
+3) 重新构建并重启：
+
+```bash
+cd "$BACKEND_DIR"
+/opt/moevideo/bin/go build -trimpath -ldflags="-s -w" -o /opt/moevideo/bin/moevideo-backend ./cmd/server
+
+cd "$FRONTEND_DIR"
+/opt/moevideo/bin/bun install
+/opt/moevideo/bin/bun run build
+
+systemctl restart moevideo-backend
+systemctl restart moevideo-frontend
+```
+
+4) 若确认是数据问题，使用备份恢复数据库：
+
+```bash
+systemctl stop moevideo-backend
+cp "$BACKEND_DIR/data/db/moevideo.db.bak-<timestamp>" "$BACKEND_DIR/data/db/moevideo.db"
+systemctl start moevideo-backend
+```
+
+5) 复用“发布后验收”同一组检查确认恢复成功。
+
+### 10.4.3 BT 提速版本更新注意事项
+
+发布后确认以下配置已在 `backend/.env` 生效：
+
+- `IMPORT_BT_ENABLE_UPLOAD`
+- `IMPORT_BT_LISTEN_PORT`
+- `IMPORT_BT_ENABLE_PORT_FORWARD`
+- `IMPORT_BT_READER_READAHEAD_MB`
+- `IMPORT_BT_SPEED_SMOOTH_WINDOW_SEC`
+
+若启用了防火墙/安全组，放行 `IMPORT_BT_LISTEN_PORT`（TCP/UDP）：
+
+```bash
+ufw allow 51413/tcp
+ufw allow 51413/udp
+```
+
+验证日志里出现 BT 新配置启动信息：
+
+```bash
+journalctl -u moevideo-backend --since "10 min ago" -o cat | rg "torrent client initialized|torrent transfer progress"
+```
 
 ---
 

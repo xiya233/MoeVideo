@@ -35,6 +35,11 @@ type Config struct {
 	ImportMaxTry                 int
 	ImportTorrentMax             int64
 	ImportMaxFiles               int
+	ImportBTEnableUpload         bool
+	ImportBTListenPort           int
+	ImportBTEnablePortForward    bool
+	ImportBTReaderReadaheadBytes int64
+	ImportBTSpeedSmoothWindowSec int
 	ImportURLTimeout             time.Duration
 	ImportURLMaxDur              int64
 	ImportURLMaxFile             int64
@@ -219,6 +224,46 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("IMPORT_MAX_SELECTED_FILES must be positive")
 	}
 	cfg.ImportMaxFiles = importMaxFiles
+
+	importBTEnableUploadRaw := strings.ToLower(strings.TrimSpace(getEnv("IMPORT_BT_ENABLE_UPLOAD", "")))
+	switch importBTEnableUploadRaw {
+	case "1", "true", "yes":
+		cfg.ImportBTEnableUpload = true
+	case "0", "false", "no":
+		cfg.ImportBTEnableUpload = false
+	default:
+		cfg.ImportBTEnableUpload = cfg.Env == "production"
+	}
+
+	importBTListenPort, err := strconv.Atoi(getEnv("IMPORT_BT_LISTEN_PORT", "51413"))
+	if err != nil {
+		return cfg, fmt.Errorf("invalid IMPORT_BT_LISTEN_PORT: %w", err)
+	}
+	if importBTListenPort < 0 || importBTListenPort > 65535 {
+		return cfg, fmt.Errorf("IMPORT_BT_LISTEN_PORT must be between 0 and 65535")
+	}
+	cfg.ImportBTListenPort = importBTListenPort
+
+	importBTEnablePortForwardRaw := strings.ToLower(strings.TrimSpace(getEnv("IMPORT_BT_ENABLE_PORT_FORWARD", "true")))
+	cfg.ImportBTEnablePortForward = importBTEnablePortForwardRaw == "1" || importBTEnablePortForwardRaw == "true" || importBTEnablePortForwardRaw == "yes"
+
+	importBTReaderReadaheadMB, err := strconv.Atoi(getEnv("IMPORT_BT_READER_READAHEAD_MB", "32"))
+	if err != nil {
+		return cfg, fmt.Errorf("invalid IMPORT_BT_READER_READAHEAD_MB: %w", err)
+	}
+	if importBTReaderReadaheadMB <= 0 {
+		return cfg, fmt.Errorf("IMPORT_BT_READER_READAHEAD_MB must be positive")
+	}
+	cfg.ImportBTReaderReadaheadBytes = int64(importBTReaderReadaheadMB) * 1024 * 1024
+
+	importBTSpeedSmoothWindowSec, err := strconv.Atoi(getEnv("IMPORT_BT_SPEED_SMOOTH_WINDOW_SEC", "5"))
+	if err != nil {
+		return cfg, fmt.Errorf("invalid IMPORT_BT_SPEED_SMOOTH_WINDOW_SEC: %w", err)
+	}
+	if importBTSpeedSmoothWindowSec <= 0 {
+		return cfg, fmt.Errorf("IMPORT_BT_SPEED_SMOOTH_WINDOW_SEC must be positive")
+	}
+	cfg.ImportBTSpeedSmoothWindowSec = importBTSpeedSmoothWindowSec
 
 	importURLTimeoutSec, err := strconv.ParseInt(getEnv("IMPORT_URL_TIMEOUT_SEC", "600"), 10, 64)
 	if err != nil {

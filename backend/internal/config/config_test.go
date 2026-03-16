@@ -33,6 +33,11 @@ func resetConfigEnv(t *testing.T) {
 		"IMPORT_PROGRESS_LOG_INTERVAL",
 		"IMPORT_TORRENT_MAX_MB",
 		"IMPORT_MAX_SELECTED_FILES",
+		"IMPORT_BT_ENABLE_UPLOAD",
+		"IMPORT_BT_LISTEN_PORT",
+		"IMPORT_BT_ENABLE_PORT_FORWARD",
+		"IMPORT_BT_READER_READAHEAD_MB",
+		"IMPORT_BT_SPEED_SMOOTH_WINDOW_SEC",
 		"IMPORT_URL_TIMEOUT_SEC",
 		"IMPORT_URL_MAX_DURATION_SEC",
 		"IMPORT_URL_MAX_FILE_MB",
@@ -113,5 +118,42 @@ func TestLoadRejectsInvalidImportProgressLogInterval(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatalf("expected error for invalid IMPORT_PROGRESS_LOG_INTERVAL")
+	}
+}
+
+func TestLoadRejectsInvalidBTListenPort(t *testing.T) {
+	resetConfigEnv(t)
+	t.Setenv("JWT_SECRET", "my-very-strong-secret-for-tests")
+	t.Setenv("IMPORT_BT_LISTEN_PORT", "70000")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("expected error for invalid IMPORT_BT_LISTEN_PORT")
+	}
+}
+
+func TestLoadAcceptsBTProductionDefaults(t *testing.T) {
+	resetConfigEnv(t)
+	t.Setenv("JWT_SECRET", "my-very-strong-secret-for-tests")
+	t.Setenv("APP_ENV", "production")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+	if !cfg.ImportBTEnableUpload {
+		t.Fatalf("expected IMPORT_BT_ENABLE_UPLOAD default true in production")
+	}
+	if cfg.ImportBTListenPort != 51413 {
+		t.Fatalf("unexpected IMPORT_BT_LISTEN_PORT: %d", cfg.ImportBTListenPort)
+	}
+	if !cfg.ImportBTEnablePortForward {
+		t.Fatalf("expected IMPORT_BT_ENABLE_PORT_FORWARD default true")
+	}
+	if cfg.ImportBTReaderReadaheadBytes != 32*1024*1024 {
+		t.Fatalf("unexpected IMPORT_BT_READER_READAHEAD_MB bytes: %d", cfg.ImportBTReaderReadaheadBytes)
+	}
+	if cfg.ImportBTSpeedSmoothWindowSec != 5 {
+		t.Fatalf("unexpected IMPORT_BT_SPEED_SMOOTH_WINDOW_SEC: %d", cfg.ImportBTSpeedSmoothWindowSec)
 	}
 }

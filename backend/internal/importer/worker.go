@@ -333,16 +333,24 @@ ORDER BY file_index ASC`, job.ID)
 
 	clientCfg := torrent.NewDefaultClientConfig()
 	clientCfg.DataDir = filepath.Join(tmpDir, "torrent-data")
-	clientCfg.NoUpload = true
+	clientCfg.NoUpload = !w.app.Config.ImportBTEnableUpload
 	clientCfg.Seed = false
-	clientCfg.NoDefaultPortForwarding = true
-	clientCfg.ListenPort = 0
+	clientCfg.NoDefaultPortForwarding = !w.app.Config.ImportBTEnablePortForward
+	clientCfg.ListenPort = w.app.Config.ImportBTListenPort
 
 	client, err := torrent.NewClient(clientCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create torrent client: %w", err)
 	}
-	w.logger.Infof("torrent client initialized job_id=%s", job.ID)
+	w.logger.Infof(
+		"torrent client initialized job_id=%s upload_enabled=%t listen_port=%d port_forward_enabled=%t reader_readahead_mb=%d speed_smooth_window_sec=%d",
+		job.ID,
+		!clientCfg.NoUpload,
+		clientCfg.ListenPort,
+		!clientCfg.NoDefaultPortForwarding,
+		w.app.Config.ImportBTReaderReadaheadBytes/1024/1024,
+		w.app.Config.ImportBTSpeedSmoothWindowSec,
+	)
 	defer func() {
 		_ = client.Close()
 	}()
@@ -374,6 +382,12 @@ ORDER BY file_index ASC`, job.ID)
 	}
 	w.logger.Infof("torrent files enumerated job_id=%s total_files=%d selected_files=%d", job.ID, len(files), len(selected))
 
+	for _, item := range selected {
+		if item.FileIndex >= 0 && item.FileIndex < len(files) {
+			files[item.FileIndex].Download()
+		}
+	}
+
 	completedCount := 0
 	failedCount := 0
 	lastErr := ""
@@ -396,7 +410,6 @@ ORDER BY file_index ASC`, job.ID)
 		}
 
 		file := files[item.FileIndex]
-		file.Download()
 
 		importErr := w.importSelectedFile(
 			ctx,
@@ -1003,7 +1016,11 @@ func (w *Worker) importSelectedFile(
 	defer cancel()
 	reader.SetContext(fileCtx)
 	reader.SetResponsive()
-	reader.SetReadahead(1 << 20)
+	readahead := w.app.Config.ImportBTReaderReadaheadBytes
+	if readahead <= 0 {
+		readahead = 32 * 1024 * 1024
+	}
+	reader.SetReadahead(readahead)
 
 	if err := os.MkdirAll(filepath.Dir(localSourcePath), 0o755); err != nil {
 		return fmt.Errorf("prepare local source path: %w", err)
@@ -1267,6 +1284,12 @@ func (w *Worker) startTorrentTransferSampler(
 		lastDownloaded := baseDownloadedBytes + max(0, file.BytesCompleted())
 		lastUploaded := torrentUploadedBytes(tor)
 		lastProgressLogAt := time.Time{}
+		smoothWindowSec := w.app.Config.ImportBTSpeedSmoothWindowSec
+		if smoothWindowSec <= 0 {
+			smoothWindowSec = 5
+		}
+		downloadSmoother := newSpeedSmoother(smoothWindowSec)
+		uploadSmoother := newSpeedSmoother(smoothWindowSec)
 
 		for {
 			select {
@@ -1276,19 +1299,23 @@ func (w *Worker) startTorrentTransferSampler(
 				now := time.Now()
 				downloaded := baseDownloadedBytes + max(0, file.BytesCompleted())
 				uploaded := torrentUploadedBytes(tor)
-				downloadSpeed := computeSpeedBPS(lastDownloaded, downloaded, lastAt, now)
-				uploadSpeed := computeSpeedBPS(lastUploaded, uploaded, lastAt, now)
-				if err := w.updateJobTransferMetrics(ctx, jobID, downloaded, uploaded, downloadSpeed, uploadSpeed); err != nil {
+				rawDownloadSpeed := computeSpeedBPS(lastDownloaded, downloaded, lastAt, now)
+				rawUploadSpeed := computeSpeedBPS(lastUploaded, uploaded, lastAt, now)
+				displayDownloadSpeed := downloadSmoother.Add(rawDownloadSpeed)
+				displayUploadSpeed := uploadSmoother.Add(rawUploadSpeed)
+				if err := w.updateJobTransferMetrics(ctx, jobID, downloaded, uploaded, displayDownloadSpeed, displayUploadSpeed); err != nil {
 					w.logger.Warnf("job_id=%s update torrent transfer metrics failed: %v", jobID, err)
 				}
 				if shouldLogByInterval(lastProgressLogAt, now, w.progressLogInterval) {
 					w.logger.Infof(
-						"torrent transfer progress job_id=%s downloaded_bytes=%d uploaded_bytes=%d download_speed_bps=%.2f upload_speed_bps=%.2f",
+						"torrent transfer progress job_id=%s downloaded_bytes=%d uploaded_bytes=%d download_speed_bps=%.2f upload_speed_bps=%.2f raw_download_speed_bps=%.2f raw_upload_speed_bps=%.2f",
 						jobID,
 						downloaded,
 						uploaded,
-						downloadSpeed,
-						uploadSpeed,
+						displayDownloadSpeed,
+						displayUploadSpeed,
+						rawDownloadSpeed,
+						rawUploadSpeed,
 					)
 					lastProgressLogAt = now
 				}
@@ -1335,6 +1362,40 @@ func computeSpeedBPS(previous, current int64, from, to time.Time) float64 {
 		return 0
 	}
 	return float64(delta) / seconds
+}
+
+type speedSmoother struct {
+	values []float64
+	next   int
+	count  int
+	sum    float64
+}
+
+func newSpeedSmoother(window int) *speedSmoother {
+	if window <= 0 {
+		window = 1
+	}
+	return &speedSmoother{
+		values: make([]float64, window),
+	}
+}
+
+func (s *speedSmoother) Add(value float64) float64 {
+	if s == nil || len(s.values) == 0 {
+		return max(0.0, value)
+	}
+	if s.count < len(s.values) {
+		s.values[s.next] = value
+		s.sum += value
+		s.count++
+		s.next = (s.next + 1) % len(s.values)
+		return s.sum / float64(s.count)
+	}
+	s.sum -= s.values[s.next]
+	s.values[s.next] = value
+	s.sum += value
+	s.next = (s.next + 1) % len(s.values)
+	return s.sum / float64(len(s.values))
 }
 
 func shouldLogByInterval(lastAt, now time.Time, interval time.Duration) bool {
