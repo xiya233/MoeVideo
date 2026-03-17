@@ -1,0 +1,85 @@
+# Docker Compose production stack for MoeVideo (local build, no GHCR).
+# Use with: docker compose --env-file .env.docker up -d --build
+
+name: moevideo
+
+services:
+  redis:
+    image: redis:8-bookworm
+    container_name: moevideo-redis
+    restart: unless-stopped
+    # AOF keeps better durability for counters/rate-limit keys after restart.
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend-runtime
+    image: moevideo/backend:local
+    container_name: moevideo-backend
+    restart: unless-stopped
+    env_file:
+      - .env.docker
+    environment:
+      # Force container-internal data paths so all persistent data goes to ./data bind mounts.
+      DB_PATH: /data/db/moevideo.db
+      LOCAL_STORAGE_DIR: /data/storage
+      TASK_TEMP_DIR: /data/temp
+      HTTP_ADDR: :8080
+      RATE_LIMIT_REDIS_ADDR: redis:6379
+      IMPORT_PAGE_RESOLVER_CMD: bun /app/scripts/page_manifest_resolver.mjs
+      # gosu privilege drop runtime user mapping.
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    volumes:
+      - ./data/db:/data/db
+      - ./data/storage:/data/storage
+      - ./data/temp:/data/temp
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-runtime
+      args:
+        # Build-time var: changing this value requires --build.
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
+    image: moevideo/frontend:local
+    container_name: moevideo-frontend
+    restart: unless-stopped
+    env_file:
+      - .env.docker
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # gosu privilege drop runtime user mapping.
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12

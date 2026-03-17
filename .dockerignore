@@ -1,0 +1,22 @@
+.git
+.gitignore
+*.log
+
+# Local runtime data
+data
+backend/data
+backend/storage
+
+# Env files
+backend/.env
+frontend/.env.local
+frontend/.env
+
+# Frontend build cache
+frontend/.next
+frontend/node_modules
+frontend/tsconfig.tsbuildinfo
+
+# Backend script deps are installed inside image
+backend/scripts/node_modules
+backend/scripts/bun.lock
