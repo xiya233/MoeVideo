@@ -102,6 +102,7 @@ COPY frontend/package.json frontend/bun.lock ./
 RUN bun install
 
 COPY frontend/ ./
+RUN mkdir -p /src/frontend/public
 RUN bun run build
 
 FROM resolver-base AS backend-runtime

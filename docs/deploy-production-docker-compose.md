@@ -359,6 +359,11 @@ id
 docker compose --env-file .env.docker up -d
 ```
 
+### 14.5 frontend 构建报 `... /src/frontend/public: not found`
+
+原因通常是 `frontend/public` 为空目录且未被上下文携带。当前 Dockerfile 已在构建阶段自动创建该目录，并在仓库中保留了 `frontend/public/.gitkeep` 作为占位。  
+若你新增静态资源，请放到 `frontend/public` 并提交到仓库。
+
 ## 15. 安全建议
 
 1. 生产必须替换 `JWT_SECRET`
