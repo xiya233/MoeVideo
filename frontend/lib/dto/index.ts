@@ -178,6 +178,7 @@ export type URLInspectResult = {
   source_url: string;
   candidates: string[];
   inspect_token?: string;
+  page_title?: string;
   reason?: string;
 };
 

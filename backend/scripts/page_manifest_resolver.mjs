@@ -111,6 +111,12 @@ function collectFromText(text, baseURL, collector) {
 
 async function collectCandidates(page, pageURL, maxCandidates) {
   const raw = new Set();
+  const contextHeaders = {
+    accept: "",
+    acceptLanguage: "",
+    referer: "",
+    origin: "",
+  };
   const pushCandidate = (input) => {
     const normalized = normalizeURL(input, page.url() || pageURL);
     if (!normalized || !looksLikeMediaURL(normalized)) {
@@ -120,6 +126,19 @@ async function collectCandidates(page, pageURL, maxCandidates) {
   };
 
   page.on("request", (req) => {
+    const headers = req.headers();
+    if (!contextHeaders.accept && headers.accept) {
+      contextHeaders.accept = String(headers.accept);
+    }
+    if (!contextHeaders.acceptLanguage && headers["accept-language"]) {
+      contextHeaders.acceptLanguage = String(headers["accept-language"]);
+    }
+    if (!contextHeaders.referer && headers.referer) {
+      contextHeaders.referer = String(headers.referer);
+    }
+    if (!contextHeaders.origin && headers.origin) {
+      contextHeaders.origin = String(headers.origin);
+    }
     pushCandidate(req.url());
   });
   page.on("response", async (resp) => {
@@ -184,10 +203,35 @@ async function collectCandidates(page, pageURL, maxCandidates) {
     .sort((a, b) => scoreCandidate(b) - scoreCandidate(a))
     .slice(0, Math.max(1, maxCandidates));
 
+  const finalURL = pageData.finalURL || page.url() || pageURL;
+  let pageOrigin = "";
+  try {
+    pageOrigin = new URL(finalURL).origin;
+  } catch {
+    pageOrigin = "";
+  }
+
+  const pageHeaders = {};
+  if (contextHeaders.accept) {
+    pageHeaders.Accept = contextHeaders.accept;
+  }
+  if (contextHeaders.acceptLanguage) {
+    pageHeaders["Accept-Language"] = contextHeaders.acceptLanguage;
+  }
+
+  const pageUserAgent = await page
+    .evaluate(() => navigator.userAgent || "")
+    .then((value) => String(value || ""))
+    .catch(() => "");
+
   return {
-    finalURL: pageData.finalURL || page.url() || pageURL,
+    finalURL,
     title: pageData.title || "",
     candidates,
+    pageUserAgent,
+    pageReferer: contextHeaders.referer || finalURL,
+    pageOrigin: contextHeaders.origin || pageOrigin,
+    pageHeaders,
   };
 }
 
@@ -215,6 +259,10 @@ async function main() {
         final_url: result.finalURL,
         title: result.title,
         candidates: result.candidates,
+        page_user_agent: result.pageUserAgent,
+        page_referer: result.pageReferer,
+        page_origin: result.pageOrigin,
+        page_headers: result.pageHeaders,
         reason,
       }),
     );

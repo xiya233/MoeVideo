@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -48,6 +49,7 @@ type Config struct {
 	ImportPageResolverTimeout    time.Duration
 	ImportPageResolverMax        int
 	ImportPageResolverCmd        string
+	ImportForceFallbackDomains   []string
 	ImportProgressLogInterval    time.Duration
 	TranscodeProgressLogInterval time.Duration
 	RateLimitEnabled             bool
@@ -318,6 +320,8 @@ func Load() (Config, error) {
 	}
 	cfg.ImportPageResolverMax = importPageResolverMax
 
+	cfg.ImportForceFallbackDomains = parseFallbackDomains(getEnv("IMPORT_FORCE_FALLBACK_DOMAINS", ""))
+
 	importProgressLogInterval, err := time.ParseDuration(getEnv("IMPORT_PROGRESS_LOG_INTERVAL", "5s"))
 	if err != nil {
 		return cfg, fmt.Errorf("invalid IMPORT_PROGRESS_LOG_INTERVAL: %w", err)
@@ -386,4 +390,87 @@ func validateJWTSecret(raw string) error {
 		return fmt.Errorf("JWT_SECRET must be set and must not use placeholder value")
 	}
 	return nil
+}
+
+func parseFallbackDomains(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		normalized, ok := normalizeFallbackDomain(part)
+		if !ok {
+			trimmed := strings.TrimSpace(part)
+			if trimmed != "" {
+				fmt.Fprintf(os.Stderr, "warn: ignoring invalid IMPORT_FORCE_FALLBACK_DOMAINS entry: %q\n", trimmed)
+			}
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func normalizeFallbackDomain(raw string) (string, bool) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return "", false
+	}
+	value = strings.TrimSuffix(value, ".")
+	if strings.HasPrefix(value, "*.") {
+		value = strings.TrimPrefix(value, "*.")
+	}
+	if value == "" || strings.Contains(value, "/") {
+		return "", false
+	}
+	if strings.Contains(value, ":") {
+		host, _, err := net.SplitHostPort(value)
+		if err != nil || strings.TrimSpace(host) == "" {
+			return "", false
+		}
+		value = host
+	}
+	labels := strings.Split(value, ".")
+	if len(labels) < 2 {
+		return "", false
+	}
+	for _, label := range labels {
+		if label == "" {
+			return "", false
+		}
+		for _, r := range label {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+				continue
+			}
+			return "", false
+		}
+	}
+	return value, true
+}
+
+func IsHostMatchedByDomainList(host string, domains []string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	host = strings.TrimSuffix(host, ".")
+	if host == "" || len(domains) == 0 {
+		return false
+	}
+	if strings.Contains(host, ":") {
+		parsedHost, _, err := net.SplitHostPort(host)
+		if err == nil && strings.TrimSpace(parsedHost) != "" {
+			host = parsedHost
+		}
+	}
+	for _, domain := range domains {
+		d := strings.ToLower(strings.TrimSpace(domain))
+		if d == "" {
+			continue
+		}
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	return false
 }

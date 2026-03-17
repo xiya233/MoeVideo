@@ -455,6 +455,7 @@ export function mapURLInspectResult(value: unknown): URLInspectResult {
     source_url: str(src.source_url),
     candidates: arr(src.candidates).map((item) => str(item)).filter(Boolean),
     inspect_token: str(src.inspect_token) || undefined,
+    page_title: str(src.page_title) || undefined,
     reason: str(src.reason) || undefined,
   };
 }

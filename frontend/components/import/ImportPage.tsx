@@ -591,6 +591,13 @@ export function ImportPage() {
         }
         setURLInspectResult(inspectResult);
         setSelectedCandidateIndex(0);
+        setImportTitle((prev) => {
+          if (prev.trim() !== "") {
+            return prev;
+          }
+          const nextTitle = inspectResult.page_title?.trim() ?? "";
+          return nextTitle || prev;
+        });
       } catch (err) {
         setURLError(err instanceof Error ? err.message : "候选链接获取失败");
       } finally {
@@ -648,6 +655,13 @@ export function ImportPage() {
 
       setURLInspectResult(inspectResult);
       setSelectedCandidateIndex(0);
+      setImportTitle((prev) => {
+        if (prev.trim() !== "") {
+          return prev;
+        }
+        const nextTitle = inspectResult.page_title?.trim() ?? "";
+        return nextTitle || prev;
+      });
     } catch (err) {
       setURLError(err instanceof Error ? err.message : "URL 导入失败");
     } finally {

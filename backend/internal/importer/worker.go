@@ -759,6 +759,18 @@ func (w *Worker) importURLItem(
 			"page_reason":    strings.TrimSpace(resolverResult.Reason),
 			"candidate_idx":  idx,
 		}
+		if ua := strings.TrimSpace(resolverResult.PageUserAgent); ua != "" {
+			contextMeta["page_user_agent"] = ua
+		}
+		if referer := strings.TrimSpace(resolverResult.PageReferer); referer != "" {
+			contextMeta["page_referer"] = referer
+		}
+		if origin := strings.TrimSpace(resolverResult.PageOrigin); origin != "" {
+			contextMeta["page_origin"] = origin
+		}
+		if len(resolverResult.PageHeaders) > 0 {
+			contextMeta["page_headers"] = resolverResult.PageHeaders
+		}
 		err := w.importURLFromResolvedSource(
 			ctx,
 			job,
@@ -807,9 +819,11 @@ func (w *Worker) importURLFromResolvedSource(
 	if sourceURL == "" {
 		return permanentError{err: fmt.Errorf("source_url is required")}
 	}
+	effectiveMetadataArgs := mergeYTDLPArgsWithResolverContext(metadataArgs, resolverContext)
+	effectiveDownloadArgs := mergeYTDLPArgsWithResolverContext(downloadArgs, resolverContext)
 	w.logger.Infof("url import stage=metadata_start job_id=%s item_id=%s resolver=%s source_url=%s", job.ID, item.ID, resolverName, sourceURL)
 
-	meta, err := w.extractURLMetadata(ctx, sourceURL, metadataArgs)
+	meta, err := w.extractURLMetadata(ctx, sourceURL, effectiveMetadataArgs)
 	if err != nil {
 		w.logger.Warnf("url import stage=metadata_failed job_id=%s item_id=%s resolver=%s err=%v", job.ID, item.ID, resolverName, err)
 		return err
@@ -845,7 +859,7 @@ func (w *Worker) importURLFromResolvedSource(
 	defer os.RemoveAll(tmpDir)
 
 	w.logger.Infof("url import stage=download_start job_id=%s item_id=%s resolver=%s", job.ID, item.ID, resolverName)
-	localSourcePath, err := w.downloadURLSource(ctx, job.ID, sourceURL, tmpDir, downloadArgs)
+	localSourcePath, err := w.downloadURLSource(ctx, job.ID, sourceURL, tmpDir, effectiveDownloadArgs)
 	if err != nil {
 		w.logger.Warnf("url import stage=download_failed job_id=%s item_id=%s resolver=%s err=%v", job.ID, item.ID, resolverName, err)
 		return err
@@ -1802,6 +1816,151 @@ func validateWorkerYTDLPArgs(args []string) error {
 		}
 	}
 	return nil
+}
+
+func mergeYTDLPArgsWithResolverContext(baseArgs []string, resolverContext map[string]interface{}) []string {
+	args := append([]string{}, baseArgs...)
+	if len(resolverContext) == 0 {
+		return args
+	}
+
+	pageUA := strings.TrimSpace(contextStringValue(resolverContext, "page_user_agent"))
+	pageReferer := strings.TrimSpace(contextStringValue(resolverContext, "page_referer"))
+	pageOrigin := strings.TrimSpace(contextStringValue(resolverContext, "page_origin"))
+	pageHeaders := contextHeaderValues(resolverContext, "page_headers")
+	if pageOrigin != "" {
+		pageHeaders["Origin"] = pageOrigin
+	}
+
+	if pageUA != "" && !hasYTDLPFlag(args, "--user-agent") {
+		args = append(args, "--user-agent", pageUA)
+	}
+	if pageReferer != "" && !hasYTDLPFlag(args, "--referer") {
+		args = append(args, "--referer", pageReferer)
+	}
+
+	for _, headerKey := range []string{"Origin", "Accept", "Accept-Language"} {
+		headerVal := strings.TrimSpace(pageHeaders[headerKey])
+		if headerVal == "" {
+			continue
+		}
+		if hasYTDLPHeader(args, headerKey) {
+			continue
+		}
+		args = append(args, "--add-header", fmt.Sprintf("%s: %s", headerKey, headerVal))
+	}
+
+	return args
+}
+
+func contextStringValue(ctx map[string]interface{}, key string) string {
+	value, ok := ctx[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch v := value.(type) {
+	case string:
+		return v
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+func contextHeaderValues(ctx map[string]interface{}, key string) map[string]string {
+	out := map[string]string{}
+	raw, ok := ctx[key]
+	if !ok || raw == nil {
+		return out
+	}
+	switch headers := raw.(type) {
+	case map[string]string:
+		for headerKey, headerVal := range headers {
+			normalizedKey := normalizeResolverHeaderKey(headerKey)
+			if normalizedKey == "" {
+				continue
+			}
+			out[normalizedKey] = strings.TrimSpace(headerVal)
+		}
+	case map[string]interface{}:
+		for headerKey, headerVal := range headers {
+			normalizedKey := normalizeResolverHeaderKey(headerKey)
+			if normalizedKey == "" {
+				continue
+			}
+			out[normalizedKey] = strings.TrimSpace(fmt.Sprintf("%v", headerVal))
+		}
+	}
+	return out
+}
+
+func normalizeResolverHeaderKey(raw string) string {
+	key := strings.ToLower(strings.TrimSpace(raw))
+	switch key {
+	case "accept":
+		return "Accept"
+	case "accept-language":
+		return "Accept-Language"
+	case "origin":
+		return "Origin"
+	default:
+		return ""
+	}
+}
+
+func hasYTDLPFlag(args []string, flag string) bool {
+	flag = strings.ToLower(strings.TrimSpace(flag))
+	if flag == "" {
+		return false
+	}
+	for i := 0; i < len(args); i++ {
+		token := strings.ToLower(strings.TrimSpace(args[i]))
+		if token == flag || strings.HasPrefix(token, flag+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasYTDLPHeader(args []string, headerName string) bool {
+	targetKey := normalizeResolverHeaderKey(headerName)
+	if targetKey == "" {
+		return false
+	}
+	targetKey = strings.ToLower(targetKey)
+	for i := 0; i < len(args); i++ {
+		token := strings.TrimSpace(args[i])
+		switch {
+		case strings.EqualFold(token, "--add-header"), strings.EqualFold(token, "-H"):
+			if i+1 >= len(args) {
+				continue
+			}
+			if headerKeyEquals(args[i+1], targetKey) {
+				return true
+			}
+		case strings.HasPrefix(strings.ToLower(token), "--add-header="):
+			if headerKeyEquals(token[len("--add-header="):], targetKey) {
+				return true
+			}
+		case strings.HasPrefix(strings.ToLower(token), "-h="):
+			if headerKeyEquals(token[len("-h="):], targetKey) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func headerKeyEquals(rawHeader, targetLowerKey string) bool {
+	header := strings.TrimSpace(rawHeader)
+	if header == "" {
+		return false
+	}
+	parts := strings.SplitN(header, ":", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	key := strings.ToLower(strings.TrimSpace(parts[0]))
+	return key != "" && key == targetLowerKey
 }
 
 var ytdlpDownloadedBytesRe = regexp.MustCompile(`(?i)download:\s*([0-9]+(?:\.[0-9]+)?)`)

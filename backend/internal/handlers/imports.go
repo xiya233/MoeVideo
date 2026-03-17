@@ -22,6 +22,7 @@ import (
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/gofiber/fiber/v2"
 
+	appconfig "moevideo/backend/internal/config"
 	"moevideo/backend/internal/pagination"
 	"moevideo/backend/internal/response"
 	"moevideo/backend/internal/util"
@@ -68,17 +69,30 @@ type inspectURLImportRequest struct {
 }
 
 type urlInspectTokenPayload struct {
-	UserID     string   `json:"user_id"`
-	SourceURL  string   `json:"source_url"`
-	Candidates []string `json:"candidates"`
-	ExpiresAt  int64    `json:"expires_at"`
+	UserID          string                    `json:"user_id"`
+	SourceURL       string                    `json:"source_url"`
+	Candidates      []string                  `json:"candidates"`
+	ResolverContext urlInspectResolverContext `json:"resolver_context"`
+	ExpiresAt       int64                     `json:"expires_at"`
+}
+
+type urlInspectResolverContext struct {
+	PageTitle     string            `json:"page_title,omitempty"`
+	PageUserAgent string            `json:"page_user_agent,omitempty"`
+	PageReferer   string            `json:"page_referer,omitempty"`
+	PageOrigin    string            `json:"page_origin,omitempty"`
+	PageHeaders   map[string]string `json:"page_headers,omitempty"`
 }
 
 type pageManifestResolverOutput struct {
-	FinalURL   string   `json:"final_url"`
-	Title      string   `json:"title"`
-	Candidates []string `json:"candidates"`
-	Reason     string   `json:"reason"`
+	FinalURL      string            `json:"final_url"`
+	Title         string            `json:"title"`
+	Candidates    []string          `json:"candidates"`
+	PageUserAgent string            `json:"page_user_agent"`
+	PageReferer   string            `json:"page_referer"`
+	PageOrigin    string            `json:"page_origin"`
+	PageHeaders   map[string]string `json:"page_headers"`
+	Reason        string            `json:"reason"`
 }
 
 func (h *Handler) InspectTorrentImport(c *fiber.Ctx) error {
@@ -489,9 +503,14 @@ func (h *Handler) InspectURLImport(c *fiber.Ctx) error {
 		return response.Error(c, fiber.StatusServiceUnavailable, "invalid yt-dlp settings")
 	}
 
-	unsupported, err := h.checkURLMetadataSupport(c.UserContext(), req.URL, metadataArgs)
-	if err != nil {
-		return response.Error(c, fiber.StatusBadRequest, err.Error())
+	forcedFallback := shouldForceFallbackForImportURL(req.URL, h.app.Config.ImportForceFallbackDomains)
+	unsupported := forcedFallback
+	if !forcedFallback {
+		var checkErr error
+		unsupported, checkErr = h.checkURLMetadataSupport(c.UserContext(), req.URL, metadataArgs)
+		if checkErr != nil {
+			return response.Error(c, fiber.StatusBadRequest, checkErr.Error())
+		}
 	}
 	if !unsupported {
 		return response.OK(c, fiber.Map{
@@ -501,6 +520,9 @@ func (h *Handler) InspectURLImport(c *fiber.Ctx) error {
 	}
 
 	if !h.app.Config.ImportPageResolverEnabled {
+		if forcedFallback {
+			return response.Error(c, fiber.StatusBadRequest, "import.url.page_resolver_unavailable: forced fallback domain matched but resolver is disabled")
+		}
 		return response.Error(c, fiber.StatusBadRequest, "import.url.page_resolver_unavailable: unsupported url and resolver is disabled")
 	}
 
@@ -508,12 +530,14 @@ func (h *Handler) InspectURLImport(c *fiber.Ctx) error {
 	if err != nil {
 		return response.Error(c, fiber.StatusBadRequest, fmt.Sprintf("import.url.page_resolver_unavailable: %v", err))
 	}
+	resolverContext := buildURLInspectResolverContext(req.URL, resolverResult)
 
 	token, err := h.signURLInspectToken(urlInspectTokenPayload{
-		UserID:     uid,
-		SourceURL:  req.URL,
-		Candidates: candidates,
-		ExpiresAt:  nowUTC().Add(urlInspectTokenTTL).Unix(),
+		UserID:          uid,
+		SourceURL:       req.URL,
+		Candidates:      candidates,
+		ResolverContext: resolverContext,
+		ExpiresAt:       nowUTC().Add(urlInspectTokenTTL).Unix(),
 	})
 	if err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to create inspect token")
@@ -524,6 +548,7 @@ func (h *Handler) InspectURLImport(c *fiber.Ctx) error {
 		"source_url":    req.URL,
 		"candidates":    candidates,
 		"inspect_token": token,
+		"page_title":    resolverContext.PageTitle,
 		"reason":        strings.TrimSpace(resolverResult.Reason),
 	})
 }
@@ -544,11 +569,20 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 		return response.Error(c, fiber.StatusBadRequest, "url is invalid")
 	}
 	req.InspectToken = strings.TrimSpace(req.InspectToken)
+	forcedFallback := shouldForceFallbackForImportURL(req.URL, h.app.Config.ImportForceFallbackDomains)
 
 	hasManualCandidate := req.InspectToken != "" || req.CandidateIndex != nil
 	selectedCandidateURL := ""
 	resolverName := ""
 	resolverMetaJSON := ""
+	if forcedFallback {
+		if !h.app.Config.ImportPageResolverEnabled {
+			return response.Error(c, fiber.StatusBadRequest, "import.url.page_resolver_unavailable: forced fallback domain matched but resolver is disabled")
+		}
+		if !hasManualCandidate {
+			return response.Error(c, fiber.StatusBadRequest, "inspect_token and candidate_index are required for forced fallback domain")
+		}
+	}
 	if hasManualCandidate {
 		if req.InspectToken == "" || req.CandidateIndex == nil {
 			return response.Error(c, fiber.StatusBadRequest, "inspect_token and candidate_index must be provided together")
@@ -566,13 +600,29 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 			return response.Error(c, fiber.StatusBadRequest, "selected candidate url is invalid")
 		}
 		resolverName = "page_manifest+user_selected"
-		resolverMetaBytes, _ := json.Marshal(fiber.Map{
+		resolverMeta := fiber.Map{
 			"page_url":               req.URL,
 			"selected_candidate_url": selectedCandidateURL,
 			"candidate_index":        idx,
 			"candidate_total":        len(inspectPayload.Candidates),
 			"selection_mode":         "user_selected",
-		})
+		}
+		if inspectPayload.ResolverContext.PageTitle != "" {
+			resolverMeta["page_title"] = inspectPayload.ResolverContext.PageTitle
+		}
+		if inspectPayload.ResolverContext.PageUserAgent != "" {
+			resolverMeta["page_user_agent"] = inspectPayload.ResolverContext.PageUserAgent
+		}
+		if inspectPayload.ResolverContext.PageReferer != "" {
+			resolverMeta["page_referer"] = inspectPayload.ResolverContext.PageReferer
+		}
+		if inspectPayload.ResolverContext.PageOrigin != "" {
+			resolverMeta["page_origin"] = inspectPayload.ResolverContext.PageOrigin
+		}
+		if len(inspectPayload.ResolverContext.PageHeaders) > 0 {
+			resolverMeta["page_headers"] = inspectPayload.ResolverContext.PageHeaders
+		}
+		resolverMetaBytes, _ := json.Marshal(resolverMeta)
 		resolverMetaJSON = string(resolverMetaBytes)
 	}
 
@@ -631,7 +681,7 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
-	if hasManualCandidate {
+	if hasManualCandidate || forcedFallback {
 		maxAttempts = 1
 	}
 
@@ -1402,6 +1452,78 @@ func isValidImportURL(raw string) bool {
 	return true
 }
 
+func shouldForceFallbackForImportURL(rawURL string, domains []string) bool {
+	if len(domains) == 0 {
+		return false
+	}
+	parsed, err := neturl.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	return appconfig.IsHostMatchedByDomainList(parsed.Hostname(), domains)
+}
+
+var allowedResolverHeaders = map[string]struct{}{
+	"Accept":          {},
+	"Accept-Language": {},
+}
+
+func buildURLInspectResolverContext(sourceURL string, result pageManifestResolverOutput) urlInspectResolverContext {
+	ctx := urlInspectResolverContext{
+		PageTitle:     truncText(strings.TrimSpace(result.Title), 300),
+		PageUserAgent: truncText(strings.TrimSpace(result.PageUserAgent), 1024),
+		PageReferer:   chooseValidResolverURL(result.PageReferer, sourceURL),
+		PageOrigin:    chooseValidResolverOrigin(result.PageOrigin),
+	}
+	if ctx.PageReferer == "" {
+		ctx.PageReferer = sourceURL
+	}
+	if len(result.PageHeaders) > 0 {
+		headers := make(map[string]string, len(result.PageHeaders))
+		for rawKey, rawVal := range result.PageHeaders {
+			key := strings.TrimSpace(rawKey)
+			val := strings.TrimSpace(rawVal)
+			if _, ok := allowedResolverHeaders[key]; !ok || val == "" {
+				continue
+			}
+			headers[key] = truncText(val, 1024)
+		}
+		if len(headers) > 0 {
+			ctx.PageHeaders = headers
+		}
+	}
+	return ctx
+}
+
+func chooseValidResolverURL(value string, fallback string) string {
+	candidate := strings.TrimSpace(value)
+	if !isValidImportURL(candidate) {
+		candidate = strings.TrimSpace(fallback)
+	}
+	if !isValidImportURL(candidate) {
+		return ""
+	}
+	return candidate
+}
+
+func chooseValidResolverOrigin(value string) string {
+	candidate := strings.TrimSpace(value)
+	if candidate == "" {
+		return ""
+	}
+	parsed, err := neturl.Parse(candidate)
+	if err != nil {
+		return ""
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	if strings.TrimSpace(parsed.Hostname()) == "" {
+		return ""
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
 func parseArgJSONArray(raw string) ([]string, error) {
 	content := strings.TrimSpace(raw)
 	if content == "" {
@@ -1689,6 +1811,13 @@ func (h *Handler) verifyURLInspectToken(token, userID, sourceURL string) (urlIns
 			return urlInspectTokenPayload{}, fmt.Errorf("inspect_token has invalid candidate")
 		}
 	}
+	payload.ResolverContext = buildURLInspectResolverContext(payload.SourceURL, pageManifestResolverOutput{
+		Title:         payload.ResolverContext.PageTitle,
+		PageUserAgent: payload.ResolverContext.PageUserAgent,
+		PageReferer:   payload.ResolverContext.PageReferer,
+		PageOrigin:    payload.ResolverContext.PageOrigin,
+		PageHeaders:   payload.ResolverContext.PageHeaders,
+	})
 	return payload, nil
 }
 

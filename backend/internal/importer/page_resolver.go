@@ -34,10 +34,14 @@ func isUnsupportedURLMetadataError(err error) bool {
 }
 
 type pageManifestResolverOutput struct {
-	FinalURL   string   `json:"final_url"`
-	Title      string   `json:"title"`
-	Candidates []string `json:"candidates"`
-	Reason     string   `json:"reason"`
+	FinalURL      string            `json:"final_url"`
+	Title         string            `json:"title"`
+	Candidates    []string          `json:"candidates"`
+	PageUserAgent string            `json:"page_user_agent"`
+	PageReferer   string            `json:"page_referer"`
+	PageOrigin    string            `json:"page_origin"`
+	PageHeaders   map[string]string `json:"page_headers"`
+	Reason        string            `json:"reason"`
 }
 
 func (w *Worker) resolvePageManifestCandidates(ctx context.Context, sourceURL string) ([]string, pageManifestResolverOutput, error) {
