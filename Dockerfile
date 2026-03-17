@@ -17,8 +17,38 @@ RUN apt-get update \
         bash \
         ca-certificates \
         curl \
+        fonts-liberation \
+        fonts-noto-color-emoji \
+        fonts-unifont \
         ffmpeg \
         gosu \
+        libasound2 \
+        libatk-bridge2.0-0 \
+        libatk1.0-0 \
+        libatspi2.0-0 \
+        libcairo2 \
+        libdbus-1-3 \
+        libdrm2 \
+        libgbm1 \
+        libglib2.0-0 \
+        libgtk-3-0 \
+        libnspr4 \
+        libnss3 \
+        libpango-1.0-0 \
+        libvulkan1 \
+        libx11-6 \
+        libx11-xcb1 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxkbcommon0 \
+        libxrandr2 \
+        libxrender1 \
+        libxshmfence1 \
+        libxss1 \
+        libxtst6 \
+        libxcb1 \
         pipx \
         python3 \
         python3-pip \
@@ -44,7 +74,7 @@ COPY backend/scripts/package.json ./
 RUN bun install
 
 # Install Chromium and required runtime libs for Playwright resolver.
-RUN bunx playwright install --with-deps chromium
+RUN bunx playwright install chromium
 
 COPY backend/scripts/ ./
 

@@ -100,6 +100,7 @@ docker compose exec backend bash -lc "cd /app/scripts && bunx playwright --versi
 ```
 
 说明：`curl-cffi` 是注入到 `pipx` 的 `yt-dlp` 虚拟环境，不在系统 `python3` 全局包路径中。
+说明：镜像构建已改为 `bunx playwright install chromium`（不使用 `--with-deps`），Chromium 运行依赖由 Debian apt 预装，避免 Debian 13 下 Playwright fallback 依赖脚本拉取已废弃包而失败。
 
 ## 8. 宿主机 Nginx 反向代理
 
