@@ -1058,7 +1058,7 @@ export function ImportPage() {
                 />
               </label>
 
-              <label className="space-y-1">
+              <label className="block space-y-1" style={{ marginTop: "1.25rem" }}>
                 <span className={fieldLabelClass}>Cookie 配置（可选）</span>
                 <select
                   className={`${fieldClass} appearance-none`}
