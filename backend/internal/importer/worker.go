@@ -26,6 +26,7 @@ import (
 	"moevideo/backend/internal/app"
 	"moevideo/backend/internal/logging"
 	"moevideo/backend/internal/media"
+	"moevideo/backend/internal/security"
 	"moevideo/backend/internal/util"
 )
 
@@ -318,6 +319,7 @@ func (w *Worker) processJob(ctx context.Context, job claimedJob) (*processResult
 		visibility,
 		categoryID,
 	)
+	userCookieSnapshot := parseUserYTDLPCookieSnapshot(strings.TrimSpace(resolverMetaJSON.String))
 
 	tags := parseTags(tagsJSON)
 	selectedRows, err := w.app.DB.QueryContext(ctx, `
@@ -373,6 +375,7 @@ ORDER BY file_index ASC`, job.ID)
 			strings.TrimSpace(resolvedMediaURL.String),
 			strings.TrimSpace(resolverName.String),
 			strings.TrimSpace(resolverMetaJSON.String),
+			userCookieSnapshot,
 		)
 	case "torrent":
 	default:
@@ -548,6 +551,22 @@ type ytDLPMetadata struct {
 	} `json:"requested_downloads"`
 }
 
+const userYTDLPCookieCryptoPurpose = "user-ytdlp-cookie-v1"
+
+const (
+	ytdlpCookieFormatHeader     = "header"
+	ytdlpCookieFormatCookiesTxt = "cookies_txt"
+)
+
+type jobUserYTDLPCookieSnapshot struct {
+	ProfileID  string `json:"profile_id"`
+	Label      string `json:"label"`
+	DomainRule string `json:"domain_rule"`
+	Format     string `json:"format"`
+	CipherText string `json:"cipher_text"`
+	Nonce      string `json:"nonce"`
+}
+
 func (w *Worker) processURLJob(
 	ctx context.Context,
 	job claimedJob,
@@ -563,6 +582,7 @@ func (w *Worker) processURLJob(
 	userSelectedCandidateURL string,
 	userSelectedResolverName string,
 	userSelectedResolverMetaJSON string,
+	userCookieSnapshot *jobUserYTDLPCookieSnapshot,
 ) (*processResult, error) {
 	if strings.TrimSpace(sourceURL) == "" && len(selected) > 0 {
 		sourceURL = strings.TrimSpace(selected[0].FilePath)
@@ -598,6 +618,7 @@ func (w *Worker) processURLJob(
 			userSelectedCandidateURL,
 			userSelectedResolverName,
 			userSelectedResolverMetaJSON,
+			userCookieSnapshot,
 		)
 		if importErr != nil {
 			failedCount++
@@ -656,6 +677,7 @@ func (w *Worker) importURLItem(
 	userSelectedCandidateURL string,
 	userSelectedResolverName string,
 	userSelectedResolverMetaJSON string,
+	userCookieSnapshot *jobUserYTDLPCookieSnapshot,
 ) error {
 	sourceURL = strings.TrimSpace(sourceURL)
 	if sourceURL == "" {
@@ -696,6 +718,7 @@ func (w *Worker) importURLItem(
 			downloadArgs,
 			resolverName,
 			contextMeta,
+			userCookieSnapshot,
 		)
 	}
 
@@ -715,6 +738,7 @@ func (w *Worker) importURLItem(
 		downloadArgs,
 		"ytdlp",
 		nil,
+		userCookieSnapshot,
 	); err == nil {
 		return nil
 	} else if !isUnsupportedURLMetadataError(err) {
@@ -785,6 +809,7 @@ func (w *Worker) importURLItem(
 			downloadArgs,
 			"page_manifest+yt-dlp",
 			contextMeta,
+			userCookieSnapshot,
 		)
 		if err == nil {
 			w.logger.Infof("url fallback candidate succeeded job_id=%s item_id=%s candidate_idx=%d", job.ID, item.ID, idx)
@@ -814,13 +839,39 @@ func (w *Worker) importURLFromResolvedSource(
 	downloadArgs []string,
 	resolverName string,
 	resolverContext map[string]interface{},
+	userCookieSnapshot *jobUserYTDLPCookieSnapshot,
 ) error {
 	sourceURL = strings.TrimSpace(sourceURL)
 	if sourceURL == "" {
 		return permanentError{err: fmt.Errorf("source_url is required")}
 	}
+
+	tmpParent, err := w.ensureImportJobTempDir(job.ID, "url")
+	if err != nil {
+		return fmt.Errorf("prepare import temp dir: %w", err)
+	}
+	tmpDir, err := os.MkdirTemp(tmpParent, item.ID+"-*")
+	if err != nil {
+		return fmt.Errorf("create import temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
 	effectiveMetadataArgs := mergeYTDLPArgsWithResolverContext(metadataArgs, resolverContext)
 	effectiveDownloadArgs := mergeYTDLPArgsWithResolverContext(downloadArgs, resolverContext)
+	if userCookieSnapshot != nil {
+		userCookieArgs, cookieErr := w.buildUserYTDLPCookieArgs(tmpDir, userCookieSnapshot)
+		if cookieErr != nil {
+			return permanentError{err: fmt.Errorf("import.user_cookie.invalid: %v", cookieErr)}
+		}
+		if len(userCookieArgs) > 0 {
+			if !hasYTDLPCookieSource(effectiveMetadataArgs) {
+				effectiveMetadataArgs = append(effectiveMetadataArgs, userCookieArgs...)
+			}
+			if !hasYTDLPCookieSource(effectiveDownloadArgs) {
+				effectiveDownloadArgs = append(effectiveDownloadArgs, userCookieArgs...)
+			}
+		}
+	}
 	w.logger.Infof("url import stage=metadata_start job_id=%s item_id=%s resolver=%s source_url=%s", job.ID, item.ID, resolverName, sourceURL)
 
 	meta, err := w.extractURLMetadata(ctx, sourceURL, effectiveMetadataArgs)
@@ -847,16 +898,6 @@ func (w *Worker) importURLFromResolvedSource(
 	if w.app.Config.ImportURLMaxFile > 0 && metaSize > 0 && metaSize > w.app.Config.ImportURLMaxFile {
 		return permanentError{err: fmt.Errorf("video file size exceeds limit (%d MB)", w.app.Config.ImportURLMaxFile/1024/1024)}
 	}
-
-	tmpParent, err := w.ensureImportJobTempDir(job.ID, "url")
-	if err != nil {
-		return fmt.Errorf("prepare import temp dir: %w", err)
-	}
-	tmpDir, err := os.MkdirTemp(tmpParent, item.ID+"-*")
-	if err != nil {
-		return fmt.Errorf("create import temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
 
 	w.logger.Infof("url import stage=download_start job_id=%s item_id=%s resolver=%s", job.ID, item.ID, resolverName)
 	localSourcePath, err := w.downloadURLSource(ctx, job.ID, sourceURL, tmpDir, effectiveDownloadArgs)
@@ -1816,6 +1857,115 @@ func validateWorkerYTDLPArgs(args []string) error {
 		}
 	}
 	return nil
+}
+
+func parseUserYTDLPCookieSnapshot(resolverMetaJSON string) *jobUserYTDLPCookieSnapshot {
+	content := strings.TrimSpace(resolverMetaJSON)
+	if content == "" {
+		return nil
+	}
+	var meta map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &meta); err != nil {
+		return nil
+	}
+	rawCookie, ok := meta["user_cookie"]
+	if !ok || rawCookie == nil {
+		return nil
+	}
+	cookieMap, ok := rawCookie.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	snapshot := &jobUserYTDLPCookieSnapshot{
+		ProfileID:  mapStringValue(cookieMap, "profile_id"),
+		Label:      mapStringValue(cookieMap, "label"),
+		DomainRule: mapStringValue(cookieMap, "domain_rule"),
+		Format:     mapStringValue(cookieMap, "format"),
+		CipherText: mapStringValue(cookieMap, "cipher_text"),
+		Nonce:      mapStringValue(cookieMap, "nonce"),
+	}
+	if snapshot.Format == "" || snapshot.CipherText == "" || snapshot.Nonce == "" {
+		return nil
+	}
+	return snapshot
+}
+
+func mapStringValue(src map[string]interface{}, key string) string {
+	raw, ok := src[key]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch value := raw.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", value))
+	}
+}
+
+func (w *Worker) buildUserYTDLPCookieArgs(tmpDir string, snapshot *jobUserYTDLPCookieSnapshot) ([]string, error) {
+	if snapshot == nil {
+		return nil, nil
+	}
+	content, err := security.DecryptString(w.app.Config.JWTSecret, userYTDLPCookieCryptoPurpose, snapshot.CipherText, snapshot.Nonce)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt snapshot: %w", err)
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil, fmt.Errorf("cookie content is empty")
+	}
+
+	switch snapshot.Format {
+	case ytdlpCookieFormatHeader:
+		if strings.Contains(content, "\n") || strings.Contains(content, "\r") {
+			return nil, fmt.Errorf("cookie header contains line breaks")
+		}
+		return []string{"--add-header", "Cookie: " + content}, nil
+	case ytdlpCookieFormatCookiesTxt:
+		cookieFilePath := filepath.Join(tmpDir, "user-cookies.txt")
+		if err := os.WriteFile(cookieFilePath, []byte(content), 0600); err != nil {
+			return nil, fmt.Errorf("write cookie file: %w", err)
+		}
+		return []string{"--cookies", cookieFilePath}, nil
+	default:
+		return nil, fmt.Errorf("unsupported cookie format")
+	}
+}
+
+func hasYTDLPCookieSource(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for i := 0; i < len(args); i++ {
+		rawToken := strings.TrimSpace(args[i])
+		token := strings.ToLower(rawToken)
+		if token == "" {
+			continue
+		}
+		if token == "--cookies" || token == "--cookies-from-browser" {
+			return true
+		}
+		if strings.HasPrefix(token, "--cookies=") || strings.HasPrefix(token, "--cookies-from-browser=") {
+			return true
+		}
+		if token == "--add-header" || rawToken == "-H" {
+			if i+1 >= len(args) {
+				continue
+			}
+			if headerKeyEquals(args[i+1], "Cookie") {
+				return true
+			}
+			continue
+		}
+		if strings.HasPrefix(token, "--add-header=") {
+			if headerKeyEquals(strings.TrimPrefix(rawToken, "--add-header="), "Cookie") {
+				return true
+			}
+			continue
+		}
+	}
+	return false
 }
 
 func mergeYTDLPArgsWithResolverContext(baseArgs []string, resolverContext map[string]interface{}) []string {

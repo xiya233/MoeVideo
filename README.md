@@ -65,6 +65,7 @@ mise run backend-test
 - API 文档：`backend/docs/api.md`
 - 数据模型文档：`backend/docs/schema.md`
 - yt-dlp 参数配置文档：`backend/docs/ytdlp-settings.md`
+- yt-dlp 用户 Cookies 使用文档：`backend/docs/ytdlp-user-cookies.md`
 - Debian 13 生产部署文档：`docs/deploy-production-debian13.md`
 - SQL 迁移：`backend/internal/db/migrations/0001_init.sql`
 

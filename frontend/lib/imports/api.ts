@@ -53,6 +53,7 @@ export const importsApi = {
       visibility?: "public" | "private" | "unlisted";
       title?: string;
       description?: string;
+      user_cookie_id?: string;
       inspect_token?: string;
       candidate_index?: number;
     },
@@ -64,7 +65,7 @@ export const importsApi = {
     });
   },
 
-  inspectURL(request: ApiRequest, payload: { url: string }) {
+  inspectURL(request: ApiRequest, payload: { url: string; user_cookie_id?: string }) {
     return request<URLInspectResult>("/imports/url/inspect", {
       method: "POST",
       auth: true,

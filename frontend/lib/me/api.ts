@@ -1,5 +1,5 @@
 import type { RequestOptions } from "@/lib/api/types";
-import type { ContinueWatchingItem, UserBrief, VideoCard, VideoDetail } from "@/lib/dto";
+import type { ContinueWatchingItem, UserBrief, UserYTDLPCookieProfile, VideoCard, VideoDetail } from "@/lib/dto";
 
 export type ApiRequest = <T>(path: string, options?: RequestOptions) => Promise<T>;
 
@@ -85,6 +85,52 @@ export const meApi = {
 
   deleteMyVideo(request: ApiRequest, videoId: string) {
     return request<{ deleted: boolean; cleanup_warnings?: string[] }>(`/videos/${videoId}`, {
+      method: "DELETE",
+      auth: true,
+    });
+  },
+
+  listMyYTDLPCookies(request: ApiRequest, params?: { for_url?: string }) {
+    return request<{ items: UserYTDLPCookieProfile[] }>(`/users/me/ytdlp-cookies${buildQuery(params ?? {})}`, {
+      auth: true,
+    });
+  },
+
+  createMyYTDLPCookie(
+    request: ApiRequest,
+    payload: {
+      label: string;
+      domain_rule: string;
+      format: "header" | "cookies_txt";
+      content: string;
+    },
+  ) {
+    return request<UserYTDLPCookieProfile>(`/users/me/ytdlp-cookies`, {
+      method: "POST",
+      auth: true,
+      body: payload,
+    });
+  },
+
+  updateMyYTDLPCookie(
+    request: ApiRequest,
+    cookieId: string,
+    payload: {
+      label?: string;
+      domain_rule?: string;
+      format?: "header" | "cookies_txt";
+      content?: string;
+    },
+  ) {
+    return request<UserYTDLPCookieProfile>(`/users/me/ytdlp-cookies/${cookieId}`, {
+      method: "PATCH",
+      auth: true,
+      body: payload,
+    });
+  },
+
+  deleteMyYTDLPCookie(request: ApiRequest, cookieId: string) {
+    return request<{ deleted: boolean; id: string }>(`/users/me/ytdlp-cookies/${cookieId}`, {
       method: "DELETE",
       auth: true,
     });

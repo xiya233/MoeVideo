@@ -111,6 +111,15 @@ export type UserProfileData = {
   profile_accessible: boolean;
 };
 
+export type UserYTDLPCookieProfile = {
+  id: string;
+  label: string;
+  domain_rule: string;
+  format: "header" | "cookies_txt";
+  created_at?: string;
+  updated_at?: string;
+};
+
 export type CommentItem = {
   id: string;
   video_id: string;
@@ -178,6 +187,7 @@ export type URLInspectResult = {
   source_url: string;
   candidates: string[];
   inspect_token?: string;
+  user_cookie_id?: string;
   page_title?: string;
   reason?: string;
 };

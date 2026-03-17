@@ -10,9 +10,17 @@ import { AuthorInline } from "@/components/common/AuthorInline";
 import { EmptyState } from "@/components/common/EmptyState";
 import { AvatarCropDialog } from "@/components/me/AvatarCropDialog";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import type { ContinueWatchingItem, UploadCompleteData, UploadTicket, UserBrief, VideoCard } from "@/lib/dto";
+import type {
+  ContinueWatchingItem,
+  UploadCompleteData,
+  UploadTicket,
+  UserBrief,
+  UserYTDLPCookieProfile,
+  VideoCard,
+} from "@/lib/dto";
 import {
   mapContinueWatchingItem,
+  mapUserYTDLPCookieProfile,
   mapVideoDetail,
   mapUploadCompleteData,
   mapUploadTicket,
@@ -146,6 +154,12 @@ function parseVideoTagsInput(input: string): string[] {
     tags.push(tag.slice(0, 32));
   }
   return tags;
+}
+
+type YTDLPCookieFormat = "header" | "cookies_txt";
+
+function formatCookieFormatLabel(format: YTDLPCookieFormat): string {
+  return format === "cookies_txt" ? "cookies.txt" : "Cookie Header";
 }
 
 function VideoGridCard({
@@ -307,6 +321,14 @@ export function MePage() {
   const [deletingVideo, setDeletingVideo] = useState<VideoCard | null>(null);
   const [deleteVideoError, setDeleteVideoError] = useState("");
   const [videoActionMessage, setVideoActionMessage] = useState("");
+  const [cookieDialogOpen, setCookieDialogOpen] = useState(false);
+  const [editingCookie, setEditingCookie] = useState<UserYTDLPCookieProfile | null>(null);
+  const [cookieLabelInput, setCookieLabelInput] = useState("");
+  const [cookieDomainRuleInput, setCookieDomainRuleInput] = useState("");
+  const [cookieFormatInput, setCookieFormatInput] = useState<YTDLPCookieFormat>("header");
+  const [cookieContentInput, setCookieContentInput] = useState("");
+  const [cookieFormError, setCookieFormError] = useState("");
+  const [cookieActionMessage, setCookieActionMessage] = useState("");
 
   const meQuery = useQuery({
     queryKey: ["me-profile"],
@@ -315,6 +337,15 @@ export function MePage() {
   });
 
   const currentUser = meQuery.data ?? user ?? null;
+
+  const ytdlpCookiesQuery = useQuery({
+    queryKey: ["me-ytdlp-cookies"],
+    queryFn: async () => {
+      const data = await meApi.listMyYTDLPCookies(request);
+      return (data.items ?? []).map(mapUserYTDLPCookieProfile);
+    },
+    enabled: !!session && activeTab === "edit",
+  });
 
   useEffect(() => {
     setBioInput(currentUser?.bio ?? "");
@@ -636,6 +667,86 @@ export function MePage() {
     },
   });
 
+  const openCookieDialog = useCallback((cookie?: UserYTDLPCookieProfile) => {
+    setEditingCookie(cookie ?? null);
+    setCookieLabelInput(cookie?.label ?? "");
+    setCookieDomainRuleInput(cookie?.domain_rule ?? "");
+    setCookieFormatInput(cookie?.format ?? "header");
+    setCookieContentInput("");
+    setCookieFormError("");
+    setCookieDialogOpen(true);
+    setCookieActionMessage("");
+  }, []);
+
+  const closeCookieDialog = useCallback(() => {
+    setCookieDialogOpen(false);
+    setEditingCookie(null);
+    setCookieContentInput("");
+    setCookieFormError("");
+  }, []);
+
+  const saveCookieMutation = useMutation({
+    mutationFn: async () => {
+      const label = cookieLabelInput.trim();
+      const domainRule = cookieDomainRuleInput.trim();
+      const content = cookieContentInput.trim();
+      if (!label) {
+        throw new Error("请填写配置名称");
+      }
+      if (!domainRule) {
+        throw new Error("请填写域名规则");
+      }
+      if (!content) {
+        throw new Error("请填写 Cookie 内容");
+      }
+
+      if (editingCookie) {
+        await meApi.updateMyYTDLPCookie(request, editingCookie.id, {
+          label,
+          domain_rule: domainRule,
+          format: cookieFormatInput,
+          content,
+        });
+      } else {
+        await meApi.createMyYTDLPCookie(request, {
+          label,
+          domain_rule: domainRule,
+          format: cookieFormatInput,
+          content,
+        });
+      }
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["me-ytdlp-cookies"] });
+      setCookieActionMessage(editingCookie ? "Cookie 配置已更新" : "Cookie 配置已新增");
+      closeCookieDialog();
+    },
+    onError: (error) => {
+      setCookieFormError(error instanceof Error ? error.message : "保存 Cookie 配置失败");
+    },
+  });
+
+  const deleteCookieMutation = useMutation({
+    mutationFn: async (cookie: UserYTDLPCookieProfile) => meApi.deleteMyYTDLPCookie(request, cookie.id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["me-ytdlp-cookies"] });
+      setCookieActionMessage("Cookie 配置已删除");
+    },
+  });
+
+  const onDeleteCookie = useCallback(
+    (cookie: UserYTDLPCookieProfile) => {
+      if (deleteCookieMutation.isPending) {
+        return;
+      }
+      if (!window.confirm(`确认删除 Cookie 配置「${cookie.label}」吗？`)) {
+        return;
+      }
+      deleteCookieMutation.mutate(cookie);
+    },
+    [deleteCookieMutation],
+  );
+
   const myVideos = useMemo(
     () => videosQuery.data?.pages.flatMap((page) => page.items ?? []) ?? [],
     [videosQuery.data?.pages],
@@ -656,6 +767,7 @@ export function MePage() {
     () => followersQuery.data?.pages.flatMap((page) => page.items ?? []) ?? [],
     [followersQuery.data?.pages],
   );
+  const ytdlpCookies = useMemo(() => ytdlpCookiesQuery.data ?? [], [ytdlpCookiesQuery.data]);
 
   if (!ready) {
     return <div className="rounded-2xl border border-slate-100 bg-white p-8 text-sm text-slate-500">正在加载...</div>;
@@ -1089,6 +1201,73 @@ export function MePage() {
                 </label>
               </div>
             </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 lg:col-span-2">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-800">yt-dlp Cookies</h3>
+                  <p className="mt-1 text-xs text-slate-500">
+                    配置后可在 URL 导入时手动选择使用。列表不回显明文，仅在新增/编辑时覆盖提交。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => openCookieDialog()}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:border-primary/30 hover:text-primary"
+                >
+                  新增配置
+                </button>
+              </div>
+
+              {cookieActionMessage ? <p className="mt-3 text-xs text-emerald-600">{cookieActionMessage}</p> : null}
+
+              {ytdlpCookiesQuery.isLoading ? (
+                <p className="mt-3 text-xs text-slate-500">正在加载 Cookie 配置...</p>
+              ) : null}
+              {ytdlpCookiesQuery.isError ? (
+                <p className="mt-3 text-xs text-rose-600">加载 Cookie 配置失败，请稍后重试。</p>
+              ) : null}
+
+              {ytdlpCookies.length === 0 && !ytdlpCookiesQuery.isLoading ? (
+                <p className="mt-3 text-xs text-slate-500">暂无配置。可按站点域名新增一条配置供 URL 导入手选。</p>
+              ) : null}
+
+              {ytdlpCookies.length > 0 ? (
+                <div className="mt-3 space-y-2">
+                  {ytdlpCookies.map((cookie) => (
+                    <div
+                      key={cookie.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-slate-800">{cookie.label}</p>
+                        <p className="truncate text-xs text-slate-500">
+                          {cookie.domain_rule} · {formatCookieFormatLabel(cookie.format)}
+                          {cookie.updated_at ? ` · 更新于 ${cookie.updated_at}` : ""}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openCookieDialog(cookie)}
+                          className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 transition-colors hover:border-primary/30 hover:text-primary"
+                        >
+                          编辑
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteCookie(cookie)}
+                          disabled={deleteCookieMutation.isPending}
+                          className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 transition-colors hover:border-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           </div>
 
           {saveError ? <p className="mt-4 text-sm text-rose-600">{saveError}</p> : null}
@@ -1217,6 +1396,83 @@ export function MePage() {
               className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition-opacity hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {deleteVideoMutation.isPending ? "删除中..." : "确认删除"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={cookieDialogOpen}
+        onOpenChange={(open) => (!open && !saveCookieMutation.isPending ? closeCookieDialog() : null)}
+      >
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>{editingCookie ? "编辑 yt-dlp Cookie 配置" : "新增 yt-dlp Cookie 配置"}</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">配置名称</label>
+              <input
+                value={cookieLabelInput}
+                onChange={(event) => setCookieLabelInput(event.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                placeholder="例如：24av 账号 Cookie"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">域名规则</label>
+              <input
+                value={cookieDomainRuleInput}
+                onChange={(event) => setCookieDomainRuleInput(event.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                placeholder="例如：24av.net"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">格式</label>
+              <select
+                value={cookieFormatInput}
+                onChange={(event) => setCookieFormatInput(event.target.value as YTDLPCookieFormat)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+              >
+                <option value="header">Cookie Header</option>
+                <option value="cookies_txt">cookies.txt</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">内容（保存后不回显）</label>
+              <textarea
+                value={cookieContentInput}
+                onChange={(event) => setCookieContentInput(event.target.value)}
+                rows={6}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
+                placeholder={cookieFormatInput === "cookies_txt" ? "粘贴 cookies.txt 内容" : "例如：sessionid=...; token=..."}
+              />
+            </div>
+
+            {cookieFormError ? <p className="text-xs text-rose-600">{cookieFormError}</p> : null}
+          </div>
+
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={closeCookieDialog}
+              disabled={saveCookieMutation.isPending}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:border-primary/30 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={() => saveCookieMutation.mutate()}
+              disabled={saveCookieMutation.isPending}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {saveCookieMutation.isPending ? "保存中..." : "保存"}
             </button>
           </DialogFooter>
         </DialogContent>

@@ -60,17 +60,20 @@ type startURLImportRequest struct {
 	Visibility     string   `json:"visibility"`
 	Title          string   `json:"title"`
 	Description    string   `json:"description"`
+	UserCookieID   string   `json:"user_cookie_id"`
 	InspectToken   string   `json:"inspect_token"`
 	CandidateIndex *int     `json:"candidate_index"`
 }
 
 type inspectURLImportRequest struct {
-	URL string `json:"url"`
+	URL          string `json:"url"`
+	UserCookieID string `json:"user_cookie_id"`
 }
 
 type urlInspectTokenPayload struct {
 	UserID          string                    `json:"user_id"`
 	SourceURL       string                    `json:"source_url"`
+	UserCookieID    string                    `json:"user_cookie_id,omitempty"`
 	Candidates      []string                  `json:"candidates"`
 	ResolverContext urlInspectResolverContext `json:"resolver_context"`
 	ExpiresAt       int64                     `json:"expires_at"`
@@ -477,6 +480,7 @@ func (h *Handler) InspectURLImport(c *fiber.Ctx) error {
 	}
 
 	req.URL = strings.TrimSpace(req.URL)
+	req.UserCookieID = strings.TrimSpace(req.UserCookieID)
 	if req.URL == "" {
 		return response.Error(c, fiber.StatusBadRequest, "url is required")
 	}
@@ -494,6 +498,11 @@ func (h *Handler) InspectURLImport(c *fiber.Ctx) error {
 	if err != nil {
 		return response.Error(c, fiber.StatusServiceUnavailable, err.Error())
 	}
+
+	selectedCookie, err := h.resolveUserYTDLPCookieSelection(c.UserContext(), tx, uid, req.URL, req.UserCookieID)
+	if err != nil {
+		return response.Error(c, fiber.StatusBadRequest, err.Error())
+	}
 	if err := tx.Commit(); err != nil {
 		return response.Error(c, fiber.StatusInternalServerError, "failed to load yt-dlp settings")
 	}
@@ -501,6 +510,14 @@ func (h *Handler) InspectURLImport(c *fiber.Ctx) error {
 	metadataArgs, err := parseArgJSONArray(ytdlpMetaArgsJSON)
 	if err != nil {
 		return response.Error(c, fiber.StatusServiceUnavailable, "invalid yt-dlp settings")
+	}
+	if selectedCookie != nil && !hasYTDLPCookieSourceArg(metadataArgs) {
+		cookieArgs, cleanup, buildErr := h.prepareRuntimeYTDLPCookieArgs(selectedCookie)
+		if buildErr != nil {
+			return response.Error(c, fiber.StatusBadRequest, buildErr.Error())
+		}
+		defer cleanup()
+		metadataArgs = append(metadataArgs, cookieArgs...)
 	}
 
 	forcedFallback := shouldForceFallbackForImportURL(req.URL, h.app.Config.ImportForceFallbackDomains)
@@ -514,8 +531,9 @@ func (h *Handler) InspectURLImport(c *fiber.Ctx) error {
 	}
 	if !unsupported {
 		return response.OK(c, fiber.Map{
-			"mode":       "direct_supported",
-			"source_url": req.URL,
+			"mode":           "direct_supported",
+			"source_url":     req.URL,
+			"user_cookie_id": req.UserCookieID,
 		})
 	}
 
@@ -535,6 +553,7 @@ func (h *Handler) InspectURLImport(c *fiber.Ctx) error {
 	token, err := h.signURLInspectToken(urlInspectTokenPayload{
 		UserID:          uid,
 		SourceURL:       req.URL,
+		UserCookieID:    req.UserCookieID,
 		Candidates:      candidates,
 		ResolverContext: resolverContext,
 		ExpiresAt:       nowUTC().Add(urlInspectTokenTTL).Unix(),
@@ -544,12 +563,13 @@ func (h *Handler) InspectURLImport(c *fiber.Ctx) error {
 	}
 
 	return response.OK(c, fiber.Map{
-		"mode":          "candidate_required",
-		"source_url":    req.URL,
-		"candidates":    candidates,
-		"inspect_token": token,
-		"page_title":    resolverContext.PageTitle,
-		"reason":        strings.TrimSpace(resolverResult.Reason),
+		"mode":           "candidate_required",
+		"source_url":     req.URL,
+		"candidates":     candidates,
+		"inspect_token":  token,
+		"page_title":     resolverContext.PageTitle,
+		"user_cookie_id": req.UserCookieID,
+		"reason":         strings.TrimSpace(resolverResult.Reason),
 	})
 }
 
@@ -569,12 +589,14 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 		return response.Error(c, fiber.StatusBadRequest, "url is invalid")
 	}
 	req.InspectToken = strings.TrimSpace(req.InspectToken)
+	req.UserCookieID = strings.TrimSpace(req.UserCookieID)
 	forcedFallback := shouldForceFallbackForImportURL(req.URL, h.app.Config.ImportForceFallbackDomains)
 
 	hasManualCandidate := req.InspectToken != "" || req.CandidateIndex != nil
 	selectedCandidateURL := ""
 	resolverName := ""
 	resolverMetaJSON := ""
+	var resolverMeta fiber.Map
 	if forcedFallback {
 		if !h.app.Config.ImportPageResolverEnabled {
 			return response.Error(c, fiber.StatusBadRequest, "import.url.page_resolver_unavailable: forced fallback domain matched but resolver is disabled")
@@ -591,6 +613,9 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 		if verifyErr != nil {
 			return response.Error(c, fiber.StatusBadRequest, verifyErr.Error())
 		}
+		if strings.TrimSpace(inspectPayload.UserCookieID) != req.UserCookieID {
+			return response.Error(c, fiber.StatusBadRequest, "user_cookie_id does not match inspect_token")
+		}
 		idx := *req.CandidateIndex
 		if idx < 0 || idx >= len(inspectPayload.Candidates) {
 			return response.Error(c, fiber.StatusBadRequest, "candidate_index is invalid")
@@ -600,7 +625,7 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 			return response.Error(c, fiber.StatusBadRequest, "selected candidate url is invalid")
 		}
 		resolverName = "page_manifest+user_selected"
-		resolverMeta := fiber.Map{
+		resolverMeta = fiber.Map{
 			"page_url":               req.URL,
 			"selected_candidate_url": selectedCandidateURL,
 			"candidate_index":        idx,
@@ -622,8 +647,6 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 		if len(inspectPayload.ResolverContext.PageHeaders) > 0 {
 			resolverMeta["page_headers"] = inspectPayload.ResolverContext.PageHeaders
 		}
-		resolverMetaBytes, _ := json.Marshal(resolverMeta)
-		resolverMetaJSON = string(resolverMetaBytes)
 	}
 
 	visibility := normalizeImportVisibility(req.Visibility)
@@ -672,6 +695,29 @@ func (h *Handler) StartURLImport(c *fiber.Ctx) error {
 	ytdlpMode, ytdlpMetaArgsJSON, ytdlpDownArgsJSON, err := h.resolveYTDLPSnapshotForJob(c.UserContext(), tx)
 	if err != nil {
 		return response.Error(c, fiber.StatusServiceUnavailable, err.Error())
+	}
+	selectedCookie, err := h.resolveUserYTDLPCookieSelection(c.UserContext(), tx, uid, req.URL, req.UserCookieID)
+	if err != nil {
+		return response.Error(c, fiber.StatusBadRequest, err.Error())
+	}
+	if selectedCookie != nil {
+		if resolverMeta == nil {
+			resolverMeta = fiber.Map{
+				"page_url": req.URL,
+			}
+		}
+		resolverMeta["user_cookie"] = fiber.Map{
+			"profile_id":  selectedCookie.ID,
+			"label":       selectedCookie.Label,
+			"domain_rule": selectedCookie.DomainRule,
+			"format":      selectedCookie.Format,
+			"cipher_text": selectedCookie.CipherText,
+			"nonce":       selectedCookie.Nonce,
+		}
+	}
+	if resolverMeta != nil {
+		resolverMetaBytes, _ := json.Marshal(resolverMeta)
+		resolverMetaJSON = string(resolverMetaBytes)
 	}
 
 	now := nowUTC()
@@ -1806,6 +1852,7 @@ func (h *Handler) verifyURLInspectToken(token, userID, sourceURL string) (urlIns
 	if len(payload.Candidates) == 0 {
 		return urlInspectTokenPayload{}, fmt.Errorf("inspect_token has no candidates")
 	}
+	payload.UserCookieID = strings.TrimSpace(payload.UserCookieID)
 	for _, candidate := range payload.Candidates {
 		if !isValidImportURL(candidate) {
 			return urlInspectTokenPayload{}, fmt.Errorf("inspect_token has invalid candidate")

@@ -21,6 +21,7 @@ import type {
   UploadCompleteData,
   UploadTicket,
   URLInspectResult,
+  UserYTDLPCookieProfile,
   VideoCard,
   VideoDetail,
   UserBrief,
@@ -455,7 +456,22 @@ export function mapURLInspectResult(value: unknown): URLInspectResult {
     source_url: str(src.source_url),
     candidates: arr(src.candidates).map((item) => str(item)).filter(Boolean),
     inspect_token: str(src.inspect_token) || undefined,
+    user_cookie_id: str(src.user_cookie_id) || undefined,
     page_title: str(src.page_title) || undefined,
     reason: str(src.reason) || undefined,
+  };
+}
+
+export function mapUserYTDLPCookieProfile(value: unknown): UserYTDLPCookieProfile {
+  const src = obj(value);
+  const formatRaw = str(src.format);
+  const format: UserYTDLPCookieProfile["format"] = formatRaw === "cookies_txt" ? "cookies_txt" : "header";
+  return {
+    id: str(src.id),
+    label: str(src.label),
+    domain_rule: str(src.domain_rule),
+    format,
+    created_at: str(src.created_at) || undefined,
+    updated_at: str(src.updated_at) || undefined,
   };
 }

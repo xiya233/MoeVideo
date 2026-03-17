@@ -17,6 +17,7 @@ import {
   mapURLInspectResult,
 } from "@/lib/dto/mappers";
 import { importsApi } from "@/lib/imports/api";
+import { meApi } from "@/lib/me/api";
 import { cn } from "@/lib/utils/cn";
 
 const POLL_INTERVAL = 1000;
@@ -164,6 +165,15 @@ function importJobTitle(job: ImportJob): string {
   return job.source_filename?.trim() || job.source_url?.trim() || "导入任务";
 }
 
+function isValidHTTPURL(raw: string): boolean {
+  try {
+    const parsed = new URL(raw);
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.hostname.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function ImportPage() {
   const { ready, session, openAuthDialog, request } = useAuth();
 
@@ -193,6 +203,11 @@ export function ImportPage() {
   const [urlInspectResult, setURLInspectResult] = useState<URLInspectResult | null>(null);
   const [selectedCandidateIndex, setSelectedCandidateIndex] = useState(0);
   const [candidateActionPending, setCandidateActionPending] = useState(false);
+  const [urlCookieProfiles, setURLCookieProfiles] = useState<
+    Array<{ id: string; label: string; domain_rule: string; format: "header" | "cookies_txt" }>
+  >([]);
+  const [loadingURLCookies, setLoadingURLCookies] = useState(false);
+  const [selectedUserCookieID, setSelectedUserCookieID] = useState("");
 
   const [activeJobsByType, setActiveJobsByType] = useState<Record<ImportSourceType, ActiveJobState>>({
     url: createEmptyActiveJobState(),
@@ -357,6 +372,57 @@ export function ImportPage() {
     }
     void loadCategories();
   }, [loadCategories, session, stopPolling]);
+
+  const loadCookiesForURL = useCallback(
+    async (rawURL: string) => {
+      const trimmedURL = rawURL.trim();
+      if (!session || !isValidHTTPURL(trimmedURL)) {
+        setURLCookieProfiles([]);
+        setSelectedUserCookieID("");
+        setLoadingURLCookies(false);
+        return;
+      }
+      setLoadingURLCookies(true);
+      try {
+        const result = await meApi.listMyYTDLPCookies(request, { for_url: trimmedURL });
+        const items: Array<{ id: string; label: string; domain_rule: string; format: "header" | "cookies_txt" }> = (
+          result.items ?? []
+        ).map((item) => ({
+          id: item.id,
+          label: item.label,
+          domain_rule: item.domain_rule,
+          format: item.format === "cookies_txt" ? "cookies_txt" : "header",
+        }));
+        setURLCookieProfiles(items);
+        setSelectedUserCookieID((prev) => (items.some((item) => item.id === prev) ? prev : ""));
+      } catch {
+        setURLCookieProfiles([]);
+        setSelectedUserCookieID("");
+      } finally {
+        setLoadingURLCookies(false);
+      }
+    },
+    [request, session],
+  );
+
+  useEffect(() => {
+    if (importMode !== "url") {
+      return;
+    }
+    const trimmedURL = urlInput.trim();
+    if (!trimmedURL || !isValidHTTPURL(trimmedURL)) {
+      setURLCookieProfiles([]);
+      setSelectedUserCookieID("");
+      setLoadingURLCookies(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void loadCookiesForURL(trimmedURL);
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [importMode, loadCookiesForURL, urlInput]);
 
   const currentJobsState = jobsByType[importMode];
   const currentActiveJobState = activeJobsByType[importMode];
@@ -547,6 +613,7 @@ export function ImportPage() {
         visibility,
         title: importTitle.trim() || undefined,
         description: importDescription.trim() || undefined,
+        user_cookie_id: selectedUserCookieID || undefined,
         inspect_token: options?.inspectToken,
         candidate_index: options?.candidateIndex,
       });
@@ -568,7 +635,19 @@ export function ImportPage() {
       }
       await loadJobsBySourceType("url");
     },
-    [categoryID, importTitle, importDescription, loadJobDetail, loadJobsBySourceType, openPolling, request, stopPolling, tagInput, visibility],
+    [
+      categoryID,
+      importTitle,
+      importDescription,
+      loadJobDetail,
+      loadJobsBySourceType,
+      openPolling,
+      request,
+      selectedUserCookieID,
+      stopPolling,
+      tagInput,
+      visibility,
+    ],
   );
 
   const onReinspectURLCandidates = useCallback(
@@ -580,7 +659,10 @@ export function ImportPage() {
       setCandidateActionPending(true);
       setURLError("");
       try {
-        const inspectRaw = await importsApi.inspectURL(request, { url: trimmedURL });
+        const inspectRaw = await importsApi.inspectURL(request, {
+          url: trimmedURL,
+          user_cookie_id: selectedUserCookieID || undefined,
+        });
         const inspectResult = mapURLInspectResult(inspectRaw);
         setImportMode("url");
         setURLInput(trimmedURL);
@@ -591,6 +673,7 @@ export function ImportPage() {
         }
         setURLInspectResult(inspectResult);
         setSelectedCandidateIndex(0);
+        setSelectedUserCookieID(inspectResult.user_cookie_id ?? selectedUserCookieID);
         setImportTitle((prev) => {
           if (prev.trim() !== "") {
             return prev;
@@ -604,7 +687,7 @@ export function ImportPage() {
         setCandidateActionPending(false);
       }
     },
-    [request],
+    [request, selectedUserCookieID],
   );
 
   const onStartURLImport = async () => {
@@ -642,7 +725,10 @@ export function ImportPage() {
         return;
       }
 
-      const inspectRaw = await importsApi.inspectURL(request, { url: trimmedURL });
+      const inspectRaw = await importsApi.inspectURL(request, {
+        url: trimmedURL,
+        user_cookie_id: selectedUserCookieID || undefined,
+      });
       const inspectResult = mapURLInspectResult(inspectRaw);
       if (inspectResult.mode === "direct_supported") {
         await startURLImportWithPayload(trimmedURL);
@@ -655,6 +741,7 @@ export function ImportPage() {
 
       setURLInspectResult(inspectResult);
       setSelectedCandidateIndex(0);
+      setSelectedUserCookieID(inspectResult.user_cookie_id ?? selectedUserCookieID);
       setImportTitle((prev) => {
         if (prev.trim() !== "") {
           return prev;
@@ -969,6 +1056,24 @@ export function ImportPage() {
                   placeholder="https://example.com/video/123"
                   className={fieldClass}
                 />
+              </label>
+
+              <label className="space-y-1">
+                <span className={fieldLabelClass}>Cookie 配置（可选）</span>
+                <select
+                  className={`${fieldClass} appearance-none`}
+                  value={selectedUserCookieID}
+                  onChange={(event) => setSelectedUserCookieID(event.target.value)}
+                  disabled={loadingURLCookies || !isValidHTTPURL(urlInput.trim())}
+                >
+                  <option value="">{loadingURLCookies ? "加载中..." : "不使用 Cookie 配置"}</option>
+                  {urlCookieProfiles.map((cookie) => (
+                    <option key={cookie.id} value={cookie.id}>
+                      {cookie.label} · {cookie.domain_rule} · {cookie.format === "cookies_txt" ? "cookies.txt" : "Header"}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-slate-500">仅展示匹配当前 URL 域名的配置，导入时按你手选项生效。</p>
               </label>
 
               <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">

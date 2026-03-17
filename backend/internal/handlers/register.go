@@ -31,6 +31,10 @@ func RegisterRoutes(api fiber.Router, a *app.App) {
 
 	api.Get("/users/me", middleware.RequireAuth(a), h.GetMe)
 	api.Patch("/users/me", middleware.RequireAuth(a), h.UpdateMe)
+	api.Get("/users/me/ytdlp-cookies", middleware.RequireAuth(a), h.ListMyYTDLPCookies)
+	api.Post("/users/me/ytdlp-cookies", middleware.RequireAuth(a), h.CreateMyYTDLPCookie)
+	api.Patch("/users/me/ytdlp-cookies/:cookieId", middleware.RequireAuth(a), h.UpdateMyYTDLPCookie)
+	api.Delete("/users/me/ytdlp-cookies/:cookieId", middleware.RequireAuth(a), h.DeleteMyYTDLPCookie)
 	api.Get("/users/me/videos", middleware.RequireAuth(a), h.ListMyVideos)
 	api.Get("/users/me/favorites", middleware.RequireAuth(a), h.ListMyFavorites)
 	api.Get("/users/me/following", middleware.RequireAuth(a), h.ListMyFollowing)
