@@ -94,10 +94,12 @@ docker compose logs -f redis
 docker compose exec backend ffmpeg -version
 docker compose exec backend ffprobe -version
 docker compose exec backend yt-dlp --version
-docker compose exec backend python3 -c "import curl_cffi; print('curl-cffi ok')"
+docker compose exec backend bash -lc "pipx runpip yt-dlp show curl-cffi >/dev/null && echo curl-cffi-ok"
 docker compose exec backend bun --version
 docker compose exec backend bash -lc "cd /app/scripts && bunx playwright --version"
 ```
+
+说明：`curl-cffi` 是注入到 `pipx` 的 `yt-dlp` 虚拟环境，不在系统 `python3` 全局包路径中。
 
 ## 8. 宿主机 Nginx 反向代理
 

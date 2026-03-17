@@ -30,7 +30,7 @@ RUN apt-get update \
 RUN pipx install yt-dlp \
     && pipx inject yt-dlp curl-cffi \
     && yt-dlp --version \
-    && python3 -c "import curl_cffi"
+    && pipx runpip yt-dlp show curl-cffi >/dev/null
 
 # Install Bun runtime for Next.js and page resolver script.
 RUN curl -fsSL https://bun.sh/install | bash \
