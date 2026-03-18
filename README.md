@@ -1,12 +1,31 @@
 # MoeVideo
 
-在线视频站点（VOD）基础实现。
+开源弹幕视频播放。
+
+特征：
+
+- 视频上传
+- 视频导入（yt-dlp + curl-cffi）
+- 自定义yt-dlp cookies（加密存储支持配置多个站点）
+- 回落支持（yt-dlp不支持的站点自动回落到rebrowser-playwright + chromium）
+- 强制回落 (通过环境变量配置指定域名直接走rebrowser-playwright + chromium)
+- HLS多码率转码（360p 480p 720p 1080p）
+- 用户中心（可设置头像，签名，个人信息隐私策略等）
+- 多用户支持（可选开启或关闭注册）
+- 互动系统（点赞 评论 收藏 粉丝关注）
+- 弹幕支持 （WebSocket）
+- artplayer 雪碧图+vtt
+- 跨设备同步播放记录，记忆上次播放位置。
+- 完善的管理面板（站点设置 用户管理 视频管理 转码任务管理 分类设置 yt-dlp设置 等）
+- 更多功能请部署后体验...
+
+技术栈：
 
 - Frontend: Next.js App Router + Tailwind CSS（`frontend/`）
 - Backend: Go + Fiber + SQLite WAL（`backend/`）
-- Storage: local（默认）/ s3（环境变量切换）
+- Storage: local（默认）/ s3
 - Tooling: bun + mise
-- Transcode: ffmpeg/ffprobe（后端内置 HLS 多码率 Worker）
+- Transcode: ffmpeg/ffprobe
 
 ## Quick Start
 
@@ -36,7 +55,7 @@ bunx playwright install chromium
 
 说明：项目通过 npm alias 使用 `rebrowser-playwright@1.52.0`（包名保持 `playwright`）。
 
-初始化管理员（一次性）：
+创建管理员账号：
 
 ```bash
 cd backend
@@ -63,15 +82,9 @@ mise run backend-test
 ## API & Schema
 
 - API 文档：`backend/docs/api.md`
-- 数据模型文档：`backend/docs/schema.md`
+- 数据库文档：`backend/docs/schema.md`
 - yt-dlp 参数配置文档：`backend/docs/ytdlp-settings.md`
 - yt-dlp 用户 Cookies 使用文档：`backend/docs/ytdlp-user-cookies.md`
-- Debian 13 生产部署文档：`docs/deploy-production-debian13.md`
-- Docker Compose 生产部署文档（含宿主机 Nginx、同域/分域配置，支持本地 build 与 GHCR 拉取 `amd64/arm64`，支持前端 API 运行时变量注入）：`docs/deploy-production-docker-compose.md`
-- SQL 迁移：`backend/internal/db/migrations/0001_init.sql`
+- Debian 13 部署文档：`docs/deploy-production-debian13.md`
+- Docker Compose 部署文档（含宿主机 Nginx、同域/分域配置，支持本地 build 与 GHCR 拉取 `amd64/arm64`，支持前端 API 运行时变量注入）：`docs/deploy-production-docker-compose.md`
 
-生产部署建议：可使用 `mise` 安装并锁定工具链版本（Go/Bun），服务运行请使用 `systemd` 原生命令（不要用 `mise run`）。
-
-## Behavior Notes
-
-- 上传发布、URL 导入、BT 导入现在都要求必须选择分类（`category_id` 必填）。
