@@ -1,6 +1,11 @@
 # MoeVideo Docker Compose 生产部署指南
 
-本文档提供一套可直接落地的 Docker Compose 生产部署方案（本地构建，不发布 GHCR），并包含宿主机 Nginx 反向代理、同域/分域配置模板。
+本文档提供一套可直接落地的 Docker Compose 生产部署方案，支持两种模式：
+
+1. 本地构建镜像（`docker compose up -d --build`）
+2. 直接拉取 GHCR 预构建镜像（多架构 `amd64/arm64`）
+
+并包含宿主机 Nginx 反向代理、同域/分域配置模板。
 
 ## 1. 部署拓扑
 
@@ -49,17 +54,19 @@ mkdir -p data/db data/storage data/temp data/redis
 根目录已提供全注释模板 `.env.docker`。上线前至少确认：
 
 1. `JWT_SECRET`：替换为强随机密钥
-2. `NEXT_PUBLIC_API_BASE_URL`：前端 API 地址（构建时变量）
-3. `PUBLIC_BASE_URL`：后端对外基准地址
-4. `CORS_ALLOWED_ORIGINS`：允许的前端来源
-5. `AUTH_COOKIE_SECURE`：HTTPS 场景必须设为 `true`
-6. `PUID/PGID`：容器进程写入 `./data` 的 UID/GID 映射
+2. `NEXT_PUBLIC_API_BASE_URL`：前端浏览器侧 API 地址（运行时注入）
+3. `API_BASE_URL`：前端 SSR 请求 API 地址（建议与上一项一致）
+4. `PUBLIC_BASE_URL`：后端对外基准地址
+5. `CORS_ALLOWED_ORIGINS`：允许的前端来源
+6. `AUTH_COOKIE_SECURE`：HTTPS 场景必须设为 `true`
+7. `PUID/PGID`：容器进程写入 `./data` 的 UID/GID 映射
 
 ## 5. 同域/分域环境变量对照（.env.docker）
 
 | 变量 | 同域（`example.com`） | 分域（`app.example.com` + `api.example.com`） | 说明 |
 |---|---|---|---|
-| `NEXT_PUBLIC_API_BASE_URL` | `https://example.com/api/v1` | `https://api.example.com/api/v1` | 前端构建时写入 |
+| `NEXT_PUBLIC_API_BASE_URL` | `https://example.com/api/v1` | `https://api.example.com/api/v1` | 前端浏览器侧运行时优先读取 |
+| `API_BASE_URL` | `https://example.com/api/v1` | `https://api.example.com/api/v1` | 前端 SSR 请求 API 地址 |
 | `PUBLIC_BASE_URL` | `https://example.com` | `https://api.example.com` | 后端生成资源/API 对外 URL 基准 |
 | `CORS_ALLOWED_ORIGINS` | `https://example.com` | `https://app.example.com` | 允许前端来源 |
 | `AUTH_COOKIE_SECURE` | `true` | `true` | HTTPS 必须为 true |
@@ -77,6 +84,35 @@ mkdir -p data/db data/storage data/temp data/redis
 docker compose --env-file .env.docker up -d --build
 docker compose ps
 ```
+
+## 6.1 使用 GHCR 预构建镜像启动（推荐线上）
+
+先设置镜像标签（默认 `latest`）：
+
+```bash
+echo "IMAGE_TAG=latest" >> .env.docker
+```
+
+然后使用覆盖文件启动：
+
+```bash
+docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.ghcr.yml pull
+docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.ghcr.yml up -d --no-build
+docker compose ps
+```
+
+若要切换版本，例如 `v1.2.3`：
+
+```bash
+sed -i 's/^IMAGE_TAG=.*/IMAGE_TAG=v1.2.3/' .env.docker
+docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.ghcr.yml pull
+docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.ghcr.yml up -d --no-build
+```
+
+GHCR 标签约定（由 GitHub Actions 自动发布）：
+
+1. `main` 分支推送：`latest` + `sha-<shortsha>`
+2. `v*` 标签推送：`vX.Y.Z`（并附 `vX.Y`）
 
 日志查看：
 
@@ -256,24 +292,28 @@ sudo certbot --nginx -d app.example.com -d api.example.com
 1. `AUTH_COOKIE_SECURE=true`
 2. `PUBLIC_BASE_URL` 改为 `https://...`
 3. `NEXT_PUBLIC_API_BASE_URL` 改为 `https://.../api/v1`
+4. `API_BASE_URL` 改为 `https://.../api/v1`
 
-## 10. 前端构建时变量注意事项（重要）
+## 10. 前端 API 运行时变量说明（重要）
 
-`NEXT_PUBLIC_API_BASE_URL` 是前端构建时变量。  
-修改它后，仅 `restart frontend` 不会生效，必须重新构建镜像。
+前端容器启动时会自动生成 `/runtime-env.js`，浏览器侧优先读取运行时
+`NEXT_PUBLIC_API_BASE_URL`。  
+因此修改 API 地址后，不需要重建 frontend 镜像，只需重启 frontend 容器。
 
-部署模式切换最小步骤（同域 <-> 分域）：
+推荐做法（同域 <-> 分域切换）：
 
 ```bash
-# 1) 修改 .env.docker 中 URL/CORS/Cookie 相关变量
+# 1) 修改 .env.docker 中 NEXT_PUBLIC_API_BASE_URL / API_BASE_URL / CORS 等变量
 vim .env.docker
 
-# 2) 重建并重启 frontend（推荐同时带 backend 一起确保环境一致）
-docker compose --env-file .env.docker up -d --build frontend backend
+# 2) 仅重启 frontend（backend 是否重启按你的变更决定）
+docker compose --env-file .env.docker restart frontend
 
-# 3) 验证页面请求目标
-docker compose logs --since=3m frontend
+# 3) 验证 frontend 运行时注入结果
+docker compose --env-file .env.docker exec frontend cat /app/frontend/public/runtime-env.js
 ```
+
+说明：Dockerfile 的 `NEXT_PUBLIC_API_BASE_URL` build-arg 仍保留，作为运行时变量缺失时的兜底值。
 
 ## 11. 优雅创建管理员账号（手动一次性）
 
@@ -323,7 +363,11 @@ docker compose restart backend frontend redis
 ```bash
 git fetch --all --prune
 git pull --ff-only origin main
+# 本地构建模式:
 docker compose --env-file .env.docker up -d --build
+# GHCR 模式:
+# docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.ghcr.yml pull
+# docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.ghcr.yml up -d --no-build
 docker compose ps
 docker compose logs --since=5m backend
 ```
@@ -334,7 +378,8 @@ docker compose logs --since=5m backend
 
 ```bash
 grep NEXT_PUBLIC_API_BASE_URL .env.docker
-docker compose --env-file .env.docker up -d --build frontend
+grep API_BASE_URL .env.docker
+docker compose --env-file .env.docker restart frontend
 ```
 
 ### 14.2 resolver 报 `bun: executable file not found`
@@ -373,6 +418,6 @@ docker compose --env-file .env.docker up -d
 
 ## 16. 本期限制
 
-1. 本期不做 GHCR 镜像发布（本地 build）
+1. GHCR 镜像仅做基础发布（未启用签名/provenance/SBOM）
 2. 本期不在 compose 内置 Nginx 服务
 3. ARM 平台 Playwright Chromium 需自行兼容验证

@@ -60,7 +60,7 @@ services:
       dockerfile: Dockerfile
       target: frontend-runtime
       args:
-        # Build-time var: changing this value requires --build.
+        # Build-time fallback only. Runtime value comes from env -> /runtime-env.js.
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
     image: moevideo/frontend:local
     container_name: moevideo-frontend

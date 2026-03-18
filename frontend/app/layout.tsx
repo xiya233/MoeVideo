@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import type { ReactNode } from "react";
 
 import { AuthProvider } from "@/components/auth/AuthProvider";
@@ -21,6 +22,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <link href="https://unpkg.com/artplayer/dist/artplayer.css" rel="stylesheet" />
       </head>
       <body>
+        <Script src="/runtime-env.js" strategy="beforeInteractive" />
         <QueryProvider>
           <AuthProvider>{children}</AuthProvider>
         </QueryProvider>

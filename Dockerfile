@@ -143,7 +143,9 @@ COPY --from=frontend-builder /src/frontend/.next ./.next
 COPY --from=frontend-builder /src/frontend/node_modules ./node_modules
 
 ENV NODE_ENV=production \
-    PORT=3000
+    PORT=3000 \
+    API_BASE_URL=http://localhost:8080/api/v1 \
+    NEXT_PUBLIC_API_BASE_URL=http://localhost:8080/api/v1
 
 EXPOSE 3000
 

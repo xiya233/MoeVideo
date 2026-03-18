@@ -30,4 +30,15 @@ for path in /data /data/db /data/storage /data/temp /data/redis; do
 done
 chown -R "${PUID}:${PGID}" /data >/dev/null 2>&1 || true
 
+if [ -d /app/frontend/public ]; then
+  runtime_api_base="${NEXT_PUBLIC_API_BASE_URL:-${API_BASE_URL:-http://localhost:8080/api/v1}}"
+  export RUNTIME_API_BASE="${runtime_api_base}"
+  runtime_api_base_json="$(python3 -c 'import json, os; print(json.dumps(os.environ["RUNTIME_API_BASE"]))')"
+  cat > /app/frontend/public/runtime-env.js <<EOF
+window.__MOEVIDEO_RUNTIME__ = Object.assign(window.__MOEVIDEO_RUNTIME__ || {}, {
+  NEXT_PUBLIC_API_BASE_URL: ${runtime_api_base_json}
+});
+EOF
+fi
+
 exec gosu "${PUID}:${PGID}" "$@"

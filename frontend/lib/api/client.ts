@@ -1,6 +1,5 @@
 import { ApiError, type ApiEnvelope, type RequestContext, type RequestOptions } from "./types";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080/api/v1";
+import { getApiBase } from "./base";
 
 function asJsonBody(body: unknown): string {
   return JSON.stringify(body ?? {});
@@ -32,7 +31,7 @@ export function createApiClient(ctx: RequestContext) {
 
     refreshPromise = (async () => {
       try {
-        const res = await fetch(`${API_BASE}/auth/refresh`, {
+        const res = await fetch(`${getApiBase()}/auth/refresh`, {
           method: "POST",
           credentials: "include",
         });
@@ -57,7 +56,8 @@ export function createApiClient(ctx: RequestContext) {
     };
 
     try {
-      const res = await fetch(`${API_BASE}${path}`, {
+      const apiBase = getApiBase();
+      const res = await fetch(`${apiBase}${path}`, {
         method,
         headers,
         body: options.body !== undefined ? asJsonBody(options.body) : undefined,

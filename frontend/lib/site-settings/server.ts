@@ -1,7 +1,6 @@
 import type { ApiEnvelope } from "@/lib/api/types";
+import { getApiBase } from "@/lib/api/base";
 import type { FooterLinks, PublicSiteSettings } from "@/lib/site-settings/types";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080/api/v1";
 
 const DEFAULT_FOOTER_LINKS: FooterLinks = {
   about: [
@@ -49,7 +48,7 @@ function normalizePublicSiteSettings(raw?: Partial<PublicSiteSettings> | null): 
 
 export async function getPublicSiteSettingsServer(): Promise<PublicSiteSettings> {
   try {
-    const res = await fetch(`${API_BASE}/site-settings/public`, {
+    const res = await fetch(`${getApiBase()}/site-settings/public`, {
       method: "GET",
       cache: "no-store",
     });
@@ -62,4 +61,3 @@ export async function getPublicSiteSettingsServer(): Promise<PublicSiteSettings>
     return FALLBACK_PUBLIC_SITE_SETTINGS;
   }
 }
-

@@ -1,0 +1,14 @@
+# GHCR image override for production pull deployment.
+# Usage:
+# docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.ghcr.yml up -d --no-build
+
+services:
+  backend:
+    build: null
+    image: ghcr.io/xiya233/moevideo-backend:${IMAGE_TAG:-latest}
+    pull_policy: always
+
+  frontend:
+    build: null
+    image: ghcr.io/xiya233/moevideo-frontend:${IMAGE_TAG:-latest}
+    pull_policy: always

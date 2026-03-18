@@ -9,6 +9,7 @@ import { AuthorInline } from "@/components/common/AuthorInline";
 import { EmptyState } from "@/components/common/EmptyState";
 import { LoadingSkeleton } from "@/components/common/LoadingSkeleton";
 import { ArtHlsPlayer } from "@/components/video/ArtHlsPlayer";
+import { getApiBase } from "@/lib/api/base";
 import type {
   CommentItem,
   CommentsData,
@@ -37,8 +38,6 @@ type DanmakuWSPayload = {
   data?: unknown;
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080/api/v1";
-
 function commentAuthorName(comment: CommentItem): string {
   return comment.user.username || "匿名用户";
 }
@@ -56,8 +55,8 @@ function formatDurationLabel(duration: number): string {
 
 const PROGRESS_KEY_PREFIX = "moevideo.progress.v1:";
 
-function resolveDanmakuWSURL(videoId: string): string {
-  const base = API_BASE.trim();
+function resolveDanmakuWSURL(videoId: string, apiBase: string): string {
+  const base = apiBase.trim();
   let wsBase = base;
   if (base.startsWith("http://")) {
     wsBase = `ws://${base.slice("http://".length)}`;
@@ -165,6 +164,7 @@ function applyCommentLikeState(items: CommentItem[], commentId: string, nextLike
 
 export function VideoPage({ videoId }: VideoPageProps) {
   const { ready, request, user, session, openAuthDialog } = useAuth();
+  const apiBase = useMemo(() => getApiBase(), []);
 
   const [detail, setDetail] = useState<VideoDetail | null>(null);
   const [recommendations, setRecommendations] = useState<VideoCard[]>([]);
@@ -501,7 +501,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
       if (disposed) {
         return;
       }
-      const socket = new WebSocket(resolveDanmakuWSURL(videoId));
+      const socket = new WebSocket(resolveDanmakuWSURL(videoId, apiBase));
       wsRef.current = socket;
 
       socket.onopen = () => {
@@ -553,7 +553,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
         wsRef.current = null;
       }
     };
-  }, [detail?.status, ingestDanmaku, videoId]);
+  }, [apiBase, detail?.status, ingestDanmaku, videoId]);
 
   useEffect(() => {
     if (!detail || detail.status !== "published" || hasTrackedView.current) {
