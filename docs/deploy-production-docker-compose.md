@@ -278,7 +278,14 @@ docker compose --env-file .env.docker run --rm backend \
 该命令是幂等的：同邮箱重复执行会更新管理员信息。
 
 
-## 11. 日常运维与升级
+## 11. yt-dlp推荐配置：
+
+```
+--concurrent-fragments 8 --fragment-retries 10 --retries 10 --socket-timeout 30 --force-ipv4 --impersonate Chrome-136
+```
+
+
+## 12. 日常运维与升级
 
 重启：
 
@@ -304,9 +311,9 @@ docker compose ps
 docker compose logs --since=5m backend
 ```
 
-## 12. 常见问题排查
+## 13. 常见问题排查
 
-### 12.1 前端 API 地址不对
+### 13.1 前端 API 地址不对
 
 ```bash
 grep NEXT_PUBLIC_API_BASE_URL .env.docker
@@ -315,10 +322,10 @@ docker compose --env-file .env.docker restart frontend
 ```
 
 
-## 13. 安全建议
+## 14. 安全建议
 
-1. 生产必须替换 `JWT_SECRET`
+1. 必须替换 `JWT_SECRET`
 2. HTTPS 场景必须 `AUTH_COOKIE_SECURE=true`
-3. `CORS_ALLOWED_ORIGINS` 精确到实际前端域名
+3. `CORS_ALLOWED_ORIGINS` 精确到实际的前端域名
 4. 定期备份 `./data/db/moevideo.db` 与 `./data/storage`
 

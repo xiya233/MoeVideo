@@ -1,4 +1,8 @@
-# MoeVideo Debian 13 生产部署手册
+# MoeVideo Debian 13 部署
+
+## 该文档目前还没有完成编写，请勿使用！！！
+## 该文档目前还没有完成编写，请勿使用！！！
+## 该文档目前还没有完成编写，请勿使用！！！
 
 本文档面向 Debian 13（Trixie）服务器，目标是从零部署 MoeVideo 到生产环境。  
 默认推荐同域部署：`https://example.com`（前后端同域，Nginx 统一反代）。
@@ -55,63 +59,8 @@ ufw allow 51413/tcp
 ufw allow 51413/udp
 ```
 
-## 3. 安装工具链（`mise` 主路径）
 
-本手册默认用 `mise` 安装 Go/Bun。  
-`mise` 只负责安装工具链，运行服务仍走 systemd 原生命令（不使用 `mise run`）。
-
-## 3.1 安装 `mise`
-
-```bash
-su - moevideo
-curl -fsSL https://mise.run | sh
-echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-验证：
-
-```bash
-mise --version
-```
-
-## 3.2 锁定 `mise.toml` 版本（生产禁止 `latest`）
-
-> 生产环境不要使用 `latest`，必须固定版本，避免后续自动漂移。
-
-在仓库根目录编辑 `mise.toml`，将工具版本锁定为明确版本号，例如：
-
-```toml
-[tools]
-bun = "1.3.20"
-go = "1.26.0"
-```
-
-## 3.3 用 `mise` 安装 Go/Bun
-
-```bash
-cd /opt/moevideo
-mise install
-mise ls
-```
-
-为了让 systemd 使用“原生固定路径命令”，创建稳定软链接：
-
-```bash
-mkdir -p /opt/moevideo/bin
-ln -sfn ~/.local/share/mise/installs/bun/1.3.20/bin/bun /opt/moevideo/bin/bun
-ln -sfn ~/.local/share/mise/installs/go/1.26.0/bin/go /opt/moevideo/bin/go
-```
-
-校验：
-
-```bash
-/opt/moevideo/bin/go version
-/opt/moevideo/bin/bun --version
-```
-
-## 3.4 用 pipx 安装 yt-dlp + curl-cffi（必做）
+### 3 用 pipx 安装 yt-dlp + curl-cffi（必做）
 
 ```bash
 su - moevideo
@@ -119,8 +68,6 @@ python3 -m pipx ensurepath
 export PATH="$HOME/.local/bin:$PATH"
 pipx install yt-dlp
 pipx inject yt-dlp curl-cffi
-yt-dlp --version
-python3 -c "import curl_cffi; print(curl_cffi.__version__)"
 ```
 
 > 后续 `YTDLP_BIN` 建议写绝对路径：`/home/moevideo/.local/bin/yt-dlp`
@@ -129,7 +76,7 @@ python3 -c "import curl_cffi; print(curl_cffi.__version__)"
 
 ```bash
 cd /opt/moevideo
-git clone <你的仓库地址> .
+git clone https://github.com/xiya233/MoeVideo.git .
 cd backend/scripts
 bun install
 bunx playwright install chromium
@@ -137,10 +84,6 @@ bunx playwright install chromium
 
 > 必须在运行服务的同一用户（`moevideo`）下执行，确保浏览器缓存权限正确。
 
-## 3.6 手动安装 Go/Bun 回退路径（可选）
-
-如果你的环境无法使用 `mise`，可用手动安装方式。  
-该回退仅用于“安装工具”，服务运行方式仍按 systemd 原生命令。
 
 ### Bun 手动安装
 
@@ -174,8 +117,6 @@ ln -sfn /home/moevideo/.bun/bin/bun /opt/moevideo/bin/bun
 ```
 
 ## 4. 拉代码与构建
-
-下面继续使用 `moevideo` 用户：
 
 ```bash
 su - moevideo
@@ -527,7 +468,7 @@ server {
 启用站点：
 
 ```bash
-ln -sf /etc/nginx/sites-available/moevideo.conf /etc/nginx/sites-enabled/moevideo.conf
+ln -s /etc/nginx/sites-available/moevideo.conf /etc/nginx/sites-enabled/moevideo.conf
 nginx -t
 systemctl reload nginx
 ```
@@ -563,7 +504,7 @@ curl -I https://example.com/api/v1/home
 4. 跑一次 URL 导入与 BT 导入。  
 5. 验证弹幕 WebSocket 在 Nginx 下正常。  
 
-## 9.3 管理员初始化（如未创建）
+## 9.3 创建管理员账号
 
 ```bash
 su - moevideo
@@ -574,20 +515,6 @@ cd /opt/moevideo/backend
   --password 'ReplaceWithStrongPassword'
 ```
 
-## 9.4 工具链版本锁定校验
-
-```bash
-su - moevideo
-cd /opt/moevideo
-mise ls
-/opt/moevideo/bin/go version
-/opt/moevideo/bin/bun --version
-```
-
-验收标准：
-
-- `mise ls` 显示固定版本（非 `latest`）。
-- `go` 和 `bun` 与你在 `mise.toml` 锁定的版本一致。
 
 ## 10. 运维常用命令与故障排查
 
@@ -620,27 +547,12 @@ tail -f /var/log/nginx/error.log
 3. URL fallback 失败（Playwright）  
    - 确认在 `moevideo` 用户下执行过 `cd backend/scripts && bun install && bunx playwright install chromium`。
 
-4. 导入或转码时报 `no space left on device`  
-   - 优先检查 `TASK_TEMP_DIR` 所在挂载点剩余空间，而不是只看 `/` 根分区。
-
-5. 登录态异常（Cookie 不生效）  
+4. 登录态异常（Cookie 不生效）  
    - 检查 `AUTH_COOKIE_SECURE`、`AUTH_COOKIE_SAMESITE`、`CORS_ALLOWED_ORIGINS`、Nginx `X-Forwarded-Proto`。
 
-6. 429 频繁  
+5. 429 频繁  
    - 检查 Redis 是否可用；查看 backend 日志中的 `rate_limit` 规则 ID，再按需调节限流参数。
 
-## 10.3 工具链升级流程（Go/Bun）
-
-建议流程：
-
-1. 修改 `mise.toml` 中 Go/Bun 版本号（固定版本，不写 `latest`）。
-2. 在预发布环境执行 `mise install`，完成构建与回归测试。
-3. 生产执行：
-   - `mise install`
-   - 更新 `/opt/moevideo/bin/go`、`/opt/moevideo/bin/bun` 软链接
-   - 重新构建 backend/frontend
-   - `systemctl restart moevideo-backend moevideo-frontend`
-4. 观察日志与核心链路（登录、上传、播放、导入）后再全量推广。
 
 ## 10.4 生产更新流程（代码发布/回滚）
 
@@ -654,13 +566,6 @@ tail -f /var/log/nginx/error.log
 su - moevideo
 ```
 
-定义目录变量（按你的实际路径修改）：
-
-```bash
-APP_DIR=/opt/moevideo/MoeVideo
-BACKEND_DIR=$APP_DIR/backend
-FRONTEND_DIR=$APP_DIR/frontend
-```
 
 1) 检查当前状态：
 
@@ -671,17 +576,8 @@ git rev-parse --short HEAD
 systemctl status moevideo-backend moevideo-frontend --no-pager
 ```
 
-2) 备份（上线前必须）：
 
-```bash
-cd "$APP_DIR"
-TS=$(date +%F-%H%M%S)
-cp "$BACKEND_DIR/data/db/moevideo.db" "$BACKEND_DIR/data/db/moevideo.db.bak-$TS"
-cp "$BACKEND_DIR/.env" "$BACKEND_DIR/.env.bak-$TS"
-cp "$FRONTEND_DIR/.env.production.local" "$FRONTEND_DIR/.env.production.local.bak-$TS"
-```
-
-3) 拉取代码：
+2) 拉取代码：
 
 ```bash
 cd "$APP_DIR"
@@ -691,7 +587,7 @@ git pull --ff-only origin main
 git rev-parse --short HEAD
 ```
 
-4) 对齐新增环境变量：
+3) 对齐新增环境变量：
 
 ```bash
 cd "$APP_DIR"
@@ -702,9 +598,8 @@ comm -23 \
 
 如果有输出，表示这些 key 在 `backend/.env` 里缺失，需要先补齐再继续发布。
 
-如果本次更新包含前端 `NEXT_PUBLIC_*` 变量变更，先更新 `frontend/.env.production.local`，再执行前端 build（`NEXT_PUBLIC_*` 是 build-time 注入）。
 
-5) 重建 backend：
+4) 重建 backend：
 
 ```bash
 cd "$BACKEND_DIR"
@@ -748,15 +643,6 @@ systemctl restart moevideo-frontend
 nginx -t && systemctl reload nginx
 ```
 
-9) 发布后验收：
-
-```bash
-curl -i http://127.0.0.1:8080/healthz
-curl -I https://your-domain
-systemctl status moevideo-backend moevideo-frontend --no-pager
-journalctl -u moevideo-backend -f -o cat
-journalctl -u moevideo-frontend -f -o cat
-```
 
 ### 10.4.2 快速回滚步骤（失败立即恢复）
 

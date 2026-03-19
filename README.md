@@ -1,23 +1,29 @@
 # MoeVideo
 
-开源弹幕视频播放。
+开源弹幕视频播放站点（支持BitTorrent / yt-dlp + curl-cffi / rebrowser-playwright + chromium导入视频）
 
-特征：
+功能：
 
 - 视频上传
-- 视频导入（yt-dlp + curl-cffi）
-- 自定义yt-dlp cookies（加密存储支持配置多个站点）
-- 回落支持（yt-dlp不支持的站点自动回落到rebrowser-playwright + chromium）
-- 强制回落 (通过环境变量配置指定域名直接走rebrowser-playwright + chromium)
-- HLS多码率转码（360p 480p 720p 1080p）
-- 用户中心（可设置头像，签名，个人信息隐私策略等）
-- 多用户支持（可选开启或关闭注册）
-- 互动系统（点赞 评论 收藏 粉丝关注）
-- 弹幕支持 （WebSocket）
-- artplayer 雪碧图+vtt
+- BT导入视频：支持自动解析种子文件内的媒体文件。
+- URL导入视频：yt-dlp + curl-cffi
+- 自定义yt-dlp cookies（cookies采用加密存储并支持配置多个站点）
+- 回落支持：yt-dlp不支持的站点自动回落到rebrowser-playwright + chromium
+- 强制回落：通过环境变量配置指定域名直接走rebrowser-playwright + chromium
+- HLS多码率转码：360p 480p 720p 1080p
+- 用户中心：可设置头像，签名，个人信息隐私策略等
+- 多用户支持：可选开启或关闭注册
+- 互动系统：点赞 评论 收藏 粉丝关注
+- 视频弹幕支持 （WebSocket）
+- ArtPlayer 雪碧图 + VTT
 - 跨设备同步播放记录，记忆上次播放位置。
-- 完善的管理面板（站点设置 用户管理 视频管理 转码任务管理 分类设置 yt-dlp设置 等）
+- 完善的管理面板：站点设置 用户管理 视频管理 转码任务管理 分类设置 yt-dlp设置 等
+- 本地存储 / S3存储支持
 - 更多功能请部署后体验...
+
+回落探测媒体下载链接的实现逻辑：
+
+yt-dlp支持的站点直接走yt-dlp下载，yt-dlp如提示不支持，则走rebrowser-playwright + chromium探测页面的媒体链接，供用户手动选择下载。用户也可以设置指定域名直接走rebrowser-playwright + chromium。
 
 技术栈：
 
@@ -26,6 +32,10 @@
 - Storage: local（默认）/ s3
 - Tooling: bun + mise
 - Transcode: ffmpeg/ffprobe
+
+项目截图：
+
+![首页](docs/assets/image.png) ![播放页](docs/assets/image2.png) ![个人中心](docs/assets/image3.png) ![URL导入](docs/assets/image4.png) ![BT导入](docs/assets/image5.png) ![上传页](docs/assets/image6.png)
 
 ## Quick Start
 
