@@ -21,9 +21,6 @@
 - 本地存储 / S3存储支持
 - 更多功能请部署后体验...
 
-回落探测媒体下载链接的实现逻辑：
-
-yt-dlp支持的站点直接走yt-dlp下载，yt-dlp如提示不支持，则走rebrowser-playwright + chromium探测页面的媒体链接，供用户手动选择下载。用户也可以设置指定域名直接走rebrowser-playwright + chromium。
 
 技术栈：
 
@@ -35,7 +32,17 @@ yt-dlp支持的站点直接走yt-dlp下载，yt-dlp如提示不支持，则走re
 
 项目截图：
 
-![首页](docs/assets/image.png) ![播放页](docs/assets/image2.png) ![个人中心](docs/assets/image3.png) ![URL导入](docs/assets/image4.png) ![BT导入](docs/assets/image5.png) ![上传页](docs/assets/image6.png)
+![首页](docs/assets/image.png) 
+
+![播放页](docs/assets/image2.png) 
+
+![个人中心](docs/assets/image3.png) 
+
+![URL导入](docs/assets/image4.png) 
+
+![BT导入](docs/assets/image5.png) 
+
+![上传页](docs/assets/image6.png)
 
 ## Quick Start
 

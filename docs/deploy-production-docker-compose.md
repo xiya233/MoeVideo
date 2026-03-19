@@ -321,6 +321,9 @@ grep API_BASE_URL .env.docker
 docker compose --env-file .env.docker restart frontend
 ```
 
+### 13.2 回落探测媒体下载链接的实现逻辑：
+
+yt-dlp支持的站点直接走yt-dlp下载，yt-dlp如提示不支持，则走rebrowser-playwright + chromium探测页面的媒体链接，供用户手动选择下载。用户也可以设置指定域名直接走rebrowser-playwright + chromium。请注意目前只对yt-dlp不支持这一退出行为执行回落操作，其他报错退出不做回落操作。
 
 ## 14. 安全建议
 
