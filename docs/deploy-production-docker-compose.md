@@ -9,11 +9,12 @@ Docker Compose 部署方案，含宿主机 Nginx 反向代理、同域/分域配
 
 ## 1. 部署拓扑
 
-默认启动 3 个容器服务：
+默认启动 4 个容器服务：
 
 1. `frontend`（Next.js，容器端口 `3000`）
 2. `backend`（Go API + 导入/转码 Worker，容器端口 `8080`）
 3. `redis`（限流与防刷）
+4. `srs`（直播推流/播放/录制，RTMP `1935`，HTTP-HLS `8081`）
 
 ## 2. 前置条件
 
@@ -37,7 +38,7 @@ sudo systemctl enable --now nginx
 ```bash
 git clone https://github.com/xiya233/MoeVideo.git
 cd MoeVideo
-mkdir -p data/db data/storage data/temp data/redis
+mkdir -p data/db data/storage data/temp data/redis data/srs/records
 ```
 
 数据目录说明：
@@ -46,18 +47,21 @@ mkdir -p data/db data/storage data/temp data/redis
 - `./data/storage`：媒体文件（封面/HLS/源文件）
 - `./data/temp`：导入/上传探测/转码临时目录
 - `./data/redis`：Redis 持久化数据
+- `./data/srs/records`：SRS 直播录制/HLS 相关数据
 
 ## 4. `.env.docker` 基础配置
 
 根目录已提供全注释模板 `.env.docker`。上线前至少确认：
 
 1. `JWT_SECRET`：替换为强随机密钥
-2. `NEXT_PUBLIC_API_BASE_URL`：前端浏览器侧 API 地址（运行时注入）
-3. `API_BASE_URL`：前端 SSR 请求 API 地址（建议与上一项一致）
-4. `PUBLIC_BASE_URL`：后端对外基准地址
-5. `CORS_ALLOWED_ORIGINS`：允许的前端来源
-6. `AUTH_COOKIE_SECURE`：HTTPS 场景必须设为 `true`
-7. `PUID/PGID`：容器进程写入 `./data` 的 UID/GID 映射
+2. `LIVE_CALLBACK_SECRET`：建议设置强随机密钥（用于 SRS 回调签名）
+3. `SRS_CALLBACK_URL`：默认走容器内回调地址，建议带上 `?token=...`
+4. `NEXT_PUBLIC_API_BASE_URL`：前端浏览器侧 API 地址（运行时注入）
+5. `API_BASE_URL`：前端 SSR 请求 API 地址（建议与上一项一致）
+6. `PUBLIC_BASE_URL`：后端对外基准地址
+7. `CORS_ALLOWED_ORIGINS`：允许的前端来源
+8. `AUTH_COOKIE_SECURE`：HTTPS 场景必须设为 `true`
+9. `PUID/PGID`：容器进程写入 `./data` 的 UID/GID 映射
 
 ## 5. 同域/分域环境变量对照（.env.docker）
 
@@ -105,6 +109,7 @@ docker compose ps
 docker compose logs -f backend
 docker compose logs -f frontend
 docker compose logs -f redis
+docker compose logs -f srs
 ```
 
 
@@ -152,6 +157,18 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # 直播 HLS 播放
+    location /live/ {
+        proxy_pass http://127.0.0.1:8081/live/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        add_header Cache-Control no-cache;
     }
 
     location / {
@@ -218,6 +235,17 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
+    }
+
+    location /live/ {
+        proxy_pass http://127.0.0.1:8081/live/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        add_header Cache-Control no-cache;
     }
 
     location /media/ {
@@ -331,4 +359,3 @@ yt-dlp支持的站点直接走yt-dlp下载，yt-dlp如提示不支持，则走re
 2. HTTPS 场景必须 `AUTH_COOKIE_SECURE=true`
 3. `CORS_ALLOWED_ORIGINS` 精确到实际的前端域名
 4. 定期备份 `./data/db/moevideo.db` 与 `./data/storage`
-
