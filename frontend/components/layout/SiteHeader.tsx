@@ -178,6 +178,16 @@ export function SiteHeader({
 
         <div className="flex items-center gap-2">
           <Link
+            href="/live/studio"
+            className={cn(
+              "flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition-all hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
+              pathname.startsWith("/live") && "bg-primary/15 text-primary",
+            )}
+            title="直播"
+          >
+            <AppIcon name="radio" />
+          </Link>
+          <Link
             href="/import"
             className={cn(
               "flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition-all hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",

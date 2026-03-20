@@ -58,6 +58,19 @@ func main() {
 		os.Exit(1)
 	}
 	appLogger.Infof("task temp directory initialized task_temp_dir=%s", cfg.TaskTempDir)
+	if cfg.LiveEnabled {
+		if err := os.MkdirAll(cfg.LiveRecordDir, 0o755); err != nil {
+			appLogger.Errorf("create live record directory failed: %v", err)
+			os.Exit(1)
+		}
+		appLogger.Infof(
+			"live streaming enabled app_name=%s rtmp_server=%s playback_base=%s record_dir=%s",
+			cfg.LiveAppName,
+			cfg.LiveRTMPServerURL,
+			cfg.LivePlaybackBaseURL,
+			cfg.LiveRecordDir,
+		)
+	}
 
 	database, err := db.Open(cfg.DBPath)
 	if err != nil {

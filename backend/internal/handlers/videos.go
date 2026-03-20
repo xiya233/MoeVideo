@@ -67,7 +67,7 @@ func (h *Handler) GetVideoDetail(c *fiber.Ctx) error {
 	}
 
 	query := `
-SELECT v.id, v.title, v.description, v.status, v.duration_sec, v.views_count, v.likes_count, v.favorites_count, v.comments_count, v.shares_count,
+SELECT v.id, v.title, v.description, v.status, COALESCE(v.is_live, 0), COALESCE(v.live_hls_url, ''), v.duration_sec, v.views_count, v.likes_count, v.favorites_count, v.comments_count, v.shares_count,
        COALESCE(v.published_at, v.created_at), COALESCE(v.visibility,'public'),
        COALESCE(cat.name, ''), v.category_id,
        u.id, u.username, COALESCE(u.followers_count, 0),
@@ -89,16 +89,17 @@ WHERE v.id = ?
 LIMIT 1`
 
 	var (
-		id, title, description, videoStatus, publishedAt, visibility, category string
-		categoryID                                                             sql.NullInt64
-		durationSec, views, likes, favorites, comments, shares, followers      int64
-		uploaderID, uploaderName                                               string
-		avatarProvider, avatarBucket, avatarKey                                string
-		coverProvider, coverBucket, coverKey                                   string
-		previewProvider, previewBucket, previewKey                             string
-		sourceProvider, sourceBucket, sourceKey                                string
-		hlsProvider, hlsBucket, hlsMasterKey, hlsVariantsJSON                  string
-		hlsThumbnailVTTKey, hlsThumbnailSpriteKey                              string
+		id, title, description, videoStatus, liveHLSURL, publishedAt, visibility, category string
+		isLive                                                                             int64
+		categoryID                                                                         sql.NullInt64
+		durationSec, views, likes, favorites, comments, shares, followers                  int64
+		uploaderID, uploaderName                                                           string
+		avatarProvider, avatarBucket, avatarKey                                            string
+		coverProvider, coverBucket, coverKey                                               string
+		previewProvider, previewBucket, previewKey                                         string
+		sourceProvider, sourceBucket, sourceKey                                            string
+		hlsProvider, hlsBucket, hlsMasterKey, hlsVariantsJSON                              string
+		hlsThumbnailVTTKey, hlsThumbnailSpriteKey                                          string
 	)
 
 	err := h.app.DB.QueryRowContext(c.UserContext(), query, videoID).Scan(
@@ -106,6 +107,8 @@ LIMIT 1`
 		&title,
 		&description,
 		&videoStatus,
+		&isLive,
+		&liveHLSURL,
 		&durationSec,
 		&views,
 		&likes,
@@ -192,6 +195,10 @@ ORDER BY t.name ASC`, videoID)
 	}
 
 	mp4URL := mediaURL(h.app.Storage, sourceProvider, sourceBucket, sourceKey)
+	isLiveVideo := isLive > 0
+	if isLiveVideo {
+		mp4URL = ""
+	}
 	playbackStatus := "ready"
 	if videoStatus == "processing" {
 		playbackStatus = "processing"
@@ -202,7 +209,10 @@ ORDER BY t.name ASC`, videoID)
 	playbackType := ""
 	hlsMasterURL := ""
 	variants := make([]map[string]interface{}, 0)
-	if playbackStatus == "ready" && hlsMasterKey != "" {
+	if playbackStatus == "ready" && isLiveVideo && strings.TrimSpace(liveHLSURL) != "" {
+		playbackType = "hls"
+		hlsMasterURL = strings.TrimSpace(liveHLSURL)
+	} else if playbackStatus == "ready" && hlsMasterKey != "" {
 		playbackType = "hls"
 		hlsMasterURL = mediaURL(h.app.Storage, hlsProvider, hlsBucket, hlsMasterKey)
 
@@ -248,6 +258,7 @@ ORDER BY t.name ASC`, videoID)
 	videoData := fiber.Map{
 		"id":               id,
 		"title":            title,
+		"is_live":          isLiveVideo,
 		"cover_url":        mediaURL(h.app.Storage, coverProvider, coverBucket, coverKey),
 		"preview_webp_url": mediaURL(h.app.Storage, previewProvider, previewBucket, previewKey),
 		"visibility":       visibility,
@@ -402,7 +413,7 @@ func (h *Handler) queryRandomRecommendations(
 	queryPart := func(categoryOnly bool) (string, []interface{}) {
 		query := `
 SELECT v.id, v.title, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at),
-       COALESCE(v.hot_score, 0),
+       COALESCE(v.hot_score, 0), COALESCE(v.is_live, 0),
        COALESCE(c.name, ''),
        COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, ''),
        COALESCE(pm.provider, ''), COALESCE(pm.bucket, ''), COALESCE(pm.object_key, ''),

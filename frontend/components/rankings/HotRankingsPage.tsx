@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { AuthorInline } from "@/components/common/AuthorInline";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LiveBadge } from "@/components/common/LiveBadge";
 import { LoadingSkeleton } from "@/components/common/LoadingSkeleton";
 import { AppIcon } from "@/components/common/AppIcon";
 import type { HotRankingsData, VideoCard } from "@/lib/dto";
@@ -41,6 +42,7 @@ function HotRankingCard({ video, rank }: { video: VideoCard; rank: number }) {
         ) : (
           <div className="h-full w-full bg-primary/10" />
         )}
+        {video.is_live ? <LiveBadge className="absolute left-2 top-2" /> : null}
       </div>
 
       <div className="min-w-0 space-y-1.5">

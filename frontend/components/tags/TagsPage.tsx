@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { AuthorInline } from "@/components/common/AuthorInline";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LiveBadge } from "@/components/common/LiveBadge";
 import { LoadingSkeleton } from "@/components/common/LoadingSkeleton";
 import type { TagItem, TagsData, VideoCard } from "@/lib/dto";
 import { mapTagsData, mapVideoCard } from "@/lib/dto/mappers";
@@ -59,6 +60,8 @@ function TagsVideoCard({ video }: { video: VideoCard }) {
         ) : (
           <div className="h-full w-full bg-primary/10" />
         )}
+
+        {video.is_live ? <LiveBadge className="absolute left-2 top-2" /> : null}
       </Link>
 
       <div className="space-y-2">

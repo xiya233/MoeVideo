@@ -50,6 +50,12 @@ type Config struct {
 	ImportPageResolverMax        int
 	ImportPageResolverCmd        string
 	ImportForceFallbackDomains   []string
+	LiveEnabled                  bool
+	LiveAppName                  string
+	LiveRTMPServerURL            string
+	LivePlaybackBaseURL          string
+	LiveCallbackSecret           string
+	LiveRecordDir                string
 	ImportProgressLogInterval    time.Duration
 	TranscodeProgressLogInterval time.Duration
 	RateLimitEnabled             bool
@@ -109,6 +115,11 @@ func Load() (Config, error) {
 			"IMPORT_PAGE_RESOLVER_CMD",
 			"bun scripts/page_manifest_resolver.mjs",
 		),
+		LiveAppName:            strings.TrimSpace(getEnv("LIVE_APP_NAME", "live")),
+		LiveRTMPServerURL:      strings.TrimRight(strings.TrimSpace(getEnv("LIVE_RTMP_SERVER_URL", "rtmp://localhost")), "/"),
+		LivePlaybackBaseURL:    strings.TrimRight(strings.TrimSpace(getEnv("LIVE_PLAYBACK_BASE_URL", "http://localhost:8080/live-hls")), "/"),
+		LiveCallbackSecret:     strings.TrimSpace(getEnv("LIVE_CALLBACK_SECRET", "")),
+		LiveRecordDir:          strings.TrimSpace(getEnv("LIVE_RECORD_DIR", "./data/live-recordings")),
 		RateLimitRedisAddr:     strings.TrimSpace(getEnv("RATE_LIMIT_REDIS_ADDR", "")),
 		RateLimitRedisPassword: getEnv("RATE_LIMIT_REDIS_PASSWORD", ""),
 		RateLimitRedisPrefix:   strings.TrimSpace(getEnv("RATE_LIMIT_REDIS_PREFIX", "moevideo")),
@@ -321,6 +332,23 @@ func Load() (Config, error) {
 	cfg.ImportPageResolverMax = importPageResolverMax
 
 	cfg.ImportForceFallbackDomains = parseFallbackDomains(getEnv("IMPORT_FORCE_FALLBACK_DOMAINS", ""))
+
+	liveEnabledRaw := strings.ToLower(strings.TrimSpace(getEnv("LIVE_ENABLED", "true")))
+	cfg.LiveEnabled = liveEnabledRaw == "1" || liveEnabledRaw == "true" || liveEnabledRaw == "yes"
+	if cfg.LiveAppName == "" {
+		cfg.LiveAppName = "live"
+	}
+	if cfg.LiveRecordDir == "" {
+		return cfg, fmt.Errorf("LIVE_RECORD_DIR must not be empty")
+	}
+	if cfg.LiveEnabled {
+		if cfg.LiveRTMPServerURL == "" {
+			return cfg, fmt.Errorf("LIVE_RTMP_SERVER_URL is required when LIVE_ENABLED=true")
+		}
+		if cfg.LivePlaybackBaseURL == "" {
+			return cfg, fmt.Errorf("LIVE_PLAYBACK_BASE_URL is required when LIVE_ENABLED=true")
+		}
+	}
 
 	importProgressLogInterval, err := time.ParseDuration(getEnv("IMPORT_PROGRESS_LOG_INTERVAL", "5s"))
 	if err != nil {

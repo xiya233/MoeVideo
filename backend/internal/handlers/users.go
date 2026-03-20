@@ -28,6 +28,7 @@ type patchMeRequest struct {
 
 type listCursor struct {
 	PublishedAt string `json:"published_at"`
+	IsLive      int    `json:"is_live,omitempty"`
 	ID          string `json:"id"`
 }
 
@@ -270,7 +271,7 @@ func (h *Handler) ListMyVideos(c *fiber.Ctx) error {
 
 	args := []interface{}{uid}
 	query := `
-SELECT v.id, v.title, v.status, v.visibility, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at),
+SELECT v.id, v.title, v.status, v.visibility, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at), COALESCE(v.is_live, 0),
        COALESCE(c.name, ''),
        COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, ''),
        COALESCE(pm.provider, ''), COALESCE(pm.bucket, ''), COALESCE(pm.object_key, ''),
@@ -879,7 +880,7 @@ func (h *Handler) ListUserVideos(c *fiber.Ctx) error {
 
 	args := []interface{}{targetUserID}
 	query := `
-SELECT v.id, v.title, v.status, v.visibility, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at),
+SELECT v.id, v.title, v.status, v.visibility, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at), COALESCE(v.is_live, 0),
        COALESCE(c.name, ''),
        COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, ''),
        COALESCE(pm.provider, ''), COALESCE(pm.bucket, ''), COALESCE(pm.object_key, ''),
@@ -1316,6 +1317,7 @@ func (h *Handler) scanMyVideoCards(rows *sql.Rows) ([]map[string]interface{}, er
 		var (
 			id, title, status, visibility, publishedAt, category string
 			durationSec, viewsCount, commentsCount               int64
+			isLive                                               int64
 			coverProvider, coverBucket, coverObjectKey           string
 			previewProvider, previewBucket, previewObjectKey     string
 			authorID, authorName                                 string
@@ -1331,6 +1333,7 @@ func (h *Handler) scanMyVideoCards(rows *sql.Rows) ([]map[string]interface{}, er
 			&viewsCount,
 			&commentsCount,
 			&publishedAt,
+			&isLive,
 			&category,
 			&coverProvider,
 			&coverBucket,
@@ -1358,6 +1361,7 @@ func (h *Handler) scanMyVideoCards(rows *sql.Rows) ([]map[string]interface{}, er
 			"views_count":      viewsCount,
 			"comments_count":   commentsCount,
 			"published_at":     publishedAt,
+			"is_live":          isLive > 0,
 			"category":         category,
 			"author": map[string]interface{}{
 				"id":              authorID,
@@ -1380,6 +1384,7 @@ func (h *Handler) scanVideoCards(rows *sql.Rows) ([]map[string]interface{}, erro
 			id, title, publishedAt, category                 string
 			durationSec, viewsCount, commentsCount           int64
 			hotScore                                         float64
+			isLive                                           int64
 			coverProvider, coverBucket, coverObjectKey       string
 			previewProvider, previewBucket, previewObjectKey string
 			authorID, authorName                             string
@@ -1394,6 +1399,7 @@ func (h *Handler) scanVideoCards(rows *sql.Rows) ([]map[string]interface{}, erro
 			&commentsCount,
 			&publishedAt,
 			&hotScore,
+			&isLive,
 			&category,
 			&coverProvider,
 			&coverBucket,
@@ -1420,6 +1426,7 @@ func (h *Handler) scanVideoCards(rows *sql.Rows) ([]map[string]interface{}, erro
 			"comments_count":   commentsCount,
 			"published_at":     publishedAt,
 			"hot_score":        hotScore,
+			"is_live":          isLive > 0,
 			"category":         category,
 			"author": map[string]interface{}{
 				"id":              authorID,

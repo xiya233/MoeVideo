@@ -8,6 +8,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { AppIcon, type IconName } from "@/components/common/AppIcon";
 import { AuthorInline } from "@/components/common/AuthorInline";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LiveBadge } from "@/components/common/LiveBadge";
 import { LoadingSkeleton } from "@/components/common/LoadingSkeleton";
 import type { HomeData, VideoCard } from "@/lib/dto";
 import { mapHomeData, mapVideoCard } from "@/lib/dto/mappers";
@@ -85,6 +86,8 @@ function VideoGridCard({ video }: { video: VideoCard }) {
           <VideoMetricBadge icon="chat_bubble" value={formatCount(video.comments_count)} />
         </div>
 
+        {video.is_live ? <LiveBadge className="absolute left-2 top-2" /> : null}
+
         <div className="absolute bottom-2 right-2">
           <VideoDurationBadge value={formatDurationLabel(video.duration_sec)} />
         </div>
@@ -124,6 +127,7 @@ function FeaturedHeroSlide({
       )}
 
       <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/60 via-transparent to-transparent p-8">
+        {video?.is_live ? <LiveBadge className="mb-3" /> : null}
         <span className="mb-3 w-fit rounded-full bg-primary px-3 py-1 text-xs font-bold text-white">
           今日推荐
         </span>
@@ -581,7 +585,7 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
                     >
                       {index + 1}
                     </span>
-                    <div className="h-10 w-16 flex-shrink-0 overflow-hidden rounded-lg">
+                    <div className="relative h-10 w-16 flex-shrink-0 overflow-hidden rounded-lg">
                       {video.cover_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
@@ -592,6 +596,7 @@ export function HomePage({ query = "", category = "" }: HomePageProps) {
                       ) : (
                         <div className="h-full w-full bg-primary/10" />
                       )}
+                      {video.is_live ? <LiveBadge className="absolute left-1 top-1 scale-75 origin-left" /> : null}
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-bold transition-colors group-hover:text-primary">{video.title}</p>

@@ -93,6 +93,11 @@ func RegisterRoutes(api fiber.Router, a *app.App) {
 	api.Put("/uploads/local/:uploadToken", h.UploadToLocal)
 	api.Post("/uploads/:uploadId/complete", middleware.RequireAuth(a), h.CompleteUpload)
 
+	api.Post("/live/sessions", middleware.RequireAuth(a), h.CreateLiveSession)
+	api.Get("/live/sessions/current", middleware.RequireAuth(a), h.GetCurrentLiveSession)
+	api.Post("/live/sessions/current/end", middleware.RequireAuth(a), h.EndCurrentLiveSession)
+	api.Post("/live/srs/callback", h.HandleSRSCallback)
+
 	admin := api.Group("/admin", middleware.RequireAuth(a), middleware.RequireAdmin(a))
 	h.RegisterAdminRoutes(admin)
 }

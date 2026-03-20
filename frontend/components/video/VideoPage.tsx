@@ -7,6 +7,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { AppIcon } from "@/components/common/AppIcon";
 import { AuthorInline } from "@/components/common/AuthorInline";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LiveBadge } from "@/components/common/LiveBadge";
 import { LoadingSkeleton } from "@/components/common/LoadingSkeleton";
 import { ArtHlsPlayer } from "@/components/video/ArtHlsPlayer";
 import { getApiBase } from "@/lib/api/base";
@@ -1535,6 +1536,7 @@ export function VideoPage({ videoId }: VideoPageProps) {
                 <div className="absolute bottom-1 right-1 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
                   {formatDurationLabel(video.duration_sec)}
                 </div>
+                {video.is_live ? <LiveBadge className="absolute left-1.5 top-1.5" /> : null}
               </div>
               <div className="flex flex-col justify-between py-0.5">
                 <h4 className="line-clamp-2 text-sm font-bold leading-snug transition-colors group-hover:text-primary">{video.title}</h4>

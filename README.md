@@ -102,6 +102,6 @@ mise run backend-test
 - 数据库文档：`backend/docs/schema.md`
 - yt-dlp 参数配置文档：`backend/docs/ytdlp-settings.md`
 - yt-dlp 用户 Cookies 使用文档：`backend/docs/ytdlp-user-cookies.md`
+- 直播（SRS）集成文档：`docs/live-streaming-srs.md`
 - Debian 13 部署文档：`docs/deploy-production-debian13.md`
 - Docker Compose 部署文档（含宿主机 Nginx、同域/分域配置，支持本地 build 与 GHCR 拉取 `amd64/arm64`，支持前端 API 运行时变量注入）：`docs/deploy-production-docker-compose.md`
-

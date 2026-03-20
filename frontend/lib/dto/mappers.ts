@@ -22,6 +22,9 @@ import type {
   UploadTicket,
   URLInspectResult,
   UserYTDLPCookieProfile,
+  LiveSession,
+  LiveSessionData,
+  CreateLiveSessionData,
   VideoCard,
   VideoDetail,
   UserBrief,
@@ -127,6 +130,7 @@ export function mapVideoCard(value: unknown): VideoCard {
   return {
     id: str(src.id),
     title: str(src.title, "未命名视频"),
+    is_live: bool(src.is_live),
     status: str(src.status) || undefined,
     visibility: str(src.visibility) || undefined,
     category_id: categoryID > 0 ? categoryID : undefined,
@@ -323,6 +327,72 @@ export function mapLoginRegisterData(value: unknown): LoginOrRegisterData {
       public_favorites: bool(user.public_favorites),
       public_following: bool(user.public_following),
       public_followers: bool(user.public_followers),
+    },
+  };
+}
+
+function mapLiveVisibility(value: unknown): LiveSession["visibility"] {
+  const raw = str(value);
+  if (raw === "private" || raw === "unlisted") {
+    return raw;
+  }
+  return "public";
+}
+
+function mapLiveStatus(value: unknown): LiveSession["status"] {
+  const raw = str(value);
+  if (raw === "waiting" || raw === "live" || raw === "ended" || raw === "failed") {
+    return raw;
+  }
+  return "waiting";
+}
+
+export function mapLiveSession(value: unknown): LiveSession {
+  const src = obj(value);
+  const categoryID = num(src.category_id);
+  return {
+    id: str(src.id),
+    video_id: str(src.video_id),
+    title: str(src.title, "未命名直播"),
+    description: str(src.description),
+    category_id: categoryID > 0 ? categoryID : undefined,
+    tags: arr(src.tags).map((item) => str(item)).filter(Boolean),
+    visibility: mapLiveVisibility(src.visibility),
+    status: mapLiveStatus(src.status),
+    stream_key: str(src.stream_key),
+    app_name: str(src.app_name),
+    publish_url: str(src.publish_url),
+    playback_url: str(src.playback_url),
+    record_path: str(src.record_path) || undefined,
+    started_at: str(src.started_at) || undefined,
+    ended_at: str(src.ended_at) || undefined,
+    last_error: str(src.last_error) || undefined,
+    created_at: str(src.created_at),
+    updated_at: str(src.updated_at),
+    is_live: bool(src.is_live),
+    video_status: str(src.video_status) || undefined,
+    video_hls_url: str(src.video_hls_url) || undefined,
+  };
+}
+
+export function mapLiveSessionData(value: unknown): LiveSessionData {
+  const src = obj(value);
+  const sessionRaw = src.session;
+  return {
+    session: sessionRaw ? mapLiveSession(sessionRaw) : null,
+  };
+}
+
+export function mapCreateLiveSessionData(value: unknown): CreateLiveSessionData {
+  const src = obj(value);
+  const obsRaw = obj(src.obs);
+  return {
+    session: mapLiveSession(src.session),
+    obs: {
+      server_url: str(obsRaw.server_url),
+      stream_key: str(obsRaw.stream_key),
+      stream_url: str(obsRaw.stream_url),
+      playback_url: str(obsRaw.playback_url),
     },
   };
 }

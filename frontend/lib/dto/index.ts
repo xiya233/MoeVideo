@@ -27,6 +27,7 @@ export type Author = {
 export type VideoCard = {
   id: string;
   title: string;
+  is_live?: boolean;
   status?: string;
   visibility?: string;
   category_id?: number;
@@ -286,4 +287,42 @@ export type LoginOrRegisterData = {
 
 export type RefreshData = {
   refreshed: boolean;
+};
+
+export type LiveSession = {
+  id: string;
+  video_id: string;
+  title: string;
+  description: string;
+  category_id?: number;
+  tags: string[];
+  visibility: "public" | "private" | "unlisted";
+  status: "waiting" | "live" | "ended" | "failed";
+  stream_key: string;
+  app_name: string;
+  publish_url: string;
+  playback_url: string;
+  record_path?: string;
+  started_at?: string;
+  ended_at?: string;
+  last_error?: string;
+  created_at: string;
+  updated_at: string;
+  is_live: boolean;
+  video_status?: string;
+  video_hls_url?: string;
+};
+
+export type LiveSessionData = {
+  session: LiveSession | null;
+};
+
+export type CreateLiveSessionData = {
+  session: LiveSession;
+  obs: {
+    server_url: string;
+    stream_key: string;
+    stream_url: string;
+    playback_url: string;
+  };
 };

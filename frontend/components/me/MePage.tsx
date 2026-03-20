@@ -8,6 +8,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { AppIcon, type IconName } from "@/components/common/AppIcon";
 import { AuthorInline } from "@/components/common/AuthorInline";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LiveBadge } from "@/components/common/LiveBadge";
 import { AvatarCropDialog } from "@/components/me/AvatarCropDialog";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type {
@@ -216,9 +217,11 @@ function VideoGridCard({
           <VideoDurationBadge value={formatDurationLabel(video.duration_sec)} />
         </div>
 
+        {video.is_live ? <LiveBadge className="absolute left-2 top-2" /> : null}
+
         {showStatus ? (
           <>
-            <div className="absolute left-2 top-2">
+            <div className={cn("absolute left-2", video.is_live ? "top-9" : "top-2")}>
               <span className={cn("rounded-full px-2 py-1 text-[10px] font-bold", videoStatusClass(video.status))}>
                 {videoStatusLabel(video.status)}
               </span>

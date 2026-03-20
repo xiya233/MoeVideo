@@ -37,6 +37,7 @@ import {
   X,
   Eye,
   CalendarDays,
+  Radio,
 } from "lucide-react";
 import type { ComponentProps } from "react";
 
@@ -76,6 +77,7 @@ export type IconName =
   | "upload"
   | "input"
   | "magnet"
+  | "radio"
   | "chevron_left"
   | "chevron_right";
 
@@ -115,6 +117,7 @@ const ICON_MAP: Record<IconName, LucideIcon> = {
   upload: Upload,
   input: ImportIcon,
   magnet: Magnet,
+  radio: Radio,
   chevron_left: ChevronLeft,
   chevron_right: ChevronRight,
 };

@@ -152,7 +152,7 @@ func (h *Handler) queryFeaturedItems(ctx context.Context, limit int) ([]map[stri
 
 	query := `
 SELECT b.position,
-       v.id, v.title, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at), COALESCE(v.hot_score, 0),
+       v.id, v.title, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at), COALESCE(v.hot_score, 0), COALESCE(v.is_live, 0),
        COALESCE(c.name, ''),
        COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, ''),
        COALESCE(pm.provider, ''), COALESCE(pm.bucket, ''), COALESCE(pm.object_key, ''),
@@ -183,6 +183,7 @@ LIMIT ?`
 			id, title, publishedAt, category                 string
 			durationSec, viewsCount, commentsCount           int64
 			hotScore                                         float64
+			isLive                                           int64
 			coverProvider, coverBucket, coverObjectKey       string
 			previewProvider, previewBucket, previewObjectKey string
 			authorID, authorName                             string
@@ -198,6 +199,7 @@ LIMIT ?`
 			&commentsCount,
 			&publishedAt,
 			&hotScore,
+			&isLive,
 			&category,
 			&coverProvider,
 			&coverBucket,
@@ -226,6 +228,7 @@ LIMIT ?`
 			"published_at":     publishedAt,
 			"category":         category,
 			"hot_score":        hotScore,
+			"is_live":          isLive > 0,
 			"position":         position,
 			"author": map[string]interface{}{
 				"id":              authorID,
@@ -282,7 +285,7 @@ func (h *Handler) queryVideoCardsWithCursor(ctx context.Context, opts videoQuery
 	}
 
 	query := `
-SELECT v.id, v.title, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at), COALESCE(v.hot_score, 0),
+SELECT v.id, v.title, v.duration_sec, v.views_count, v.comments_count, COALESCE(v.published_at, v.created_at), COALESCE(v.hot_score, 0), COALESCE(v.is_live, 0),
        COALESCE(c.name, ''),
        COALESCE(cm.provider, ''), COALESCE(cm.bucket, ''), COALESCE(cm.object_key, ''),
        COALESCE(pm.provider, ''), COALESCE(pm.bucket, ''), COALESCE(pm.object_key, ''),
@@ -343,10 +346,19 @@ WHERE v.status = 'published' AND v.visibility = 'public'
 			if err := pagination.Decode(opts.Cursor, &cur); err != nil {
 				return nil, "", fmt.Errorf("decode cursor: %w", err)
 			}
-			query += ` AND (COALESCE(v.published_at, v.created_at) < ? OR (COALESCE(v.published_at, v.created_at) = ? AND v.id < ?))`
-			args = append(args, cur.PublishedAt, cur.PublishedAt, cur.ID)
+			query += ` AND (
+				COALESCE(v.is_live, 0) < ?
+				OR (
+					COALESCE(v.is_live, 0) = ?
+					AND (
+						COALESCE(v.published_at, v.created_at) < ?
+						OR (COALESCE(v.published_at, v.created_at) = ? AND v.id < ?)
+					)
+				)
+			)`
+			args = append(args, cur.IsLive, cur.IsLive, cur.PublishedAt, cur.PublishedAt, cur.ID)
 		}
-		query += ` ORDER BY COALESCE(v.published_at, v.created_at) DESC, v.id DESC`
+		query += ` ORDER BY COALESCE(v.is_live, 0) DESC, COALESCE(v.published_at, v.created_at) DESC, v.id DESC`
 	}
 
 	query += ` LIMIT ?`
@@ -373,8 +385,13 @@ WHERE v.status = 'published' AND v.visibility = 'public'
 				ID:       last["id"].(string),
 			})
 		} else {
+			isLive := 0
+			if live, ok := last["is_live"].(bool); ok && live {
+				isLive = 1
+			}
 			nextCursor, err = pagination.Encode(listCursor{
 				PublishedAt: last["published_at"].(string),
+				IsLive:      isLive,
 				ID:          last["id"].(string),
 			})
 		}
