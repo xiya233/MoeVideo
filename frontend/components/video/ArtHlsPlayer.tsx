@@ -347,7 +347,7 @@ export function ArtHlsPlayer({
         url: sourceUrl,
         type: sourceType,
         customType,
-        poster,
+        ...(typeof poster === "string" && poster.trim().length > 0 ? { poster } : {}),
         theme: themeColor,
         cssVar: {
           "--art-theme": themeColor,
