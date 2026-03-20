@@ -8,61 +8,24 @@ services:
     image: ossrs/srs:5
     container_name: moevideo-srs
     restart: unless-stopped
-    # SRS config is generated at container start from .env.docker values.
-    command: >
-      /bin/sh -lc '
-      cat > /usr/local/srs/conf/srs.conf <<EOF
-      listen              1935;
-      max_connections     1000;
-      daemon              off;
-      srs_log_tank        console;
-
-      http_server {
-          enabled on;
-          listen 8080;
-          dir ./objs/nginx/html;
-      }
-
-      http_api {
-          enabled on;
-          listen 1985;
-      }
-
-      vhost __defaultVhost__ {
-          hls {
-              enabled on;
-              hls_path /data/live-recordings;
-              hls_fragment ${SRS_HLS_FRAGMENT_SEC:-6};
-              hls_window ${SRS_HLS_WINDOW_SEC:-60};
-          }
-
-          http_remux {
-              enabled on;
-              mount [app]/[stream].m3u8;
-          }
-
-          dvr {
-              enabled on;
-              dvr_apply all;
-              dvr_path /data/live-recordings/[app]/[stream]/[timestamp].flv;
-              dvr_plan session;
-              dvr_wait_keyframe on;
-          }
-
-          http_hooks {
-              enabled on;
-              on_publish   ${SRS_CALLBACK_URL};
-              on_unpublish ${SRS_CALLBACK_URL};
-          }
-      }
-      EOF
-      exec ./objs/srs -c conf/srs.conf'
+    # SRS config is template-mounted from host and rendered at container start.
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        set -eu
+        cp /usr/local/srs/conf/srs.conf.template /usr/local/srs/conf/srs.conf
+        sed -i "s|__SRS_HLS_FRAGMENT_SEC__|${SRS_HLS_FRAGMENT_SEC:-6}|g" /usr/local/srs/conf/srs.conf
+        sed -i "s|__SRS_HLS_WINDOW_SEC__|${SRS_HLS_WINDOW_SEC:-60}|g" /usr/local/srs/conf/srs.conf
+        sed -i "s|__SRS_CALLBACK_URL__|${SRS_CALLBACK_URL:-http://backend:8080/api/v1/live/srs/callback}|g" /usr/local/srs/conf/srs.conf
+        exec ./objs/srs -c conf/srs.conf
     ports:
       - "${SRS_RTMP_PORT:-1935}:1935"
       - "${SRS_HTTP_PORT:-8081}:8080"
       - "${SRS_API_PORT:-1985}:1985"
     volumes:
       - ./data/srs/records:/data/live-recordings
+      - ./docker/srs/srs.conf.template:/usr/local/srs/conf/srs.conf.template:ro
 
   redis:
     image: redis:8-bookworm

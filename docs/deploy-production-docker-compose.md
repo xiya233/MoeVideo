@@ -63,6 +63,9 @@ mkdir -p data/db data/storage data/temp data/redis data/srs/records
 8. `AUTH_COOKIE_SECURE`：HTTPS 场景必须设为 `true`
 9. `PUID/PGID`：容器进程写入 `./data` 的 UID/GID 映射
 
+SRS 配置采用 bind mount 模板：`./docker/srs/srs.conf.template`。  
+容器启动时会按 `.env.docker` 渲染该模板，再启动 SRS。
+
 ## 5. 同域/分域环境变量对照（.env.docker）
 
 | 变量 | 同域（`example.com`） | 分域（`app.example.com` + `api.example.com`） | 说明 |
