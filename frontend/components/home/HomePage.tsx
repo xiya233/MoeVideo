@@ -127,7 +127,9 @@ function FeaturedHeroSlide({
       )}
 
       <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/60 via-transparent to-transparent p-8">
-        {video?.is_live ? <LiveBadge className="mb-3" /> : null}
+        {video?.is_live ? (
+          <LiveBadge className="mb-3 self-start min-w-[72px] justify-center gap-1 px-3 py-1 text-xs font-bold tracking-normal" />
+        ) : null}
         <span className="mb-3 w-fit rounded-full bg-primary px-3 py-1 text-xs font-bold text-white">
           今日推荐
         </span>
