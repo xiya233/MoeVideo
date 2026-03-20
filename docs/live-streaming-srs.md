@@ -11,7 +11,7 @@
 
 - OBS -> SRS（RTMP 入站）
 - SRS -> HLS（直播播放）
-- SRS 回调 MoeVideo（`on_publish` / `on_unpublish`）
+- SRS 回调 MoeVideo（`on_publish` / `on_unpublish` / `on_dvr`）
 - MoeVideo 根据录制文件自动转回放并发布
 
 > 说明：项目根目录 `docker-compose.yml` 已内置 `srs` 服务。  
@@ -96,6 +96,7 @@ vhost __defaultVhost__ {
         enabled on;
         on_publish   https://your-domain/api/v1/live/srs/callback?token=REPLACE_ME;
         on_unpublish https://your-domain/api/v1/live/srs/callback?token=REPLACE_ME;
+        on_dvr       https://your-domain/api/v1/live/srs/callback?token=REPLACE_ME;
     }
 }
 ```
@@ -214,7 +215,7 @@ sudo systemctl reload nginx
 
 停播后：
 
-- SRS 触发 `on_unpublish`
+- SRS 触发 `on_unpublish`，录制完成后再触发 `on_dvr`
 - MoeVideo 读取录制文件
 - 自动进入已有转码发布链路
 - 处理完成后成为普通点播视频（分类/标签/可见性继承开播时设置）
@@ -246,6 +247,8 @@ sudo systemctl reload nginx
 
 - `LIVE_RECORD_DIR` 是否和 SRS 录制目录一致
 - backend 进程是否对该目录有读权限
+- backend 日志是否收到 `on_dvr` 回调
+- `live_sessions.record_file_path` 是否已写入有效录制文件路径
 - backend 日志是否有录制文件不存在/读取失败错误
 
 ---

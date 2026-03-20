@@ -338,6 +338,19 @@ func (h *Handler) HandleSRSCallback(c *fiber.Ctx) error {
 			return response.Error(c, fiber.StatusInternalServerError, "failed to mark live session ended")
 		}
 		return response.OK(c, fiber.Map{"accepted": true, "found": true, "replay_queued": queued})
+	case "on_dvr", "dvr":
+		row, found, err := h.findSessionByStream(c.UserContext(), appName, streamKey)
+		if err != nil {
+			return response.Error(c, fiber.StatusInternalServerError, "failed to load live session")
+		}
+		if !found {
+			return response.OK(c, fiber.Map{"accepted": true, "found": false})
+		}
+		queued, err := h.transitionSessionEnded(c.UserContext(), row, recordPathRaw, false)
+		if err != nil {
+			return response.Error(c, fiber.StatusInternalServerError, "failed to process live dvr")
+		}
+		return response.OK(c, fiber.Map{"accepted": true, "found": true, "replay_queued": queued})
 	case "on_record", "record":
 		row, found, err := h.findSessionByStream(c.UserContext(), appName, streamKey)
 		if err != nil {
@@ -497,12 +510,6 @@ WHERE id = ? AND status != 'deleted'`, row.PlaybackURL, now, now, row.VideoID); 
 }
 
 func (h *Handler) transitionSessionEnded(ctx context.Context, row liveSessionRow, recordPathRaw string, manual bool) (bool, error) {
-	if row.Status == "failed" {
-		return false, nil
-	}
-	if row.Status == "ended" && strings.TrimSpace(row.RecordPath) != "" {
-		return false, nil
-	}
 	recordPath, err := h.resolveLiveRecordPath(recordPathRaw)
 	if err != nil {
 		return false, err
@@ -510,15 +517,25 @@ func (h *Handler) transitionSessionEnded(ctx context.Context, row liveSessionRow
 	if recordPath == "" {
 		recordPath = strings.TrimSpace(row.RecordPath)
 	}
+	hasRecord := strings.TrimSpace(recordPath) != ""
+
+	// Once replay source is locked in and session is ended, duplicate callbacks can be ignored.
+	if row.Status == "ended" && strings.TrimSpace(row.RecordPath) != "" {
+		return false, nil
+	}
+	// Allow recovery: failed/ended sessions may still receive a delayed DVR callback with the real record file.
+	if row.Status == "failed" && !hasRecord {
+		return false, nil
+	}
 
 	now := nowString()
 	videoStatus := "processing"
 	sessionStatus := "ended"
 	lastError := ""
-	if manual && strings.TrimSpace(recordPath) == "" {
+	if !hasRecord {
 		videoStatus = "failed"
 		sessionStatus = "failed"
-		lastError = "live session ended manually without record file"
+		lastError = "live replay record not found"
 	}
 
 	tx, err := h.app.DB.BeginTx(ctx, nil)
@@ -558,7 +575,7 @@ WHERE id = ? AND status != 'deleted'`, videoStatus, now, row.VideoID); err != ni
 		return false, err
 	}
 
-	if strings.TrimSpace(recordPath) == "" {
+	if !hasRecord {
 		return false, nil
 	}
 	if err := h.queueReplayFromRecord(ctx, row, recordPath); err != nil {

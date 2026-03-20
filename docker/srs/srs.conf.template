@@ -40,5 +40,6 @@ vhost __defaultVhost__ {
         enabled on;
         on_publish   __SRS_CALLBACK_URL__;
         on_unpublish __SRS_CALLBACK_URL__;
+        on_dvr       __SRS_CALLBACK_URL__;
     }
 }

@@ -222,6 +222,7 @@ type videoSource struct {
 	MediaProvider string
 	MediaBucket   string
 	MediaKey      string
+	MimeType      string
 }
 
 type hlsAssetPayload struct {
@@ -267,7 +268,7 @@ func (w *Worker) processJob(ctx context.Context, job claimedJob) (*hlsAssetPaylo
 	var src videoSource
 	err := w.app.DB.QueryRowContext(ctx, `
 SELECT v.id, v.uploader_id, v.status,
-       sm.provider, COALESCE(sm.bucket, ''), sm.object_key
+       sm.provider, COALESCE(sm.bucket, ''), sm.object_key, COALESCE(sm.mime_type, '')
 FROM videos v
 JOIN media_objects sm ON sm.id = v.source_media_id
 WHERE v.id = ?
@@ -280,6 +281,7 @@ LIMIT 1`,
 		&src.MediaProvider,
 		&src.MediaBucket,
 		&src.MediaKey,
+		&src.MimeType,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -293,12 +295,16 @@ LIMIT 1`,
 	if src.MediaKey == "" {
 		return nil, permanentError{err: fmt.Errorf("video %s source media key is empty", job.VideoID)}
 	}
+	if strings.HasSuffix(strings.ToLower(src.MediaKey), "/source-placeholder.txt") || strings.EqualFold(strings.TrimSpace(src.MimeType), "text/plain") {
+		return nil, permanentError{err: fmt.Errorf("video %s source media is live placeholder; wait for replay record and retry", job.VideoID)}
+	}
 	w.logger.Infof(
-		"video source loaded job_id=%s video_id=%s media_provider=%s media_key=%s",
+		"video source loaded job_id=%s video_id=%s media_provider=%s media_key=%s mime_type=%s",
 		job.ID,
 		job.VideoID,
 		src.MediaProvider,
 		src.MediaKey,
+		src.MimeType,
 	)
 
 	setStage("prepare_workspace")

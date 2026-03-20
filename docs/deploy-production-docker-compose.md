@@ -380,6 +380,18 @@ curl -I http://127.0.0.1:8081/live/<stream_key>.m3u8
 docker compose --env-file .env.docker up -d --force-recreate srs
 ```
 
+### 13.4 直播结束后没有自动回放
+
+先看 SRS 回调是否完整触发：
+
+```bash
+docker compose --env-file .env.docker logs --since=10m srs | rg "on_unpublish|on_dvr"
+docker compose --env-file .env.docker logs --since=10m backend | rg "live|replay|on_dvr"
+```
+
+回放自动发布依赖 `on_dvr` 回调携带录制文件路径。  
+若只有 `on_unpublish` 没有 `on_dvr`，通常会导致视频停留在失败/处理中，无法转码发布。
+
 ## 14. 安全建议
 
 1. 必须替换 `JWT_SECRET`
