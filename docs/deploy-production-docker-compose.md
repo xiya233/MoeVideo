@@ -56,12 +56,13 @@ mkdir -p data/db data/storage data/temp data/redis data/srs/records
 1. `JWT_SECRET`：替换为强随机密钥
 2. `LIVE_CALLBACK_SECRET`：建议设置强随机密钥（用于 SRS 回调签名）
 3. `SRS_CALLBACK_URL`：默认走容器内回调地址，建议带上 `?token=...`
-4. `NEXT_PUBLIC_API_BASE_URL`：前端浏览器侧 API 地址（运行时注入）
-5. `API_BASE_URL`：前端 SSR 请求 API 地址（建议与上一项一致）
-6. `PUBLIC_BASE_URL`：后端对外基准地址
-7. `CORS_ALLOWED_ORIGINS`：允许的前端来源
-8. `AUTH_COOKIE_SECURE`：HTTPS 场景必须设为 `true`
-9. `PUID/PGID`：容器进程写入 `./data` 的 UID/GID 映射
+4. `LIVE_PLAYBACK_BASE_URL`：直播播放基准地址（建议 `https://your-api-domain/live`，不要写成 `/live/live`）
+5. `NEXT_PUBLIC_API_BASE_URL`：前端浏览器侧 API 地址（运行时注入）
+6. `API_BASE_URL`：前端 SSR 请求 API 地址（建议与上一项一致）
+7. `PUBLIC_BASE_URL`：后端对外基准地址
+8. `CORS_ALLOWED_ORIGINS`：允许的前端来源
+9. `AUTH_COOKIE_SECURE`：HTTPS 场景必须设为 `true`
+10. `PUID/PGID`：容器进程写入 `./data` 的 UID/GID 映射
 
 SRS 配置采用 bind mount 模板：`./docker/srs/srs.conf.template`。  
 容器启动时会按 `.env.docker` 渲染该模板，再启动 SRS。
@@ -355,6 +356,29 @@ docker compose --env-file .env.docker restart frontend
 ### 13.2 回落探测媒体下载链接的实现逻辑：
 
 yt-dlp支持的站点直接走yt-dlp下载，yt-dlp如提示不支持，则走rebrowser-playwright + chromium探测页面的媒体链接，供用户手动选择下载。用户也可以设置指定域名直接走rebrowser-playwright + chromium。请注意目前只对yt-dlp不支持这一退出行为执行回落操作，其他报错退出不做回落操作。
+
+### 13.3 直播推流成功但 m3u8 404
+
+先检查播放基准地址：
+
+```bash
+grep LIVE_PLAYBACK_BASE_URL .env.docker
+```
+
+应类似 `https://your-api-domain/live`，不要写成 `/live/live`。
+
+再检查 SRS 内部是否可访问：
+
+```bash
+docker compose --env-file .env.docker exec srs sh -lc 'ls -l /data/live-recordings/live/*.m3u8 | head'
+curl -I http://127.0.0.1:8081/live/<stream_key>.m3u8
+```
+
+如果文件存在但仍 404，优先检查 `docker/srs/srs.conf.template` 里 `http_server.dir` 是否与 `hls_path` 一致（都应为 `/data/live-recordings`），然后重启 SRS：
+
+```bash
+docker compose --env-file .env.docker up -d --force-recreate srs
+```
 
 ## 14. 安全建议
 

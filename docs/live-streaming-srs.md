@@ -57,7 +57,8 @@ srs_log_tank        console;
 http_server {
     enabled on;
     listen 8080;
-    dir ./objs/nginx/html;
+    # 必须与 hls_path 对齐，否则会出现 m3u8 文件已生成但 HTTP 访问 404
+    dir /data/live-recordings;
 }
 
 http_api {
@@ -133,7 +134,7 @@ docker logs -f moevideo-srs
 LIVE_ENABLED=true
 LIVE_APP_NAME=live
 LIVE_RTMP_SERVER_URL=rtmp://your-domain
-LIVE_PLAYBACK_BASE_URL=https://your-domain/live/live
+LIVE_PLAYBACK_BASE_URL=https://your-domain/live
 LIVE_CALLBACK_SECRET=replace-with-strong-secret
 LIVE_RECORD_DIR=./data/srs/records
 ```
@@ -143,7 +144,7 @@ LIVE_RECORD_DIR=./data/srs/records
 - `LIVE_RTMP_SERVER_URL` + `LIVE_APP_NAME` 会组成开播中心里给 OBS 的推流地址。  
   例如：`rtmp://your-domain/live`
 - `LIVE_PLAYBACK_BASE_URL` 会拼接 `/<stream_key>.m3u8`，  
-  所以最终播放地址是：`https://your-domain/live/live/<stream_key>.m3u8`
+  所以最终播放地址是：`https://your-domain/live/<stream_key>.m3u8`
 - `LIVE_RECORD_DIR` 必须指向 SRS 实际落盘录制目录（后端要能读到）
 
 > 如果 backend 在容器里运行，请把宿主机 `./data/srs/records` bind mount 到 backend 容器里，并把 `LIVE_RECORD_DIR` 改成容器内路径（例如 `/data/live-recordings`）。
@@ -236,6 +237,8 @@ sudo systemctl reload nginx
 
 - `LIVE_PLAYBACK_BASE_URL` 是否与 SRS `mount` 规则一致
 - Nginx 是否正确代理 `/live/` -> `127.0.0.1:8081/live/`
+- SRS 配置里 `http_server.dir` 是否与 `hls_path` 一致（建议都为 `/data/live-recordings`）
+- 在宿主机直连 SRS 验证：`curl -I http://127.0.0.1:8081/live/<stream_key>.m3u8`
 
 ### 7.3 停播后没有回放
 

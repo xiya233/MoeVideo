@@ -18,6 +18,11 @@ services:
         sed -i "s|__SRS_HLS_FRAGMENT_SEC__|${SRS_HLS_FRAGMENT_SEC:-6}|g" /usr/local/srs/conf/srs.conf
         sed -i "s|__SRS_HLS_WINDOW_SEC__|${SRS_HLS_WINDOW_SEC:-60}|g" /usr/local/srs/conf/srs.conf
         sed -i "s|__SRS_CALLBACK_URL__|${SRS_CALLBACK_URL:-http://backend:8080/api/v1/live/srs/callback}|g" /usr/local/srs/conf/srs.conf
+        if grep -q "__SRS_" /usr/local/srs/conf/srs.conf; then
+          echo "srs.conf render failed: unresolved placeholders found"
+          cat /usr/local/srs/conf/srs.conf
+          exit 1
+        fi
         exec ./objs/srs -c conf/srs.conf
     ports:
       - "${SRS_RTMP_PORT:-1935}:1935"

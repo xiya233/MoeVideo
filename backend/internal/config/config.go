@@ -117,7 +117,7 @@ func Load() (Config, error) {
 		),
 		LiveAppName:            strings.TrimSpace(getEnv("LIVE_APP_NAME", "live")),
 		LiveRTMPServerURL:      strings.TrimRight(strings.TrimSpace(getEnv("LIVE_RTMP_SERVER_URL", "rtmp://localhost")), "/"),
-		LivePlaybackBaseURL:    strings.TrimRight(strings.TrimSpace(getEnv("LIVE_PLAYBACK_BASE_URL", "http://localhost:8080/live-hls")), "/"),
+		LivePlaybackBaseURL:    strings.TrimRight(strings.TrimSpace(getEnv("LIVE_PLAYBACK_BASE_URL", "http://localhost:8080/live")), "/"),
 		LiveCallbackSecret:     strings.TrimSpace(getEnv("LIVE_CALLBACK_SECRET", "")),
 		LiveRecordDir:          strings.TrimSpace(getEnv("LIVE_RECORD_DIR", "./data/live-recordings")),
 		RateLimitRedisAddr:     strings.TrimSpace(getEnv("RATE_LIMIT_REDIS_ADDR", "")),
